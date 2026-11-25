@@ -405,6 +405,15 @@ export class TerrainMap {
     );
   }
 
+  /** World XZ coordinate along the main river centerline at a given distance along its axis. */
+  getRiverCenterPoint(along: number): Vec2 {
+    const across = this.getRiverCenterAcross(along);
+    return {
+      x: along * this.riverCos - across * this.riverSin,
+      z: along * this.riverSin + across * this.riverCos,
+    };
+  }
+
   /** Centerline perpendicular offset of the branching tributary stream for along >= 0. */
   private getTributaryCenterAcross(along: number): number {
     const taper = smoothstep(0, 22, along);
@@ -445,7 +454,7 @@ export class TerrainMap {
     const riverAcross = this.getRiverCenterAcross(along);
     // Naturally widen river slightly into an estuary as it nears the sea
     const coastDist = this.getCoastSignedDistance(x, z);
-    const estuaryBoost = (1 - smoothstep(-4, 28, coastDist)) * 5.2;
+    const estuaryBoost = (1 - smoothstep(-6, 32, coastDist)) * 6.0;
     const riverDist = Math.abs(across - riverAcross) - (this.riverHalfWidth + estuaryBoost);
 
     const tribDist = this.getTributarySignedDistance(x, z);
@@ -471,16 +480,19 @@ export class TerrainMap {
    */
   getWaterFlowAt(x: number, z: number): Vec2 {
     const coastDist = this.getCoastSignedDistance(x, z);
-    if (coastDist < 2.0) {
-      // Gentle onshore coastal wave drift
-      const surf = 0.24 + (1 - smoothstep(-24, 2, coastDist)) * 0.14;
-      return { x: -this.coastCos * surf, z: -this.coastSin * surf };
-    }
-
     const along = x * this.riverCos + z * this.riverSin;
     const across = -x * this.riverSin + z * this.riverCos;
-    const riverDist = Math.abs(across - this.getRiverCenterAcross(along)) - this.riverHalfWidth;
+    const estuaryBoost = (1 - smoothstep(-6, 32, coastDist)) * 6.0;
+    const riverDist =
+      Math.abs(across - this.getRiverCenterAcross(along)) - (this.riverHalfWidth + estuaryBoost);
     const tribDist = this.getTributarySignedDistance(x, z);
+    const surf = 0.24 + (1 - smoothstep(-24, 2, coastDist)) * 0.14;
+    const surfX = -this.coastCos * surf;
+    const surfZ = -this.coastSin * surf;
+
+    if (coastDist < -14 && riverDist > 4 && tribDist > 4) {
+      return { x: surfX, z: surfZ };
+    }
 
     let fx: number;
     let fz: number;
@@ -514,7 +526,20 @@ export class TerrainMap {
       if (calm < pondCalm) pondCalm = calm;
     }
     const speed = 0.22 + 0.78 * pondCalm;
-    return { x: fx * speed, z: fz * speed };
+    const riverFlowX = fx * speed;
+    const riverFlowZ = fz * speed;
+
+    // Blend smoothly from river outflow into ocean surf outside/beyond the estuary mouth
+    if (coastDist < 6.0) {
+      const inMouth = 1 - smoothstep(-2.0, 6.0, Math.min(riverDist, tribDist));
+      const mouthBlend = smoothstep(-14.0, 2.0, coastDist) * inMouth;
+      const riverWeight = Math.max(smoothstep(0.0, 6.0, coastDist), mouthBlend);
+      return {
+        x: surfX + (riverFlowX - surfX) * riverWeight,
+        z: surfZ + (riverFlowZ - surfZ) * riverWeight,
+      };
+    }
+    return { x: riverFlowX, z: riverFlowZ };
   }
 
   /** Warmth / aridity index in [0, 1] creating a coherent golden sand-dune desert region. */
@@ -662,28 +687,28 @@ export class TerrainMap {
       h = h + (fenFloor - h) * fenMask * 0.52;
     }
 
-    // Carve freshwater river, tributary, and lakes
+    // Sculpt sweeping sandy seashore incline first so rivers carve right through the beach into the sea
+    if (coastDist > 0 && coastDist < 34) {
+      const beachT = smoothstep(0, 34, coastDist);
+      const beachProfile = this.waterLevel - 0.06 + Math.pow(beachT, 0.88) * 2.62 + micro * 0.18;
+      const blend = 1 - smoothstep(10, 34, coastDist);
+      h = h + (beachProfile - h) * blend;
+    }
+
+    // Carve freshwater river, tributary, and lakes cleanly through inland valleys & coastal beaches
     const freshDist = this.getFreshwaterDistance(x, z);
     if (freshDist < 12) {
-      const t = Math.max(0, Math.min(1, (freshDist + 5.5) / 17.5));
+      const t = Math.max(0, Math.min(1, (freshDist + 4.0) / 16.0));
       const smooth = t * t * (3 - 2 * t);
-      const riverbedHeight = this.waterLevel - 1.4 + micro * 0.24;
+      const riverbedHeight = this.waterLevel - 1.45 + micro * 0.22;
       h = riverbedHeight + (h - riverbedHeight) * smooth;
     }
 
-    // Sculpt sweeping sandy seashore sloping cleanly into the open ocean bay!
-    if (coastDist < 34) {
-      if (coastDist <= 0) {
-        const seaT = smoothstep(0, -28, coastDist);
-        const seaFloor = this.waterLevel - 0.08 - seaT * 2.35 + micro * 0.16;
-        h = Math.min(h, seaFloor);
-      } else {
-        // Gentle golden beach incline from shoreline (coastDist = 0) up to coastal dunes (coastDist = 34)
-        const beachT = smoothstep(0, 34, coastDist);
-        const beachProfile = this.waterLevel - 0.04 + Math.pow(beachT, 0.88) * 2.6 + micro * 0.25;
-        const blend = 1 - smoothstep(10, 34, coastDist);
-        h = h + (beachProfile - h) * blend;
-      }
+    // Merge seamlessly into the deepening open ocean seabed beyond the shoreline
+    if (coastDist <= 0) {
+      const seaT = smoothstep(0, -28, coastDist);
+      const seaFloor = this.waterLevel - 0.06 - seaT * 2.38 + micro * 0.16;
+      h = Math.min(h, seaFloor);
     }
 
     return Math.max(this.waterLevel - 2.6, Math.min(33.5, h));

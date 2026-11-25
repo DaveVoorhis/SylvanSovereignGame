@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_WORLD_CONFIG } from '@core/Config';
 import { EventBus } from '@core/EventBus';
 import { generateRandomSeed } from '@core/SeededRandom';
 import type { ConstructionStage } from '@core/Types';
@@ -16,6 +17,7 @@ import {
   ALL_VILLAGE_ADAPTATIONS,
   VILLAGE_ADAPTATION_CATALOG,
 } from '@simulation/settlements/VillageAdaptation';
+import { TerrainMap } from '@simulation/terrain/TerrainMap';
 import { WorldState } from '@simulation/WorldState';
 
 describe('Forest Procedural God Game — Headless Simulation', () => {
@@ -417,7 +419,7 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     let daylightSteps = 0;
     let nightSteps = 0;
     let mistSteps = 0;
-    const totalSteps = 1100; // ~110s (~4 full day-night cycles across multiple weather rolls)
+    const totalSteps = 2600; // ~260s (~9 full day-night cycles across many weather rolls)
 
     for (let i = 0; i < totalSteps; i++) {
       world.step(0.1);
@@ -733,5 +735,34 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
       ALL_VILLAGE_ADAPTATIONS.map((id) => VILLAGE_ADAPTATION_CATALOG[id].shortLabel),
     );
     expect(shortLabels.size).toBe(6);
+  });
+
+  it('carves the river mouth continuously through the coastal beach so it empties directly into the sea', () => {
+    const seeds = [101, 2026, 4242, 7777, 1337, 271828, 8675309, 99991];
+    for (const seed of seeds) {
+      const terrain = new TerrainMap({ ...DEFAULT_WORLD_CONFIG, seed });
+      let enteredBeachZone = false;
+      let reachedOpenSea = false;
+
+      // Follow the main river centerline downstream from inland all the way into the sea
+      for (let along = -20; along <= terrain.halfSize * 1.4; along += 1.0) {
+        const pt = terrain.getRiverCenterPoint(along);
+        const coastDist = terrain.getCoastSignedDistance(pt.x, pt.z);
+        if (coastDist <= 34 && coastDist >= -10) {
+          enteredBeachZone = true;
+          const h = terrain.getHeightAt(pt.x, pt.z);
+          // Must remain continuously submerged across the beach with zero sandbar dam
+          expect(h).toBeLessThan(terrain.waterLevel - 0.35);
+          expect(terrain.getBiomeAt(pt.x, pt.z)).toBe('water');
+        }
+        if (coastDist < -10) {
+          reachedOpenSea = true;
+          break;
+        }
+      }
+
+      expect(enteredBeachZone).toBe(true);
+      expect(reachedOpenSea).toBe(true);
+    }
   });
 });

@@ -3,15 +3,138 @@ import type { DivineEffectVisual } from '@core/Types';
 import type { WorldState } from '@simulation/WorldState';
 import type { SkyLightingState } from './WaterShader';
 
+export const DIVINE_BEAM_HEIGHT = 920;
+
+export interface DivineBeamVisual {
+  readonly group: THREE.Group;
+  readonly outerMat: THREE.ShaderMaterial;
+  readonly coreMat: THREE.ShaderMaterial;
+  readonly ringMat: THREE.MeshBasicMaterial;
+  readonly ringMesh: THREE.Mesh;
+}
+
+/** Builds the tall dual-layer volumetric heavenly light beam & ground sacred ring. */
+export function createDivineBeamVisual(
+  effect: DivineEffectVisual,
+  groundY: number,
+  outerGeo: THREE.CylinderGeometry,
+  innerGeo: THREE.CylinderGeometry,
+  ringGeo: THREE.RingGeometry,
+): DivineBeamVisual {
+  const group = new THREE.Group();
+  group.position.set(effect.position.x, groundY, effect.position.z);
+
+  const beamColor = new THREE.Color(effect.colorHex);
+  const outerMat = new THREE.ShaderMaterial({
+    vertexShader: DIVINE_BEAM_VERTEX_SHADER,
+    fragmentShader: DIVINE_BEAM_FRAGMENT_SHADER,
+    uniforms: {
+      uColor: { value: beamColor.clone() },
+      uOpacity: { value: 0.0 },
+      uTime: { value: 0.0 },
+      uCoreWeight: { value: 0.0 },
+    },
+    transparent: true,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const outerBeam = new THREE.Mesh(outerGeo, outerMat);
+  outerBeam.position.y = DIVINE_BEAM_HEIGHT * 0.5 - 2.0;
+  outerBeam.frustumCulled = false;
+  outerBeam.renderOrder = 3;
+  group.add(outerBeam);
+
+  const coreMat = new THREE.ShaderMaterial({
+    vertexShader: DIVINE_BEAM_VERTEX_SHADER,
+    fragmentShader: DIVINE_BEAM_FRAGMENT_SHADER,
+    uniforms: {
+      uColor: { value: beamColor.clone() },
+      uOpacity: { value: 0.0 },
+      uTime: { value: 0.0 },
+      uCoreWeight: { value: 1.0 },
+    },
+    transparent: true,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const coreBeam = new THREE.Mesh(innerGeo, coreMat);
+  coreBeam.position.y = DIVINE_BEAM_HEIGHT * 0.5 - 2.0;
+  coreBeam.frustumCulled = false;
+  coreBeam.renderOrder = 3;
+  group.add(coreBeam);
+
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: effect.colorHex,
+    transparent: true,
+    opacity: 0.65,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+  ringMesh.position.y = 0.65;
+  ringMesh.renderOrder = 3;
+  group.add(ringMesh);
+
+  return { group, outerMat, coreMat, ringMat, ringMesh };
+}
+
 interface ActiveBeamMesh {
   readonly id: number;
   readonly group: THREE.Group;
-  readonly columnMat: THREE.MeshBasicMaterial;
+  readonly outerMat: THREE.ShaderMaterial;
+  readonly coreMat: THREE.ShaderMaterial;
   readonly ringMat: THREE.MeshBasicMaterial;
+  readonly ringMesh: THREE.Mesh;
   readonly createdAt: number;
   readonly duration: number;
   readonly maxRadius: number;
 }
+
+const DIVINE_BEAM_VERTEX_SHADER = /* glsl */ `
+  varying vec2 vUv;
+  varying vec3 vWorldNormal;
+  varying vec3 vWorldPos;
+  void main() {
+    vUv = uv;
+    vec4 wp = modelMatrix * vec4(position, 1.0);
+    vWorldPos = wp.xyz;
+    vWorldNormal = normalize(mat3(modelMatrix) * normal);
+    gl_Position = projectionMatrix * viewMatrix * wp;
+  }
+`;
+
+const DIVINE_BEAM_FRAGMENT_SHADER = /* glsl */ `
+  uniform vec3 uColor;
+  uniform float uOpacity;
+  uniform float uTime;
+  uniform float uCoreWeight;
+  varying vec2 vUv;
+  varying vec3 vWorldNormal;
+  varying vec3 vWorldPos;
+
+  void main() {
+    vec3 viewDir = normalize(cameraPosition - vWorldPos);
+    // Soft cylindrical edge falloff so the heavenly beam feels volumetric, never hard-edged
+    float facing = abs(dot(normalize(vWorldNormal), viewDir));
+    float edgeSoft = pow(facing, mix(2.35, 1.35, uCoreWeight));
+
+    // Ethereal vertical light curtains & gentle supernatural shimmer descending from above
+    float ribbon = 0.84 + 0.16 * sin(vUv.x * 25.1327 + uTime * 1.15) * sin(vUv.y * 28.0 - uTime * 2.8);
+    float shimmer = 0.90 + 0.10 * sin(vUv.y * 65.0 + uTime * 4.2);
+
+    // Seamless atmospheric dissolve very high in the sky + radiant bloom where beam meets earth
+    float topFade = 1.0 - smoothstep(0.72, 1.0, vUv.y);
+    float groundBloom = 1.0 + smoothstep(0.06, 0.0, vUv.y) * 0.85;
+    float bottomSoft = smoothstep(0.0, 0.004, vUv.y);
+
+    float alpha = uOpacity * edgeSoft * ribbon * shimmer * topFade * bottomSoft * groundBloom;
+    vec3 col = mix(uColor, vec3(1.0, 0.99, 0.95), uCoreWeight * 0.45 * pow(facing, 2.2));
+    gl_FragColor = vec4(col, clamp(alpha, 0.0, 1.0));
+  }
+`;
 
 const SKY_VERTEX_SHADER = /* glsl */ `
   varying vec3 vWorldDirection;
@@ -88,6 +211,9 @@ export class AtmosphereSystem {
 
   private readonly divineGroup = new THREE.Group();
   private readonly activeBeams: ActiveBeamMesh[] = [];
+  private readonly beamOuterGeo: THREE.CylinderGeometry;
+  private readonly beamInnerGeo: THREE.CylinderGeometry;
+  private readonly beamRingGeo: THREE.RingGeometry;
   private readonly pmremGenerator: THREE.PMREMGenerator;
   private envScene: THREE.Scene;
   private envRenderTarget: THREE.WebGLRenderTarget | null = null;
@@ -220,47 +346,32 @@ export class AtmosphereSystem {
     this.fireflyPoints.frustumCulled = false;
     this.scene.add(this.fireflyPoints);
 
+    // Shared supernatural divine beam geometries stretching high into the heavens
+    this.beamOuterGeo = new THREE.CylinderGeometry(3.8, 5.4, DIVINE_BEAM_HEIGHT, 28, 1, true);
+    this.beamInnerGeo = new THREE.CylinderGeometry(1.5, 2.1, DIVINE_BEAM_HEIGHT, 24, 1, true);
+    this.beamRingGeo = new THREE.RingGeometry(0.85, 1.0, 48);
+    this.beamRingGeo.rotateX(-Math.PI / 2);
+
     this.scene.add(this.divineGroup);
     this.refreshEnvironmentMap();
   }
 
   spawnDivineVisual(effect: DivineEffectVisual, groundY: number): void {
-    const group = new THREE.Group();
-    group.position.set(effect.position.x, groundY, effect.position.z);
-
-    const colGeo = new THREE.CylinderGeometry(1.1, 3.8, 52, 24, 1, true);
-    const columnMat = new THREE.MeshBasicMaterial({
-      color: effect.colorHex,
-      transparent: true,
-      opacity: 0.36,
-      side: THREE.DoubleSide,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    const col = new THREE.Mesh(colGeo, columnMat);
-    col.position.y = 26;
-    group.add(col);
-
-    const ringGeo = new THREE.RingGeometry(0.85, 1.0, 48);
-    ringGeo.rotateX(-Math.PI / 2);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: effect.colorHex,
-      transparent: true,
-      opacity: 0.65,
-      side: THREE.DoubleSide,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    ring.position.y = 0.65;
-    group.add(ring);
-
-    this.divineGroup.add(group);
+    const visual = createDivineBeamVisual(
+      effect,
+      groundY,
+      this.beamOuterGeo,
+      this.beamInnerGeo,
+      this.beamRingGeo,
+    );
+    this.divineGroup.add(visual.group);
     this.activeBeams.push({
       id: effect.id,
-      group,
-      columnMat,
-      ringMat,
+      group: visual.group,
+      outerMat: visual.outerMat,
+      coreMat: visual.coreMat,
+      ringMat: visual.ringMat,
+      ringMesh: visual.ringMesh,
       createdAt: effect.createdAt,
       duration: effect.duration,
       maxRadius: effect.radius,
@@ -391,17 +502,20 @@ export class AtmosphereSystem {
       const pct = age / beam.duration;
       if (pct >= 1) {
         this.divineGroup.remove(beam.group);
-        beam.columnMat.dispose();
+        beam.outerMat.dispose();
+        beam.coreMat.dispose();
         beam.ringMat.dispose();
         this.activeBeams.splice(i, 1);
         continue;
       }
       const fade = Math.sin(pct * Math.PI);
-      beam.columnMat.opacity = fade * 0.34;
+      beam.outerMat.uniforms.uOpacity.value = fade * 0.34;
+      beam.outerMat.uniforms.uTime.value = world.elapsedSeconds;
+      beam.coreMat.uniforms.uOpacity.value = fade * 0.52;
+      beam.coreMat.uniforms.uTime.value = world.elapsedSeconds;
       beam.ringMat.opacity = (1 - pct) * 0.7;
-      const ringMesh = beam.group.children[1];
       const scale = 2 + pct * beam.maxRadius;
-      ringMesh.scale.set(scale, 1, scale);
+      beam.ringMesh.scale.set(scale, 1, scale);
     }
   }
 
@@ -490,6 +604,16 @@ export class AtmosphereSystem {
     this.weatherMat.dispose();
     this.fireflyPoints.geometry.dispose();
     this.fireflyMat.dispose();
+    for (const beam of this.activeBeams) {
+      this.divineGroup.remove(beam.group);
+      beam.outerMat.dispose();
+      beam.coreMat.dispose();
+      beam.ringMat.dispose();
+    }
+    this.activeBeams.length = 0;
+    this.beamOuterGeo.dispose();
+    this.beamInnerGeo.dispose();
+    this.beamRingGeo.dispose();
     this.envRenderTarget?.dispose();
     this.pmremGenerator.dispose();
   }

@@ -114,6 +114,9 @@ export class TerrainRenderer {
     const wetTint = new THREE.Color(0x4a4332);
     const deepBedTint = new THREE.Color(0x2d3326);
     const deepOceanBedTint = new THREE.Color(0x183142);
+    const shallowOceanBedTint = new THREE.Color(0xd6c28e);
+    const shallowRiverBedTint = new THREE.Color(0x7c6f52);
+    const bedDeepTmp = new THREE.Color();
     const wetSandTint = new THREE.Color(0xa68f63);
     const cliffGranite = new THREE.Color(0x737974);
     const cliffSandstone = new THREE.Color(0xb86d3f);
@@ -174,11 +177,10 @@ export class TerrainRenderer {
 
       if (biome === 'water') {
         const bedDepth = THREE.MathUtils.clamp((waterLevel - y) / 1.8, 0, 1);
-        if (coastDist < 4) {
-          c.setHex(0xd6c28e).lerp(deepOceanBedTint, bedDepth);
-        } else {
-          c.setHex(0x7c6f52).lerp(deepBedTint, bedDepth);
-        }
+        const riverBedMix = THREE.MathUtils.smoothstep(coastDist, -4, 16);
+        c.copy(shallowOceanBedTint).lerp(shallowRiverBedTint, riverBedMix);
+        bedDeepTmp.copy(deepOceanBedTint).lerp(deepBedTint, riverBedMix);
+        c.lerp(bedDeepTmp, bedDepth);
       } else if (biome === 'seashore') {
         c.setHex(seashoreHex);
       } else if (biome === 'riverbank') {

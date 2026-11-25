@@ -202,6 +202,24 @@ export interface RealisticWaterSurface {
 }
 
 /**
+ * Matches TerrainRenderer's C1-smooth non-uniform coordinate warp so rivers,
+ * tributaries, ponds, and coastal estuaries stay high-resolution inside the playable
+ * world while the open ocean stretches seamlessly to the distant horizon.
+ */
+function warpWaterCoord(u: number, halfCore: number, horizonExtent: number): number {
+  const coreFrac = 0.68;
+  const sign = u < 0 ? -1 : 1;
+  const a = Math.abs(u);
+  if (a <= coreFrac) {
+    return sign * (a / coreFrac) * halfCore;
+  }
+  const t = (a - coreFrac) / (1 - coreFrac);
+  const linearSlope = (halfCore / coreFrac) * (1 - coreFrac);
+  const extraSpan = Math.max(0, horizonExtent - halfCore - linearSlope);
+  return sign * (halfCore + linearSlope * t + extraSpan * Math.pow(t, 2.35));
+}
+
+/**
  * Builds a terrain-aware high-resolution water surface mesh with per-vertex water depth
  * and river-aligned flow vectors, extending seamlessly beyond the playable valley into
  * the distant misty hills.
@@ -212,17 +230,23 @@ export function createRealisticWaterSurface(
   segments = 160,
   extentMultiplier = 1.0,
 ): RealisticWaterSurface {
-  const half = worldSize * 0.49 * extentMultiplier;
-  const step = (half * 2) / segments;
+  const halfCore = worldSize * 0.56;
+  const half = Math.max(halfCore, worldSize * extentMultiplier);
   const waterLevel = terrain.waterLevel;
+
+  const coords = new Float32Array(segments + 1);
+  for (let i = 0; i <= segments; i++) {
+    const u = -1 + (i / segments) * 2;
+    coords[i] = extentMultiplier > 1.05 ? warpWaterCoord(u, halfCore, half) : u * half;
+  }
 
   // Precompute grid heights to prune dry tiles far from water
   const cols = segments + 1;
   const heights = new Float32Array(cols * cols);
   for (let iz = 0; iz <= segments; iz++) {
-    const z = -half + iz * step;
+    const z = coords[iz];
     for (let ix = 0; ix <= segments; ix++) {
-      const x = -half + ix * step;
+      const x = coords[ix];
       heights[iz * cols + ix] = terrain.getHeightAt(x, z);
     }
   }
@@ -237,8 +261,8 @@ export function createRealisticWaterSurface(
     const key = iz * cols + ix;
     if (vertIndexMap[key] !== -1) return vertIndexMap[key];
 
-    const x = -half + ix * step;
-    const z = -half + iz * step;
+    const x = coords[ix];
+    const z = coords[iz];
     const h = heights[key];
     const depth = waterLevel - h;
 

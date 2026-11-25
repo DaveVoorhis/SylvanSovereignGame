@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { EventBus } from '@core/EventBus';
 import type { BiomeType, ConstructionStage, CreatureRole } from '@core/Types';
+import { createDivineBeamVisual, DIVINE_BEAM_HEIGHT } from '@rendering/AtmosphereSystem';
 import { CreatureRenderer } from '@rendering/CreatureRenderer';
 import { DistanceFocusBlurPass } from '@rendering/DistanceFocusBlurPass';
 import { FloraRenderer } from '@rendering/FloraRenderer';
@@ -608,5 +609,53 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     floraRenderer.dispose();
     terrainRenderer.dispose();
     textures.dispose();
+  });
+
+  it('builds a tall supernatural deity beam extending well above the player view', () => {
+    const outerGeo = new THREE.CylinderGeometry(3.8, 5.4, DIVINE_BEAM_HEIGHT, 28, 1, true);
+    const innerGeo = new THREE.CylinderGeometry(1.5, 2.1, DIVINE_BEAM_HEIGHT, 24, 1, true);
+    const ringGeo = new THREE.RingGeometry(0.85, 1.0, 48);
+    ringGeo.rotateX(-Math.PI / 2);
+
+    const beam = createDivineBeamVisual(
+      {
+        id: 1,
+        type: 'sunlit_blessing',
+        position: { x: 12, z: -8 },
+        radius: 18,
+        colorHex: 0xffe07d,
+        createdAt: 0,
+        duration: 6,
+      },
+      4.5,
+      outerGeo,
+      innerGeo,
+      ringGeo,
+    );
+
+    expect(DIVINE_BEAM_HEIGHT).toBeGreaterThanOrEqual(800);
+    // Outer aura + radiant inner core + expanding sacred ground ring
+    expect(beam.group.children.length).toBe(3);
+
+    const outerMesh = beam.group.children[0] as THREE.Mesh;
+    const coreMesh = beam.group.children[1] as THREE.Mesh;
+    expect(outerMesh.frustumCulled).toBe(false);
+    expect(coreMesh.frustumCulled).toBe(false);
+
+    // Beam top reaches far above even maximum overview camera altitude
+    outerGeo.computeBoundingBox();
+    const topWorldY = beam.group.position.y + outerMesh.position.y + outerGeo.boundingBox!.max.y;
+    expect(topWorldY).toBeGreaterThan(850);
+
+    // Nearly vertical supernatural column rather than a narrow pointed cone
+    expect(outerGeo.parameters.radiusTop / outerGeo.parameters.radiusBottom).toBeGreaterThan(0.65);
+    expect(innerGeo.parameters.radiusTop / innerGeo.parameters.radiusBottom).toBeGreaterThan(0.65);
+
+    beam.outerMat.dispose();
+    beam.coreMat.dispose();
+    beam.ringMat.dispose();
+    outerGeo.dispose();
+    innerGeo.dispose();
+    ringGeo.dispose();
   });
 });
