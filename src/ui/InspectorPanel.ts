@@ -1,6 +1,7 @@
 import type { SelectionTarget } from '@core/Types';
 import { BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
 import { getBuildingStage, getConstructionStageLabel } from '@simulation/settlements/Settlement';
+import { getBiomeDisplayName } from '@simulation/settlements/VillageAdaptation';
 import type { WorldState } from '@simulation/WorldState';
 
 export interface InspectorCallbacks {
@@ -41,6 +42,7 @@ export class InspectorPanel {
         return;
       }
       const home = world.getSettlement(c.settlementId);
+      const homeProfile = home?.getAdaptationProfile();
       const statusText = c.alive ? c.activity.replace('_', ' ') : 'fallen';
       const isInThisPov = povCreatureId === c.id;
 
@@ -50,6 +52,11 @@ export class InspectorPanel {
           <button class="close-btn" data-action="close">✕</button>
         </div>
         <div class="inspector-sub">${c.def.displayName} ${c.role} · ${home?.name ?? 'Wanderer'}</div>
+        ${
+          homeProfile
+            ? `<div class="adaptation-badge">${homeProfile.icon} ${homeProfile.shortLabel} · ${homeProfile.clothingSummary}</div>`
+            : ''
+        }
         <div class="inspector-lore">${c.def.lore}</div>
         <div class="inspector-thought">💭 “${c.thought}”</div>
         <div class="kv-grid">
@@ -101,6 +108,8 @@ export class InspectorPanel {
       }
       const pop = world.getSettlementPopulation(s.id);
       const cap = s.getHousingCapacity();
+      const profile = s.getAdaptationProfile();
+      const biomeLabel = getBiomeDisplayName(s.biome);
 
       const diploRows = world.settlements
         .filter((other) => other.id !== s.id)
@@ -112,10 +121,16 @@ export class InspectorPanel {
 
       this.contentEl.innerHTML = `
         <div class="panel-header">
-          <span>🏰 ${s.name}</span>
+          <span>${profile.icon} ${s.name}</span>
           <button class="close-btn" data-action="close">✕</button>
         </div>
-        <div class="inspector-sub">Woodland ${s.tier.toUpperCase()} · Prosperity ${s.prosperity}</div>
+        <div class="inspector-sub">${profile.title} (${s.tier}) · ${biomeLabel}</div>
+        <div class="adaptation-card">
+          <div class="adaptation-summary">${profile.summary}</div>
+          <div class="adaptation-row"><strong>Architecture:</strong> ${profile.architectureSummary}</div>
+          <div class="adaptation-row"><strong>Attire:</strong> ${profile.clothingSummary}</div>
+          <div class="adaptation-row"><strong>Economy:</strong> ${profile.economySummary}</div>
+        </div>
         <div class="kv-grid">
           <div>Population</div><div>${pop} / ${cap}</div>
           <div>Buildings</div><div>${s.getCompletedCount()} built (${s.buildings.length} total)</div>
@@ -158,6 +173,7 @@ export class InspectorPanel {
       }
       const bp = BUILDING_CATALOG[foundBuilding.type];
       const stage = getBuildingStage(foundBuilding);
+      const ownerProfile = owner.getAdaptationProfile();
       const statusLabel = foundBuilding.disassembling
         ? `Disassembling for ${
             foundBuilding.replacementType
@@ -173,6 +189,7 @@ export class InspectorPanel {
           <button class="close-btn" data-action="close">✕</button>
         </div>
         <div class="inspector-sub">${owner.name} · ${statusLabel}</div>
+        <div class="adaptation-badge">${ownerProfile.icon} ${ownerProfile.title} style (${getBiomeDisplayName(owner.biome)})</div>
         <div class="inspector-lore">${bp.description}</div>
         <div class="kv-grid">
           <div>Housing</div><div>+${bp.housingCapacity}</div>

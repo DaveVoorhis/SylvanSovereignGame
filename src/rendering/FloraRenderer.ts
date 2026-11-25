@@ -470,6 +470,22 @@ export class FloraRenderer {
         dummy.updateMatrix();
         rocks.setMatrixAt(i * 2, dummy.matrix);
 
+        const rockBiome = world.terrain.getBiomeAt(r.x, r.z);
+        if (rockBiome === 'desert') {
+          tint.setHex(0xd48e58);
+        } else if (rockBiome === 'seashore') {
+          tint.setHex(0xc9c4b6);
+        } else if (rockBiome === 'alpine_crag') {
+          tint.setHex(0xd6dfe3);
+        } else if (rockBiome === 'rocky_ridge') {
+          tint.setHex(0xb1b8b4);
+        } else if (rockBiome === 'moss_hollow' || rockBiome === 'deep_woods') {
+          tint.setHex(0x8fa387);
+        } else {
+          tint.setHex(0xc4c7be);
+        }
+        rocks.setColorAt(i * 2, tint);
+
         const px = r.x + Math.cos(r.rotation) * r.scale * 0.95;
         const pz = r.z + Math.sin(r.rotation) * r.scale * 0.95;
         const py = world.terrain.getHeightAt(px, pz);
@@ -478,6 +494,7 @@ export class FloraRenderer {
         dummy.scale.set(r.scale * 0.48, r.scale * 0.34, r.scale * 0.44);
         dummy.updateMatrix();
         rocks.setMatrixAt(i * 2 + 1, dummy.matrix);
+        rocks.setColorAt(i * 2 + 1, tint);
       });
       this.group.add(rocks);
     }
@@ -559,7 +576,7 @@ export class FloraRenderer {
     // 6. Whimsical Meadow Wildflower Clusters (circular valley spread)
     const circularRadius = world.terrain.halfSize + 4;
     {
-      const flowerCount = 280;
+      const flowerCount = 560;
       const { stems, petals, centers } = createWildflowerClusterGeo();
       const fStemMat = new THREE.MeshStandardMaterial({ color: 0x4b7d34, roughness: 0.85 });
       const fPetalMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 });
@@ -584,7 +601,15 @@ export class FloraRenderer {
         const fy = world.terrain.getHeightAt(fx, fz);
         if (fy < world.terrain.waterLevel + 0.35 || fy > 5.4) continue;
         const biome = world.terrain.getBiomeAt(fx, fz);
-        if (biome === 'rocky_ridge') continue;
+        if (
+          biome === 'water' ||
+          biome === 'desert' ||
+          biome === 'seashore' ||
+          biome === 'rocky_ridge' ||
+          biome === 'alpine_crag'
+        ) {
+          continue;
+        }
 
         dummy.position.set(fx, fy - 0.02, fz);
         dummy.rotation.set(0, rng.range(0, Math.PI * 2), 0);
@@ -618,20 +643,22 @@ export class FloraRenderer {
       });
       this.disposables.push(padGeo, lotusGeo, padMat, lotusMat);
 
-      const maxPads = 56;
+      const maxPads = 110;
       const padInst = new THREE.InstancedMesh(padGeo, padMat, maxPads);
       const lotusInst = new THREE.InstancedMesh(lotusGeo, lotusMat, maxPads);
       padInst.receiveShadow = true;
 
       let padsPlaced = 0;
       let lotusesPlaced = 0;
-      for (let tries = 0; tries < 900 && padsPlaced < maxPads; tries++) {
+      for (let tries = 0; tries < 1800 && padsPlaced < maxPads; tries++) {
         const a = rng.range(0, Math.PI * 2);
         const r = Math.sqrt(rng.next()) * (circularRadius * 0.85);
         const lx = Math.cos(a) * r;
         const lz = Math.sin(a) * r;
         const ly = world.terrain.getHeightAt(lx, lz);
         if (ly > world.terrain.waterLevel - 0.22) continue;
+        // Keep lily pads in calm freshwater ponds & rivers, never in ocean surf
+        if (world.terrain.getCoastSignedDistance(lx, lz) < 12) continue;
 
         const rot = rng.range(0, Math.PI * 2);
         const scale = rng.range(0.68, 1.38);
@@ -678,17 +705,19 @@ export class FloraRenderer {
       const cattailMat = new THREE.MeshStandardMaterial({ color: 0x5c361e, roughness: 0.92 });
       this.disposables.push(reedGeo, headGeo, reedMat, cattailMat);
 
-      const maxReeds = 85;
+      const maxReeds = 175;
       const reedInst = new THREE.InstancedMesh(reedGeo, reedMat, maxReeds);
       const cattailInst = new THREE.InstancedMesh(headGeo, cattailMat, maxReeds);
       let reedsPlaced = 0;
-      for (let tries = 0; tries < 1200 && reedsPlaced < maxReeds; tries++) {
+      for (let tries = 0; tries < 2600 && reedsPlaced < maxReeds; tries++) {
         const a = rng.range(0, Math.PI * 2);
         const r = Math.sqrt(rng.next()) * circularRadius;
         const rx = Math.cos(a) * r;
         const rz = Math.sin(a) * r;
         const ry = world.terrain.getHeightAt(rx, rz);
         if (ry < world.terrain.waterLevel - 0.12 || ry > world.terrain.waterLevel + 0.36) continue;
+        // Keep cattails along freshwater riverbanks & ponds rather than salty ocean beach
+        if (world.terrain.getCoastSignedDistance(rx, rz) < 12) continue;
         dummy.position.set(rx, ry - 0.04, rz);
         dummy.rotation.set(0, rng.range(0, Math.PI * 2), 0);
         dummy.scale.setScalar(rng.range(0.75, 1.35));
@@ -718,13 +747,33 @@ export class FloraRenderer {
         const gx = Math.cos(a) * r;
         const gz = Math.sin(a) * r;
         const gy = world.terrain.getHeightAt(gx, gz);
-        if (gy < world.terrain.waterLevel + 0.25 || gy > 6.8) continue;
+        if (gy < world.terrain.waterLevel + 0.25 || gy > 8.4) continue;
+        const gBiome = world.terrain.getBiomeAt(gx, gz);
+        if (gBiome === 'alpine_crag' || gBiome === 'water') continue;
+        if (gBiome === 'desert' && rng.chance(0.95)) continue;
+        if (gBiome === 'seashore' && rng.chance(0.84)) continue;
         dummy.position.set(gx, gy - 0.04, gz);
         dummy.rotation.set(rng.range(-0.12, 0.12), rng.range(0, Math.PI * 2), rng.range(-0.12, 0.12));
         const s = rng.range(0.72, 1.5);
         dummy.scale.set(s, s * rng.range(0.85, 1.35), s);
         dummy.updateMatrix();
-        grass.setMatrixAt(placed++, dummy.matrix);
+        grass.setMatrixAt(placed, dummy.matrix);
+
+        if (gBiome === 'prairie') {
+          tint.setHex(0xdcc86b);
+        } else if (gBiome === 'desert' || gBiome === 'seashore') {
+          tint.setHex(0xd9bf7c);
+        } else if (gBiome === 'moss_hollow') {
+          tint.setHex(0x74b56a);
+        } else if (gBiome === 'meadow') {
+          tint.setHex(0xc2de7c);
+        } else if (gBiome === 'rocky_ridge') {
+          tint.setHex(0x9eab88);
+        } else {
+          tint.setHex(0x9bc27c);
+        }
+        grass.setColorAt(placed, tint);
+        placed++;
       }
       grass.count = placed;
       this.group.add(grass);
@@ -769,9 +818,9 @@ export class FloraRenderer {
     this.disposables.push(distantPineGeo, distantOakGeo, trunkGeo, trunkMat);
 
     const innerR = this.world.terrain.halfSize + 4;
-    const outerR = this.world.terrain.halfSize * 4.3; // ~344m
-    const pineTarget = 460;
-    const oakTarget = 320;
+    const outerR = this.world.terrain.halfSize * 3.3; // ~528m
+    const pineTarget = 680;
+    const oakTarget = 460;
 
     const pineMesh = new THREE.InstancedMesh(distantPineGeo, this.distantPineMat, pineTarget);
     const oakMesh = new THREE.InstancedMesh(distantOakGeo, this.distantBroadleafMat, oakTarget);
@@ -784,7 +833,7 @@ export class FloraRenderer {
     let oakCount = 0;
     let trunkCount = 0;
 
-    for (let tries = 0; tries < 2400 && (pineCount < pineTarget || oakCount < oakTarget); tries++) {
+    for (let tries = 0; tries < 3600 && (pineCount < pineTarget || oakCount < oakTarget); tries++) {
       const a = rng.range(0, Math.PI * 2);
       // Area-weighted distribution with extra density in the mid-distance transition band
       const u = Math.pow(rng.next(), 0.78);
@@ -792,7 +841,10 @@ export class FloraRenderer {
       const x = Math.cos(a) * r;
       const z = Math.sin(a) * r;
       const y = this.world.terrain.getHeightAt(x, z);
-      if (y < this.world.terrain.waterLevel + 0.45) continue;
+      if (y < this.world.terrain.waterLevel + 0.45 || y > 18.5) continue;
+      // Keep open ocean sea and distant desert dunes free of horizon forests
+      if (this.world.terrain.getCoastSignedDistance(x, z) < 18) continue;
+      if (this.world.terrain.getBiomeAt(x, z) === 'desert') continue;
 
       const isPine = pineCount < pineTarget && (oakCount >= oakTarget || rng.chance(0.6));
       const distScale = 1.0 + u * 0.85;

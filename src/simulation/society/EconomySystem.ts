@@ -24,7 +24,7 @@ const EXPORT_RESERVE: Record<ResourceType, number> = {
 
 /**
  * Coordinates woodland barter, inter-settlement merchant caravans,
- * price valuation, and diplomatic goodwill from trade.
+ * cross-biome trade complementarity, price valuation, and diplomatic goodwill.
  */
 export class EconomySystem {
   readonly activeRoutes: TradeRouteVisual[] = [];
@@ -37,18 +37,28 @@ export class EconomySystem {
     });
     if (candidates.length === 0) return null;
 
-    // Prefer settlements with markets, guildhalls, and friendly ties
+    const originProfile = origin.getAdaptationProfile();
+
+    // Prefer complementary biome trading partners, markets, guildhalls, and friendly ties
     return world.rng.weightedPick(
       candidates.map((c) => {
+        const destProfile = c.getAdaptationProfile();
         const marketBonus =
           1 + c.getCompletedCount('market_stall') * 0.8 + c.getCompletedCount('guildhall') * 0.6;
         const stanceBonus = world.diplomacy.getScore(origin.id, c.id) > 15 ? 1.5 : 1.0;
-        return { item: c, weight: marketBonus * stanceBonus };
+        const biomeSynergy = c.adaptation !== origin.adaptation ? 1.55 : 0.9;
+        const complementaryNeed = originProfile.exportSpecialties.some((g) =>
+          destProfile.importNeeds.includes(g),
+        )
+          ? 1.35
+          : 1.0;
+        return { item: c, weight: marketBonus * stanceBonus * biomeSynergy * complementaryNeed };
       }),
     );
   }
 
   pickExportGood(origin: Settlement): ResourceType | null {
+    const profile = origin.getAdaptationProfile();
     const priority: ResourceType[] = ['crafts', 'berries', 'acorns', 'herbs', 'timber', 'stone'];
     let best: ResourceType | null = null;
     let bestScore = 0;
@@ -57,7 +67,8 @@ export class EconomySystem {
       const qty = origin.stockpile[res];
       const surplus = qty - EXPORT_RESERVE[res];
       if (surplus < 2) continue;
-      const score = surplus * RESOURCE_BASE_VALUE[res];
+      const specialtyMult = profile.exportSpecialties.includes(res) ? 1.4 : 1.0;
+      const score = surplus * RESOURCE_BASE_VALUE[res] * specialtyMult;
       if (score > bestScore) {
         bestScore = score;
         best = res;
@@ -76,8 +87,14 @@ export class EconomySystem {
     const amount = merchant.tradeCargoAmount;
     if (!good || amount <= 0) return;
 
+    const originProfile = origin.getAdaptationProfile();
+    const destProfile = dest.getAdaptationProfile();
+    const needBonus = destProfile.importNeeds.includes(good) ? 1.25 : 1.0;
+
     const unitPrice =
       RESOURCE_BASE_VALUE[good] *
+      originProfile.tradeBonusMultiplier *
+      needBonus *
       (1 + dest.getCompletedCount('market_stall') * 0.15 + dest.getCompletedCount('guildhall') * 0.1);
     const totalValue = Math.round(unitPrice * amount);
 
@@ -89,7 +106,7 @@ export class EconomySystem {
     merchant.wealth += Math.round(totalValue * 0.3);
     merchant.mood = Math.min(100, merchant.mood + 10);
 
-    // Destination shares a surplus good back to origin
+    // Destination shares a surplus regional specialty good back to origin
     const returnGood = this.pickExportGood(dest);
     if (returnGood && returnGood !== good && dest.stockpile[returnGood] >= EXPORT_RESERVE[returnGood]) {
       dest.stockpile[returnGood] -= 3;
@@ -105,8 +122,8 @@ export class EconomySystem {
         world.day,
         world.season,
         'trade',
-        'Caravan Trade Completed',
-        `${merchant.name} (${merchant.def.displayName}) traded ${amount} ${good} from ${origin.name} to ${dest.name} for ${totalValue} acorns-coin.`,
+        'Cross-Biome Caravan Trade',
+        `${merchant.name} (${merchant.def.displayName}) traded ${amount} ${good} from ${origin.name} (${originProfile.shortLabel}) to ${dest.name} (${destProfile.shortLabel}) for ${totalValue} acorns-coin.`,
         dest.center,
       );
     }

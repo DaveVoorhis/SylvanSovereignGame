@@ -1,13 +1,19 @@
 import {
   createEmptyResources,
+  type BiomeType,
   type BuildingType,
   type ConstructionStage,
   type ResourceBundle,
   type SettlementTier,
   type SpeciesId,
   type Vec2,
+  type VillageAdaptationId,
 } from '@core/Types';
 import { BUILDING_CATALOG } from './BuildingCatalog';
+import {
+  VILLAGE_ADAPTATION_CATALOG,
+  type VillageAdaptationProfile,
+} from './VillageAdaptation';
 
 export interface BuildingInstance {
   readonly id: string;
@@ -66,6 +72,8 @@ export class Settlement {
   readonly bannerColor: number;
   readonly center: Vec2;
   readonly groundY: number;
+  readonly biome: BiomeType;
+  readonly adaptation: VillageAdaptationId;
   readonly foundingSpecies: SpeciesId[];
   readonly stockpile: ResourceBundle = createEmptyResources();
   readonly buildings: BuildingInstance[] = [];
@@ -85,6 +93,8 @@ export class Settlement {
     bannerColor: number;
     center: Vec2;
     groundY: number;
+    biome?: BiomeType;
+    adaptation?: VillageAdaptationId;
     foundingSpecies: SpeciesId[];
   }) {
     this.id = params.id;
@@ -92,15 +102,39 @@ export class Settlement {
     this.bannerColor = params.bannerColor;
     this.center = params.center;
     this.groundY = params.groundY;
+    this.biome = params.biome ?? 'deep_woods';
+    this.adaptation = params.adaptation ?? 'forest_canopy';
     this.foundingSpecies = params.foundingSpecies;
 
-    // Seed initial supplies so early building & trading begin quickly
+    // Seed initial supplies so early building & trading begin quickly, with regional flavor
     this.stockpile.timber = 30;
     this.stockpile.berries = 24;
     this.stockpile.acorns = 22;
     this.stockpile.stone = 16;
     this.stockpile.herbs = 10;
     this.stockpile.crafts = 6;
+
+    if (this.adaptation === 'mountain_stone') {
+      this.stockpile.stone += 10;
+    } else if (this.adaptation === 'riverside_stilts') {
+      this.stockpile.herbs += 8;
+      this.stockpile.berries += 6;
+    } else if (this.adaptation === 'coastal_harbor') {
+      this.stockpile.herbs += 6;
+      this.stockpile.crafts += 5;
+    } else if (this.adaptation === 'prairie_pastoral') {
+      this.stockpile.berries += 10;
+      this.stockpile.acorns += 10;
+    } else if (this.adaptation === 'forest_canopy') {
+      this.stockpile.timber += 10;
+    } else if (this.adaptation === 'desert_oasis') {
+      this.stockpile.crafts += 4;
+      this.stockpile.stone += 6;
+    }
+  }
+
+  getAdaptationProfile(): VillageAdaptationProfile {
+    return VILLAGE_ADAPTATION_CATALOG[this.adaptation];
   }
 
   getHousingCapacity(): number {

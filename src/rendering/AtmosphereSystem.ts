@@ -96,6 +96,7 @@ export class AtmosphereSystem {
   private currentDaylight = 1.0;
   private currentWindStrength = 0.25;
   private currentIsWinter = false;
+  private readonly shadowTexelStep: number;
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -103,7 +104,7 @@ export class AtmosphereSystem {
     shadowMapSize: number,
     softParticleTex?: THREE.Texture,
   ) {
-    this.fog = new THREE.FogExp2(0xc4dac9, 0.002);
+    this.fog = new THREE.FogExp2(0xc4dac9, 0.00125);
     this.scene.fog = this.fog;
 
     // Infinite-horizon Procedural Sky Dome (tracks camera XZ each frame)
@@ -115,7 +116,7 @@ export class AtmosphereSystem {
       uStarIntensity: { value: 0 },
     };
 
-    const skyGeo = new THREE.SphereGeometry(720, 32, 20);
+    const skyGeo = new THREE.SphereGeometry(1450, 32, 20);
     const skyMat = new THREE.ShaderMaterial({
       vertexShader: SKY_VERTEX_SHADER,
       fragmentShader: SKY_FRAGMENT_SHADER,
@@ -142,8 +143,9 @@ export class AtmosphereSystem {
     this.sunLight.castShadow = true;
     this.sunLight.shadow.mapSize.set(shadowMapSize, shadowMapSize);
     this.sunLight.shadow.camera.near = 10;
-    this.sunLight.shadow.camera.far = 260;
-    const d = 96;
+    this.sunLight.shadow.camera.far = 360;
+    const d = 120;
+    this.shadowTexelStep = (d * 2) / Math.max(256, shadowMapSize);
     this.sunLight.shadow.camera.left = -d;
     this.sunLight.shadow.camera.right = d;
     this.sunLight.shadow.camera.top = d;
@@ -182,6 +184,7 @@ export class AtmosphereSystem {
       depthWrite: false,
     });
     this.weatherPoints = new THREE.Points(weatherGeo, this.weatherMat);
+    this.weatherPoints.frustumCulled = false;
     this.scene.add(this.weatherPoints);
 
     // Soft glowing golden fireflies hovering above moss and water
@@ -214,6 +217,7 @@ export class AtmosphereSystem {
       depthWrite: false,
     });
     this.fireflyPoints = new THREE.Points(fireflyGeo, this.fireflyMat);
+    this.fireflyPoints.frustumCulled = false;
     this.scene.add(this.fireflyPoints);
 
     this.scene.add(this.divineGroup);
@@ -263,11 +267,18 @@ export class AtmosphereSystem {
     });
   }
 
-  update(world: WorldState, dt: number, camera?: THREE.Camera): void {
+  update(world: WorldState, dt: number, camera?: THREE.Camera, focusTarget?: THREE.Vector3): void {
+    let focusX = 0;
+    let focusZ = 0;
     if (camera) {
       // Keep the sky dome centered on the viewer so the sky sits mathematically at infinity
       this.skyMesh.position.set(camera.position.x, 0, camera.position.z);
+      focusX = focusTarget ? focusTarget.x : camera.position.x;
+      focusZ = focusTarget ? focusTarget.z : camera.position.z;
     }
+    // Keep ambient weather particles & fireflies centered on the observer's region across the larger world
+    this.weatherPoints.position.set(focusX, 0, focusZ);
+    this.fireflyPoints.position.set(focusX, 0, focusZ);
 
     // 1. Sun & Moon orbit
     const angle = (world.timeOfDay - 0.25) * Math.PI * 2;
@@ -279,7 +290,12 @@ export class AtmosphereSystem {
     const goldenHour = THREE.MathUtils.clamp(1 - Math.abs(sunY - 0.1) * 4.5, 0, 1);
 
     const lightDir = new THREE.Vector3(sunX, Math.max(0.18, Math.abs(sunY)), sunZ).normalize();
-    this.sunLight.position.copy(lightDir).multiplyScalar(115);
+    // Anchor shadow frustum to camera focus snapped to shadow texel increments (crisp shadows everywhere!)
+    const snap = this.shadowTexelStep * 4;
+    const shadowFocusX = Math.round(focusX / snap) * snap;
+    const shadowFocusZ = Math.round(focusZ / snap) * snap;
+    this.sunLight.target.position.set(shadowFocusX, 0, shadowFocusZ);
+    this.sunLight.position.set(shadowFocusX, 0, shadowFocusZ).addScaledVector(lightDir, 145);
     this.lightDirState.copy(lightDir);
     this.currentDaylight = daylight;
     this.currentIsWinter = world.season === 'winter';
@@ -334,7 +350,7 @@ export class AtmosphereSystem {
           ? 0.005
           : world.weather === 'rain'
             ? 0.0038
-            : 0.002;
+            : 0.00125;
     this.fog.density += (baseFog - this.fog.density) * Math.min(1, dt * 1.5);
 
     // Periodically refresh PMREM environment map for accurate sky reflections on water/stone

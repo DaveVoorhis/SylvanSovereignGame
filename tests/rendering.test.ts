@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { EventBus } from '@core/EventBus';
-import type { ConstructionStage, CreatureRole } from '@core/Types';
+import type { BiomeType, ConstructionStage, CreatureRole } from '@core/Types';
 import { CreatureRenderer } from '@rendering/CreatureRenderer';
 import { DistanceFocusBlurPass } from '@rendering/DistanceFocusBlurPass';
+import { FloraRenderer } from '@rendering/FloraRenderer';
 import {
   HearthFire,
   createChimneySmokeGeometry,
@@ -31,8 +32,11 @@ import {
 } from '@rendering/GeometryHelpers';
 import type { PbrTextureSet, TextureLibrary } from '@rendering/ProceduralTextures';
 import { SettlementRenderer } from '@rendering/SettlementRenderer';
+import { TerrainRenderer } from '@rendering/TerrainRenderer';
 import { createRealisticWaterSurface } from '@rendering/WaterShader';
 import { Creature } from '@simulation/creatures/Creature';
+import { Settlement } from '@simulation/settlements/Settlement';
+import { ALL_VILLAGE_ADAPTATIONS } from '@simulation/settlements/VillageAdaptation';
 import { ALL_SPECIES_IDS } from '@simulation/creatures/SpeciesCatalog';
 import { ALL_BUILDING_TYPES } from '@simulation/settlements/BuildingCatalog';
 import { WorldState } from '@simulation/WorldState';
@@ -490,6 +494,119 @@ describe('High-Resolution Whimsical Procedural Models', () => {
 
     creatureRenderer.dispose();
     settlementRenderer.dispose();
+    textures.dispose();
+  });
+
+  it('renders all six environmental village adaptations, adapted creature attire, and expanded terrain/flora cleanly', () => {
+    const world = new WorldState(new EventBus(), { seed: 314159, initialSettlements: 1 });
+    const adaptationBiomes: Record<(typeof ALL_VILLAGE_ADAPTATIONS)[number], BiomeType> = {
+      forest_canopy: 'deep_woods',
+      coastal_harbor: 'seashore',
+      desert_oasis: 'desert',
+      prairie_pastoral: 'prairie',
+      mountain_stone: 'rocky_ridge',
+      riverside_stilts: 'riverbank',
+    };
+
+    // Ensure all 6 environmental adaptations are represented with buildings and inhabitants
+    world.settlements.length = 0;
+    world.creatures.length = 0;
+    ALL_VILLAGE_ADAPTATIONS.forEach((adaptation, idx) => {
+      const cx = -100 + idx * 40;
+      const cz = 10 * ((idx % 2) * 2 - 1);
+      const gy = world.terrain.getHeightAt(cx, cz);
+      const settlement = new Settlement({
+        id: `adapt_test_${adaptation}`,
+        name: `Test ${adaptation}`,
+        bannerColor: 0x8a6d4b + idx * 0x101010,
+        center: { x: cx, z: cz },
+        groundY: gy,
+        biome: adaptationBiomes[adaptation],
+        adaptation,
+        foundingSpecies: ['fox', 'frog', 'rabbit'],
+      });
+      settlement.buildings.push(
+        {
+          id: `${settlement.id}_cottage`,
+          settlementId: settlement.id,
+          type: 'burrow_cottage',
+          position: { x: cx + 6, z: cz },
+          groundY: gy,
+          rotation: 0.2,
+          progress: 100,
+          completed: true,
+        },
+        {
+          id: `${settlement.id}_hall`,
+          settlementId: settlement.id,
+          type: 'timber_house',
+          position: { x: cx - 6, z: cz + 2 },
+          groundY: gy,
+          rotation: 1.1,
+          progress: 100,
+          completed: true,
+        },
+      );
+      world.settlements.push(settlement);
+
+      const villager = new Creature({
+        id: `villager_${adaptation}`,
+        name: `Villager ${idx}`,
+        species: idx % 2 === 0 ? 'fox' : 'frog',
+        role: 'builder',
+        settlementId: settlement.id,
+        x: cx + 2,
+        y: gy,
+        z: cz + 2,
+        personality: {
+          friendliness: 0.6,
+          ambition: 0.7,
+          bravery: 0.5,
+          piety: 0.5,
+          curiosity: 0.6,
+        },
+        animPhase: idx * 0.5,
+      });
+      world.creatures.push(villager);
+    });
+
+    const scene = new THREE.Scene();
+    const textures = createStubTextureLibrary();
+    const terrainRenderer = new TerrainRenderer(scene, world, textures);
+    const floraRenderer = new FloraRenderer(scene, world, textures);
+    const settlementRenderer = new SettlementRenderer(scene, world, textures);
+    const creatureRenderer = new CreatureRenderer(scene, world, textures);
+
+    terrainRenderer.update(0.05);
+    floraRenderer.update(0.05);
+    settlementRenderer.update(0.05);
+    creatureRenderer.update(0.05, null);
+
+    // Verify live attire adaptation when an emigrant transfers to a village with a different adaptation
+    world.creatures[0].settlementId = world.settlements[1].id;
+    creatureRenderer.update(0.05, null);
+
+    let totalMeshes = 0;
+    scene.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        totalMeshes++;
+        const pos = obj.geometry.getAttribute('position');
+        expect(pos).toBeDefined();
+        expect(pos.count).toBeGreaterThan(0);
+        for (let i = 0; i < Math.min(pos.count, 16); i++) {
+          expect(Number.isFinite(pos.getX(i))).toBe(true);
+          expect(Number.isFinite(pos.getY(i))).toBe(true);
+          expect(Number.isFinite(pos.getZ(i))).toBe(true);
+        }
+      }
+    });
+
+    expect(totalMeshes).toBeGreaterThan(150);
+
+    creatureRenderer.dispose();
+    settlementRenderer.dispose();
+    floraRenderer.dispose();
+    terrainRenderer.dispose();
     textures.dispose();
   });
 });

@@ -16,10 +16,22 @@ export type WeatherType = 'clear' | 'sunbeams' | 'mist' | 'rain' | 'storm' | 'sn
 export type BiomeType =
   | 'deep_woods'
   | 'meadow'
+  | 'prairie'
+  | 'desert'
+  | 'seashore'
   | 'riverbank'
   | 'rocky_ridge'
   | 'moss_hollow'
+  | 'alpine_crag'
   | 'water';
+
+export type VillageAdaptationId =
+  | 'forest_canopy'
+  | 'coastal_harbor'
+  | 'desert_oasis'
+  | 'prairie_pastoral'
+  | 'mountain_stone'
+  | 'riverside_stilts';
 
 export type ResourceType = 'timber' | 'berries' | 'acorns' | 'stone' | 'herbs' | 'crafts';
 

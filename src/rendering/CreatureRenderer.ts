@@ -4,8 +4,10 @@ import type {
   ConstructionStage,
   SelectionTarget,
   SpeciesId,
+  VillageAdaptationId,
 } from '@core/Types';
 import type { Creature } from '@simulation/creatures/Creature';
+import { VILLAGE_ADAPTATION_CATALOG } from '@simulation/settlements/VillageAdaptation';
 import type { WorldState } from '@simulation/WorldState';
 import {
   createOrganicPuffGeo,
@@ -41,6 +43,7 @@ interface CreatureRig {
   readonly baseRightEarZ: number;
   readonly baseTailX: number;
   workChipCooldown: number;
+  readonly adaptation: VillageAdaptationId;
 }
 
 interface SparkVisual {
@@ -91,6 +94,9 @@ interface SharedGeometries {
   readonly acornHat: THREE.BufferGeometry;
   readonly selectionRing: THREE.BufferGeometry;
   readonly sparkStar: THREE.BufferGeometry;
+  readonly reedHat: THREE.BufferGeometry;
+  readonly strawHat: THREE.BufferGeometry;
+  readonly furCollar: THREE.BufferGeometry;
 }
 
 function hashString(str: string): number {
@@ -223,6 +229,28 @@ function buildAcornHatGeo(): THREE.BufferGeometry {
   return mergePartGeometries(parts, false);
 }
 
+function buildReedHatGeo(): THREE.BufferGeometry {
+  const pts = [
+    new THREE.Vector2(0.42, -0.02),
+    new THREE.Vector2(0.32, 0.05),
+    new THREE.Vector2(0.18, 0.14),
+    new THREE.Vector2(0.06, 0.2),
+    new THREE.Vector2(0.0, 0.22),
+  ];
+  return new THREE.LatheGeometry(pts, 20);
+}
+
+function buildStrawHatGeo(): THREE.BufferGeometry {
+  const pts = [
+    new THREE.Vector2(0.4, 0.0),
+    new THREE.Vector2(0.27, 0.03),
+    new THREE.Vector2(0.24, 0.14),
+    new THREE.Vector2(0.16, 0.17),
+    new THREE.Vector2(0.0, 0.175),
+  ];
+  return new THREE.LatheGeometry(pts, 20);
+}
+
 function buildWebbedFootGeo(): THREE.BufferGeometry {
   const shape = new THREE.Shape();
   shape.moveTo(0, 0);
@@ -346,6 +374,9 @@ function createSharedGeometries(): SharedGeometries {
   const selectionRing = new THREE.RingGeometry(0.56, 0.72, 36);
   selectionRing.rotateX(-Math.PI / 2);
 
+  const furCollar = new THREE.TorusGeometry(0.235, 0.078, 10, 22);
+  furCollar.rotateX(Math.PI / 2);
+
   return {
     tunic,
     mantle,
@@ -376,6 +407,9 @@ function createSharedGeometries(): SharedGeometries {
     acornHat: buildAcornHatGeo(),
     selectionRing,
     sparkStar: new THREE.OctahedronGeometry(0.24, 0),
+    reedHat: buildReedHatGeo(),
+    strawHat: buildStrawHatGeo(),
+    furCollar,
   };
 }
 
@@ -391,6 +425,10 @@ export class CreatureRenderer {
   private readonly sparks: SparkVisual[] = [];
   private readonly geo: SharedGeometries;
   private readonly speciesMats = new Map<SpeciesId, SpeciesMaterialSet>();
+  private readonly adaptationMats = new Map<
+    VillageAdaptationId,
+    { readonly mantle: THREE.MeshStandardMaterial; readonly accent: THREE.MeshStandardMaterial }
+  >();
   private readonly disposables: (THREE.BufferGeometry | THREE.Material)[] = [];
 
   // Shared detail materials
@@ -413,6 +451,8 @@ export class CreatureRenderer {
   private readonly frogIrisMat: THREE.MeshStandardMaterial;
   private readonly selectionMat: THREE.MeshBasicMaterial;
   private readonly steelMat: THREE.MeshStandardMaterial;
+  private readonly reedWeaveMat: THREE.MeshStandardMaterial;
+  private readonly strawWeaveMat: THREE.MeshStandardMaterial;
 
   constructor(
     scene: THREE.Scene,
@@ -511,6 +551,18 @@ export class CreatureRenderer {
       roughness: 0.32,
       metalness: 0.78,
     });
+    this.reedWeaveMat = new THREE.MeshStandardMaterial({
+      color: 0xa99e6d,
+      roughness: 0.9,
+      bumpMap: textures?.fabricBump ?? null,
+      bumpScale: 0.06,
+    });
+    this.strawWeaveMat = new THREE.MeshStandardMaterial({
+      color: 0xe6c465,
+      roughness: 0.88,
+      bumpMap: textures?.fabricBump ?? null,
+      bumpScale: 0.06,
+    });
 
     this.disposables.push(
       this.eyeMat,
@@ -532,6 +584,8 @@ export class CreatureRenderer {
       this.frogIrisMat,
       this.selectionMat,
       this.steelMat,
+      this.reedWeaveMat,
+      this.strawWeaveMat,
     );
 
     scene.add(this.rootGroup);
@@ -915,9 +969,50 @@ export class CreatureRenderer {
     return set;
   }
 
+  private getAdaptationMaterials(
+    adaptation: VillageAdaptationId,
+  ): { readonly mantle: THREE.MeshStandardMaterial; readonly accent: THREE.MeshStandardMaterial } {
+    const existing = this.adaptationMats.get(adaptation);
+    if (existing) return existing;
+
+    const palette = VILLAGE_ADAPTATION_CATALOG[adaptation].attirePalette;
+    const fabricBump = this.textures?.fabricBump ?? null;
+    const mantle = new THREE.MeshStandardMaterial({
+      color: palette.mantleColor,
+      roughness: 0.86,
+      bumpMap: fabricBump,
+      bumpScale: 0.05,
+    });
+    const accent = new THREE.MeshStandardMaterial({
+      color: palette.accentColor,
+      roughness: 0.82,
+      bumpMap: fabricBump,
+      bumpScale: 0.045,
+    });
+    this.disposables.push(mantle, accent);
+    const pair = { mantle, accent };
+    this.adaptationMats.set(adaptation, pair);
+    return pair;
+  }
+
   private syncCreatures(_selection: SelectionTarget): void {
     for (const c of this.world.creatures) {
-      if (!this.rigs.has(c.id)) {
+      const currentAdaptation: VillageAdaptationId =
+        this.world.getSettlement(c.settlementId)?.adaptation ?? 'forest_canopy';
+      const existing = this.rigs.get(c.id);
+      if (!existing) {
+        const rig = this.buildRig(c);
+        this.rigs.set(c.id, rig);
+        this.rootGroup.add(rig.root);
+      } else if (existing.adaptation !== currentAdaptation) {
+        // Pioneer settled into a new biome — refresh attire to match the new village's adaptation!
+        const shared = new Set<THREE.BufferGeometry | THREE.Material>(this.disposables);
+        existing.root.traverse((obj) => {
+          if (obj instanceof THREE.Mesh && obj.geometry && !shared.has(obj.geometry)) {
+            obj.geometry.dispose();
+          }
+        });
+        this.rootGroup.remove(existing.root);
         const rig = this.buildRig(c);
         this.rigs.set(c.id, rig);
         this.rootGroup.add(rig.root);
@@ -951,14 +1046,17 @@ export class CreatureRenderer {
     const isBird = def.silhouette === 'bird' || def.silhouette === 'owl';
     const isFrog = c.species === 'frog';
     const isStout = c.species === 'badger' || c.species === 'hedgehog' || c.species === 'owl';
+    const homeSettlement = this.world.getSettlement(c.settlementId);
+    const adaptation: VillageAdaptationId = homeSettlement?.adaptation ?? 'forest_canopy';
+    const adaptMats = this.getAdaptationMaterials(adaptation);
 
-    // 1. Cozy pear-shaped woodland tunic + shoulder capelet + leather belt & brass buckle
+    // 1. Cozy pear-shaped woodland tunic + regional biome-adapted shoulder capelet + belt & buckle
     const tunic = addPart(new THREE.Mesh(this.geo.tunic, mats.cloak));
     if (isStout) tunic.scale.set(1.16, 0.96, 1.12);
     else if (isBird) tunic.scale.set(0.96, 0.94, 1.04);
 
-    // Shoulder mantle / scarf collar
-    const mantleMat = isFrog ? this.leafMat : mats.scarf;
+    // Regional biome-adapted shoulder mantle
+    const mantleMat = adaptMats.mantle;
     const mantle = addPart(new THREE.Mesh(this.geo.mantle, mantleMat));
     if (isStout) mantle.scale.set(1.16, 0.96, 1.12);
     if (isFrog) mantle.scale.set(1.14, 0.85, 1.14);
@@ -1648,6 +1746,63 @@ export class CreatureRenderer {
     pioneerPack.visible = false;
     bodyGroup.add(pioneerPack);
 
+    // 6d. Environmental biome-adaptation attire (rain hats, fur collars, straw hats, trail lanterns, sun-scarves!)
+    const hasRoleHat =
+      c.role === 'mystic' || c.role === 'guard' || c.role === 'artisan' || c.role === 'builder';
+    if (adaptation === 'riverside_stilts') {
+      if (!hasRoleHat && !isFrog) {
+        const rainHat = addPart(new THREE.Mesh(this.geo.reedHat, this.reedWeaveMat), headGroup);
+        rainHat.position.set(0, 0.17, -0.01);
+        const tie = addPart(new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.02, 6, 16), adaptMats.mantle), headGroup);
+        tie.rotation.x = Math.PI / 2;
+        tie.position.set(0, 0.21, -0.01);
+      }
+    } else if (adaptation === 'coastal_harbor') {
+      // Waxed sea-teal mariner storm-hat & brass harbor medallion clasp
+      const clasp = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 6), this.brassMat));
+      clasp.position.set(0, 0.72, 0.27);
+      if (!hasRoleHat && !isFrog) {
+        const marinerHat = addPart(new THREE.Mesh(this.geo.strawHat, adaptMats.mantle), headGroup);
+        marinerHat.position.set(0, 0.18, -0.01);
+        const band = addPart(new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.024, 6, 18), adaptMats.accent), headGroup);
+        band.rotation.x = Math.PI / 2;
+        band.position.set(0, 0.23, -0.01);
+      }
+    } else if (adaptation === 'mountain_stone') {
+      // Plush thermal cream fur collar around the shoulders against mountain wind
+      const collar = addPart(new THREE.Mesh(this.geo.furCollar, adaptMats.accent));
+      collar.position.set(0, 0.77, 0.01);
+      if (isStout) collar.scale.set(1.15, 1.0, 1.12);
+    } else if (adaptation === 'prairie_pastoral') {
+      if (!hasRoleHat && !isFrog && c.species !== 'rabbit') {
+        const sunHat = addPart(new THREE.Mesh(this.geo.strawHat, this.strawWeaveMat), headGroup);
+        sunHat.position.set(0, 0.18, -0.01);
+        const ribbon = addPart(new THREE.Mesh(new THREE.TorusGeometry(0.245, 0.022, 6, 18), adaptMats.mantle), headGroup);
+        ribbon.rotation.x = Math.PI / 2;
+        ribbon.position.set(0, 0.23, -0.01);
+      }
+    } else if (adaptation === 'forest_canopy') {
+      // Glowing woodland fairy-lantern charm clipped to the belt for deep-canopy trails
+      const charm = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.052, 8, 6), this.lanternGlowMat));
+      charm.position.set(0.26, 0.43, 0.14);
+      if (!hasRoleHat && !isFrog) {
+        const leafCrest = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6), adaptMats.accent), headGroup);
+        leafCrest.scale.set(1.25, 0.32, 1.35);
+        leafCrest.position.set(0, 0.26, -0.04);
+        leafCrest.rotation.x = -0.18;
+      }
+    } else if (adaptation === 'desert_oasis') {
+      // Breezy saffron linen sun-scarf collar + desert headwrap band
+      const scarf = addPart(new THREE.Mesh(this.geo.furCollar, adaptMats.accent));
+      scarf.scale.set(0.95, 0.65, 0.95);
+      scarf.position.set(0, 0.78, 0.02);
+      if (!hasRoleHat && !isFrog) {
+        const wrap = addPart(new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.036, 8, 18), adaptMats.accent), headGroup);
+        wrap.rotation.x = Math.PI / 2 + 0.12;
+        wrap.position.set(0, 0.16, 0);
+      }
+    }
+
     // Extra whimsical individual touch: some creatures wear a tiny daisy/leaf tucked behind an ear!
     if (seed > 0.72 && c.role !== 'mystic' && c.role !== 'guard') {
       const flower = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6), this.lanternGlowMat), headGroup);
@@ -1689,6 +1844,7 @@ export class CreatureRenderer {
       baseRightEarZ,
       baseTailX,
       workChipCooldown: 0.15,
+      adaptation,
     };
   }
 
@@ -1704,5 +1860,6 @@ export class CreatureRenderer {
     }
     this.disposables.length = 0;
     this.speciesMats.clear();
+    this.adaptationMats.clear();
   }
 }

@@ -1,6 +1,7 @@
 import type { ResourceType } from '@core/Types';
 import { BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
 import { getBuildingStage, getConstructionStageLabel } from '@simulation/settlements/Settlement';
+import { getBiomeDisplayName } from '@simulation/settlements/VillageAdaptation';
 import { getBridgeApproach, getBridgeDeckHeightAt } from '@simulation/terrain/Bridge';
 import {
   HEARTH_FIRE_KEEP_OUT_RADIUS,
@@ -252,6 +253,7 @@ export class CreatureAI {
   private chooseNextActivity(creature: Creature, world: WorldState): void {
     const home = world.getSettlement(creature.settlementId);
     if (!home) return;
+    const profile = home.getAdaptationProfile();
 
     // 1. Low health or low energy -> rest at home
     const isNight = world.timeOfDay < 0.22 || world.timeOfDay > 0.84;
@@ -364,8 +366,12 @@ export class CreatureAI {
           creature.tradeCargoAmount = 4;
           creature.targetX = partner.center.x + world.rng.range(-3.5, 3.5);
           creature.targetZ = partner.center.z + world.rng.range(-3.5, 3.5);
-          creature.actionTimer = 38;
-          creature.thought = `Carrying ${good} to ${partner.name}`;
+          const tradeDist = Math.hypot(partner.center.x - creature.x, partner.center.z - creature.z);
+          creature.actionTimer = Math.max(44, tradeDist / 2.0 + 24);
+          creature.thought =
+            partner.adaptation !== home.adaptation
+              ? `Carrying ${home.name}'s ${good} across biomes to ${partner.name}`
+              : `Carrying ${good} to ${partner.name}`;
           return;
         }
       }
@@ -422,16 +428,20 @@ export class CreatureAI {
         creature.targetZ = home.center.z + Math.sin(chatAngle) * chatR;
       }
       creature.actionTimer = world.rng.range(6, 10);
-      creature.thought =
-        hangout?.type === 'fountain_plaza'
-          ? 'Admiring the shimmering starlight fountain'
-          : hangout?.type === 'bakery'
-            ? 'Savoring fresh warm acorn loaves'
-            : hangout?.type === 'guildhall'
-              ? 'Debating city blueprints at the guildhall'
-              : hangout
-                ? 'Sharing tales over berry cider'
-                : 'Chatting with neighbors by the hearth';
+      if (world.rng.chance(0.32) && profile.thoughts.length > 0) {
+        creature.thought = world.rng.pick(profile.thoughts);
+      } else {
+        creature.thought =
+          hangout?.type === 'fountain_plaza'
+            ? 'Admiring the shimmering starlight fountain'
+            : hangout?.type === 'bakery'
+              ? 'Savoring fresh warm acorn loaves'
+              : hangout?.type === 'guildhall'
+                ? 'Debating city blueprints at the guildhall'
+                : hangout
+                  ? 'Sharing tales over berry cider'
+                  : 'Chatting with neighbors by the hearth';
+      }
       return;
     }
 
@@ -449,7 +459,10 @@ export class CreatureAI {
       const r = home.radius + world.rng.range(2, 7);
       creature.targetX = home.center.x + Math.cos(angle) * r;
       creature.targetZ = home.center.z + Math.sin(angle) * r;
-      creature.thought = `Patrolling the edges of ${home.name}`;
+      creature.thought =
+        world.rng.chance(0.35) && profile.thoughts.length > 0
+          ? world.rng.pick(profile.thoughts)
+          : `Patrolling the edges of ${home.name}`;
       creature.actionTimer = 8;
       return;
     }
@@ -496,7 +509,10 @@ export class CreatureAI {
     creature.targetX = home.center.x + Math.cos(angle) * radius;
     creature.targetZ = home.center.z + Math.sin(angle) * radius;
     creature.actionTimer = world.rng.range(5, 9);
-    creature.thought = 'Exploring the sunlit glade';
+    creature.thought =
+      profile.thoughts.length > 0 && world.rng.chance(0.6)
+        ? world.rng.pick(profile.thoughts)
+        : `Exploring around ${home.name}`;
   }
 
   private handleGathering(creature: Creature, world: WorldState, dt: number): void {
@@ -514,7 +530,9 @@ export class CreatureAI {
         creature.activeConstructionStage = 'clearing';
         creature.heading = Math.atan2(node.position.x - creature.x, node.position.z - creature.z);
       }
-      const rate = 2.0 * (0.75 + creature.def.buildSkill * 0.5) * dt;
+      const home = world.getSettlement(creature.settlementId);
+      const biomeGatherMult = home?.getAdaptationProfile().gatherBonus[node.type] ?? 1.0;
+      const rate = 2.0 * (0.75 + creature.def.buildSkill * 0.5) * biomeGatherMult * dt;
       const taken = Math.min(node.amount, rate);
       node.amount -= taken;
       creature.inventory[node.type] += taken;
@@ -550,7 +568,11 @@ export class CreatureAI {
             bridge.centerZ - creature.z,
           );
         }
-        const work = dt * (9.0 + creature.def.buildSkill * 10.0);
+        const bridgeAdaptMult =
+          home.adaptation === 'riverside_stilts' || home.adaptation === 'coastal_harbor'
+            ? 1.24
+            : 1.0;
+        const work = dt * (9.0 + creature.def.buildSkill * 10.0) * bridgeAdaptMult;
         bridge.progress = Math.min(100, bridge.progress + work);
         if (bridge.progress >= 100 && !bridge.completed) {
           bridge.completed = true;
@@ -585,7 +607,9 @@ export class CreatureAI {
         creature.targetZ = creature.z;
         creature.heading = Math.atan2(bld.position.x - creature.x, bld.position.z - creature.z);
       }
-      const work = dt * (11.0 + creature.def.buildSkill * 11.0);
+      const profile = home.getAdaptationProfile();
+      const styleMult = profile.buildSpeedBonus[bp.frameStyle];
+      const work = dt * (11.0 + creature.def.buildSkill * 11.0) * styleMult;
       if (bld.disassembling) {
         const repName = bld.replacementType
           ? BUILDING_CATALOG[bld.replacementType].displayName
@@ -618,11 +642,12 @@ export class CreatureAI {
     const partyId = creature.emigrationPartyId;
     const tx = creature.emigrationTargetX;
     const tz = creature.emigrationTargetZ;
+    const party = partyId ? world.settlementManager.getEmigrationParty(partyId) : undefined;
     if (
       !partyId ||
+      !party ||
       tx === null ||
       tz === null ||
-      !world.settlementManager.getActiveEmigrations().some((p) => p.id === partyId) ||
       creature.actionTimer <= 0
     ) {
       creature.emigrationPartyId = null;
@@ -632,11 +657,32 @@ export class CreatureAI {
       return;
     }
 
+    // Advance intermediate scouting waypoints as pioneers wander across distant biomes
+    world.settlementManager.advanceEmigrationWaypoint(partyId, creature.x, creature.z);
+    const activeGoal =
+      party.waypointIndex < party.waypoints.length
+        ? party.waypoints[party.waypointIndex]
+        : { x: tx, z: tz };
+
     if (creature.detourTimer <= 0) {
-      creature.targetX = tx;
-      creature.targetZ = tz;
+      creature.targetX = activeGoal.x;
+      creature.targetZ = activeGoal.z;
     }
-    if (Math.hypot(tx - creature.x, tz - creature.z) <= 4.5) {
+
+    // Refresh pioneer thoughts based on the environment they are crossing
+    if (world.rng.chance(0.02)) {
+      const curBiome = world.terrain.getBiomeAt(creature.x, creature.z);
+      const destBiome = world.terrain.getBiomeAt(tx, tz);
+      if (curBiome === 'water') {
+        creature.thought = `Fording the waterway on our trek to the ${getBiomeDisplayName(destBiome)}`;
+      } else if (curBiome !== destBiome) {
+        creature.thought = `Wandering across the ${getBiomeDisplayName(curBiome)} toward the ${getBiomeDisplayName(destBiome)}`;
+      } else {
+        creature.thought = `Scouting the ${getBiomeDisplayName(destBiome)} for a new village hearth`;
+      }
+    }
+
+    if (Math.hypot(tx - creature.x, tz - creature.z) <= 5.2) {
       world.settlementManager.foundEmigrantVillage(partyId, creature, world);
     }
   }
@@ -722,9 +768,11 @@ export class CreatureAI {
   private handlePraying(creature: Creature, world: WorldState, dt: number): void {
     const dist = Math.hypot(creature.targetX - creature.x, creature.targetZ - creature.z);
     if (dist < 3.0) {
-      creature.devotion = Math.min(100, creature.devotion + dt * 4.5);
+      const home = world.getSettlement(creature.settlementId);
+      const devotionMult = home?.getAdaptationProfile().devotionBonusMultiplier ?? 1.0;
+      creature.devotion = Math.min(100, creature.devotion + dt * 4.5 * devotionMult);
       creature.mood = Math.min(100, creature.mood + dt * 2.2);
-      world.deity.receivePrayer(dt * 0.9, creature.settlementId);
+      world.deity.receivePrayer(dt * 0.9 * devotionMult, creature.settlementId);
     }
     if (creature.actionTimer <= 0) {
       creature.activity = 'idle';
@@ -988,12 +1036,18 @@ export class CreatureAI {
         const cx = creature.x + dx * dist;
         const cz = creature.z + dz * dist;
         if (Math.hypot(cx, cz) > world.terrain.playableRadius - 1.5) continue;
-        if (!creature.def.aerial && !world.terrain.isWalkable(cx, cz, creature.def.amphibious)) continue;
+        const stepOk = keepEmigrating
+          ? world.terrain.canEmigrantTraverse(cx, cz)
+          : world.terrain.isWalkable(cx, cz, creature.def.amphibious);
+        if (!creature.def.aerial && !stepOk) continue;
 
         // Verify midpoint is also walkable so the escape vector doesn't cross water
         const midX = creature.x + dx * (dist * 0.5);
         const midZ = creature.z + dz * (dist * 0.5);
-        if (!creature.def.aerial && !world.terrain.isWalkable(midX, midZ, creature.def.amphibious)) continue;
+        const midOk = keepEmigrating
+          ? world.terrain.canEmigrantTraverse(midX, midZ)
+          : world.terrain.isWalkable(midX, midZ, creature.def.amphibious);
+        if (!creature.def.aerial && !midOk) continue;
 
         const sep = world.obstacles.resolveCollisions(cx, cz, creatureR, 0, ang);
         if (sep.collided) continue;
@@ -1024,7 +1078,10 @@ export class CreatureAI {
   private updateCreatureElevation(creature: Creature, world: WorldState): void {
     const groundY = world.terrain.getHeightAt(creature.x, creature.z);
     const bridgeY = world.terrain.getBridgeDeckY(creature.x, creature.z);
-    const waterFloor = creature.def.amphibious ? world.terrain.waterLevel - 0.08 : world.terrain.waterLevel;
+    const waterFloor =
+      creature.def.amphibious || creature.activity === 'emigrating'
+        ? world.terrain.waterLevel - 0.06
+        : world.terrain.waterLevel;
     creature.y =
       Math.max(groundY, bridgeY ?? -Infinity, waterFloor) +
       creature.flightAltitude;
@@ -1083,6 +1140,17 @@ export class CreatureAI {
     }
 
     if (dist > 0.25) {
+      const isEmigrating = creature.activity === 'emigrating';
+      const canTraverse = (x: number, z: number): boolean =>
+        isEmigrating
+          ? world.terrain.canEmigrantTraverse(x, z)
+          : world.terrain.isWalkable(x, z, creature.def.amphibious);
+      const isFordingWater =
+        isEmigrating &&
+        !creature.def.aerial &&
+        world.terrain.getBridgeDeckY(creature.x, creature.z) === null &&
+        world.terrain.getHeightAt(creature.x, creature.z) < world.terrain.waterLevel + 0.05;
+
       const speedMult =
         creature.activity === 'fleeing'
           ? 1.35
@@ -1090,9 +1158,11 @@ export class CreatureAI {
             ? 1.2
             : creature.activity === 'trading'
               ? 1.1
-              : creature.activity === 'emigrating'
-                ? 1.16
-              : 1.0;
+              : isEmigrating
+                ? isFordingWater
+                  ? 0.82
+                  : 1.22
+                : 1.0;
 
       const step = Math.min(dist, creature.def.baseSpeed * speedMult * dt);
       let dirX = dx / dist;
@@ -1135,11 +1205,13 @@ export class CreatureAI {
 
           if (waterAhead) {
             let bestCost = Infinity;
+            const maxBridgeSearch =
+              isEmigrating || creature.activity === 'trading' ? 64 : 34;
             for (let i = 0; i < world.bridges.length; i++) {
               const br = world.bridges[i];
               if (!br.completed) continue;
               const approach = getBridgeApproach(br, creature.x, creature.z);
-              if (approach.nearDist > 34) continue;
+              if (approach.nearDist > maxBridgeSearch) continue;
               const nearToTarget = Math.hypot(approach.nearX - creature.targetX, approach.nearZ - creature.targetZ);
               const farToTarget = Math.hypot(approach.farX - creature.targetX, approach.farZ - creature.targetZ);
               if (farToTarget + 1.2 >= nearToTarget) continue;
@@ -1187,7 +1259,7 @@ export class CreatureAI {
       if (!pathBlocked && !creature.def.aerial) {
         const terrainProbeX = creature.x + baseDirX * Math.min(lookahead, 1.25);
         const terrainProbeZ = creature.z + baseDirZ * Math.min(lookahead, 1.25);
-        if (!world.terrain.isWalkable(terrainProbeX, terrainProbeZ, creature.def.amphibious)) {
+        if (!canTraverse(terrainProbeX, terrainProbeZ)) {
           pathBlocked = true;
         }
       }
@@ -1302,12 +1374,12 @@ export class CreatureAI {
 
           // Avoid steering into unwalkable water or cliffs
           if (!creature.def.aerial) {
-            if (!world.terrain.isWalkable(nearProbeX, nearProbeZ, creature.def.amphibious)) {
+            if (!canTraverse(nearProbeX, nearProbeZ)) {
               hazard += 7.0;
             }
             const midProbeX = creature.x + cx * Math.min(lookahead, 1.35);
             const midProbeZ = creature.z + cz * Math.min(lookahead, 1.35);
-            if (!world.terrain.isWalkable(midProbeX, midProbeZ, creature.def.amphibious)) {
+            if (!canTraverse(midProbeX, midProbeZ)) {
               hazard += 2.6;
             }
           }
@@ -1420,7 +1492,7 @@ export class CreatureAI {
 
       if (
         creature.def.aerial ||
-        world.terrain.isWalkable(nx, nz, creature.def.amphibious)
+        canTraverse(nx, nz)
       ) {
         creature.x = nx;
         creature.z = nz;
@@ -1433,7 +1505,7 @@ export class CreatureAI {
           const ang = baseDirAng + off;
           const detourX = creature.x + Math.cos(ang) * step;
           const detourZ = creature.z + Math.sin(ang) * step;
-          if (!world.terrain.isWalkable(detourX, detourZ, creature.def.amphibious)) continue;
+          if (!canTraverse(detourX, detourZ)) continue;
           const altSep = world.obstacles.resolveCollisions(
             detourX,
             detourZ,
@@ -1441,7 +1513,7 @@ export class CreatureAI {
             altitude,
             creature.heading,
           );
-          if (world.terrain.isWalkable(altSep.x, altSep.z, creature.def.amphibious)) {
+          if (canTraverse(altSep.x, altSep.z)) {
             creature.x = altSep.x;
             creature.z = altSep.z;
             moved = true;

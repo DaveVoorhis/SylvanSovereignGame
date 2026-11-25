@@ -10,39 +10,26 @@ import {
   SETTLEMENT_NAMES,
 } from './BuildingCatalog';
 import { Settlement, type BuildingInstance } from './Settlement';
+import { getBiomeDisplayName, VILLAGE_ADAPTATION_CATALOG } from './VillageAdaptation';
 
 const MAX_BUILDINGS_PER_SETTLEMENT = 34;
-const MAX_BRIDGES_PER_WORLD = 6;
-const MAX_BRIDGES_PER_SETTLEMENT = 2;
-
-const SPECIES_GROUPS: readonly SpeciesId[][] = [
-  ['squirrel', 'robin', 'mouse', 'owl'],
-  ['rabbit', 'hedgehog', 'sparrow', 'badger'],
-  ['fox', 'crow', 'rat', 'squirrel'],
-  ['frog', 'sparrow', 'mouse', 'robin'],
-  ['badger', 'hedgehog', 'owl', 'rabbit'],
-];
-
-const STARTER_CIVICS: readonly BuildingType[] = [
-  'workshop',
-  'market_stall',
-  'bakery',
-  'granary',
-  'shrine',
-];
+const MAX_BRIDGES_PER_WORLD = 12;
+const MAX_BRIDGES_PER_SETTLEMENT = 3;
 
 export interface EmigrationParty {
   readonly id: string;
   readonly sourceSettlementId: string;
   readonly targetX: number;
   readonly targetZ: number;
+  readonly waypoints: readonly Vec2[];
+  waypointIndex: number;
   readonly species: SpeciesId[];
 }
 
 /**
  * Manages woodland settlement creation, organic multi-ring city expansion,
- * pioneer emigration to found new villages, structural disassembly & redevelopment,
- * waterway bridge spans, civic production, and population growth.
+ * environmental adaptation of villages to their biome, pioneer emigration to found new villages,
+ * structural disassembly & redevelopment, waterway bridge spans, civic production, and population growth.
  */
 export class SettlementManager {
   private settlementSeq = 1;
@@ -62,9 +49,20 @@ export class SettlementManager {
       world.rng,
     );
 
+    const usedNames = new Set<string>();
+
     sites.forEach((site, idx) => {
       const id = `settlement_${this.settlementSeq++}`;
-      const name = SETTLEMENT_NAMES[idx % SETTLEMENT_NAMES.length];
+      const biome = world.terrain.getBiomeAt(site.x, site.z);
+      const adaptation = world.terrain.getSiteAdaptation(site.x, site.z);
+      const profile = VILLAGE_ADAPTATION_CATALOG[adaptation];
+
+      const name =
+        profile.settlementNames.find((n) => !usedNames.has(n)) ??
+        SETTLEMENT_NAMES.find((n) => !usedNames.has(n)) ??
+        SETTLEMENT_NAMES[idx % SETTLEMENT_NAMES.length];
+      usedNames.add(name);
+
       const bannerColor = FACTION_BANNER_COLORS[idx % FACTION_BANNER_COLORS.length];
       const groundY = world.terrain.getHeightAt(site.x, site.z);
 
@@ -74,21 +72,21 @@ export class SettlementManager {
         bannerColor,
         center: site,
         groundY,
-        foundingSpecies: [...SPECIES_GROUPS[idx % SPECIES_GROUPS.length]],
+        biome,
+        adaptation,
+        foundingSpecies: [...profile.adaptedSpecies],
       });
 
       world.settlements.push(settlement);
       world.structureRevision++;
 
-      // Start each founding village with a cozy cottage, a starter civic hall, and a fresh stage-0 build plot
-      this.placeBuilding(settlement, 'burrow_cottage', world, true);
-      this.placeBuilding(settlement, STARTER_CIVICS[idx % STARTER_CIVICS.length], world, true);
-      this.placeBuilding(
-        settlement,
-        idx % 2 === 0 ? 'timber_house' : 'workshop',
-        world,
-        false,
-      );
+      // Start each founding village with biome-adapted starter architecture plus a fresh stage-0 build plot
+      this.placeBuilding(settlement, profile.starterHome, world, true);
+      this.placeBuilding(settlement, profile.starterCivic, world, true);
+      const plot = this.placeBuilding(settlement, profile.starterPlot, world, false);
+      if (!plot) {
+        this.placeBuilding(settlement, 'burrow_cottage', world, false);
+      }
       settlement.recalculateTierAndRadius();
 
       // Spawn founding inhabitants with strong builder/forager coverage
@@ -114,8 +112,8 @@ export class SettlementManager {
         world.day,
         world.season,
         'settlement',
-        `${settlement.name} Founded`,
-        `Woodland kin settled ${settlement.name} with ${world.config.initialCreaturesPerSettlement} inhabitants.`,
+        `${settlement.name} Founded (${profile.shortLabel})`,
+        `Woodland kin settled ${settlement.name} as a ${profile.title} in the ${getBiomeDisplayName(biome)} with ${world.config.initialCreaturesPerSettlement} inhabitants.`,
         settlement.center,
       );
     });
@@ -125,6 +123,15 @@ export class SettlementManager {
     this.expansionCooldown -= dt;
 
     for (const settlement of world.settlements) {
+      // Regional environmental adaptation yields local specialties naturally
+      const profile = settlement.getAdaptationProfile();
+      for (const [key, rate] of Object.entries(profile.passiveYield)) {
+        const res = key as ResourceType;
+        if (rate) {
+          settlement.stockpile[res] += rate * dt;
+        }
+      }
+
       // Workshops refine timber into crafts and shape dressed stone for city masonry
       const workshops = settlement.getCompletedCount('workshop');
       if (workshops > 0) {
@@ -313,7 +320,8 @@ export class SettlementManager {
   }
 
   /**
-   * Founds a brand-new woodland village when emigrating pioneer creatures arrive at their chosen clearing.
+   * Founds a brand-new woodland village when emigrating pioneer creatures arrive at their chosen clearing,
+   * adopting the architectural and ecological adaptations suited to the new biome.
    */
   foundEmigrantVillage(partyId: string, leader: Creature, world: WorldState): Settlement | null {
     const party = this.activeEmigrations.get(partyId);
@@ -328,12 +336,21 @@ export class SettlementManager {
     const parent = world.getSettlement(party.sourceSettlementId);
     const seqIdx = this.settlementSeq - 1;
     const id = `settlement_${this.settlementSeq++}`;
+    const biome = world.terrain.getBiomeAt(party.targetX, party.targetZ);
+    const adaptation = world.terrain.getSiteAdaptation(party.targetX, party.targetZ);
+    const profile = VILLAGE_ADAPTATION_CATALOG[adaptation];
+
     const usedNames = new Set(world.settlements.map((s) => s.name));
     const name =
+      profile.settlementNames.find((n) => !usedNames.has(n)) ??
       SETTLEMENT_NAMES.find((n) => !usedNames.has(n)) ??
       SETTLEMENT_NAMES[seqIdx % SETTLEMENT_NAMES.length];
     const bannerColor = FACTION_BANNER_COLORS[seqIdx % FACTION_BANNER_COLORS.length];
     const groundY = world.terrain.getHeightAt(party.targetX, party.targetZ);
+
+    const foundingSpecies = Array.from(
+      new Set([...party.species, ...profile.adaptedSpecies]),
+    ).slice(0, 4);
 
     const settlement = new Settlement({
       id,
@@ -341,15 +358,19 @@ export class SettlementManager {
       bannerColor,
       center: { x: party.targetX, z: party.targetZ },
       groundY,
-      foundingSpecies: [...party.species],
+      biome,
+      adaptation,
+      foundingSpecies,
     });
-    // Pioneers arrive with modest starter supplies (less than the founding capital)
+    // Pioneers arrive with modest starter supplies (less than a founding capital)
     settlement.stockpile.timber = 24;
-    settlement.stockpile.stone = 12;
+    settlement.stockpile.stone = adaptation === 'mountain_stone' ? 18 : 12;
     settlement.stockpile.berries = 20;
     settlement.stockpile.acorns = 18;
-    settlement.stockpile.herbs = 8;
-    settlement.stockpile.crafts = 3;
+    settlement.stockpile.herbs =
+      adaptation === 'riverside_stilts' || adaptation === 'coastal_harbor' ? 12 : 8;
+    settlement.stockpile.crafts =
+      adaptation === 'desert_oasis' || adaptation === 'coastal_harbor' ? 6 : 3;
 
     world.settlements.push(settlement);
     world.structureRevision++;
@@ -365,7 +386,7 @@ export class SettlementManager {
         c.targetX = settlement.center.x + world.rng.range(-3, 3);
         c.targetZ = settlement.center.z + world.rng.range(-3, 3);
         c.mood = Math.min(100, c.mood + 20);
-        c.thought = `Founding our new home at ${settlement.name}!`;
+        c.thought = `Adapting to life at our new ${profile.shortLabel}, ${settlement.name}!`;
       }
     }
 
@@ -377,19 +398,24 @@ export class SettlementManager {
       world.spawnCreature(settlement, species, role);
     }
 
-    // Stake out the fledgling village's very first construction plots at stage 0 (clearing land!)
-    this.placeBuilding(settlement, 'burrow_cottage', world, false);
-    this.placeBuilding(settlement, STARTER_CIVICS[seqIdx % STARTER_CIVICS.length], world, false);
+    // Stake out the fledgling village's very first adapted construction plots at stage 0 (clearing land!)
+    this.placeBuilding(settlement, profile.starterHome, world, false);
+    this.placeBuilding(settlement, profile.starterCivic, world, false);
     settlement.recalculateTierAndRadius();
 
     world.diplomacy.registerSettlement(settlement, world, parent);
 
+    const trekMeters = parent
+      ? Math.round(
+          Math.hypot(settlement.center.x - parent.center.x, settlement.center.z - parent.center.z),
+        )
+      : 0;
     world.chronicle.record(
       world.day,
       world.season,
       'settlement',
-      `${settlement.name} Founded by Pioneers`,
-      `${leader.name} and pioneers from ${parent?.name ?? 'the valley'} settled ${settlement.name} and began clearing land.`,
+      `${settlement.name} Founded (${profile.shortLabel})`,
+      `${leader.name} and pioneers from ${parent?.name ?? 'the valley'} wandered ${trekMeters > 0 ? `${trekMeters}m ` : ''}to settle ${settlement.name} as a ${profile.title} in the ${getBiomeDisplayName(biome)}.`,
       settlement.center,
     );
     return settlement;
@@ -398,6 +424,21 @@ export class SettlementManager {
   /** Returns active pioneer expeditions currently trekking across the valley. */
   getActiveEmigrations(): readonly EmigrationParty[] {
     return Array.from(this.activeEmigrations.values());
+  }
+
+  /** Returns the active scouting waypoint (or final destination) for a wandering pioneer party. */
+  getEmigrationParty(partyId: string): EmigrationParty | undefined {
+    return this.activeEmigrations.get(partyId);
+  }
+
+  /** Advances a pioneer party's scouting waypoint once a member reaches it. */
+  advanceEmigrationWaypoint(partyId: string, px: number, pz: number): void {
+    const party = this.activeEmigrations.get(partyId);
+    if (!party || party.waypointIndex >= party.waypoints.length) return;
+    const wp = party.waypoints[party.waypointIndex];
+    if (Math.hypot(wp.x - px, wp.z - pz) <= 10.5) {
+      party.waypointIndex++;
+    }
   }
 
   private clearPartyCreatures(partyId: string, world: WorldState): void {
@@ -622,26 +663,40 @@ export class SettlementManager {
 
   /**
    * Dispatches adventurous pioneer creatures from growing settlements to emigrate across
-   * the valley and establish new villages.
+   * the larger realm and establish new biome-adapted villages.
    */
   private considerEmigration(settlement: Settlement, world: WorldState, rng: SeededRandom): void {
     if (world.settlements.length + this.activeEmigrations.size >= world.config.maxSettlements) return;
+    const maxConcurrentParties = world.settlements.length <= 2 ? 1 : 2;
+    if (this.activeEmigrations.size >= maxConcurrentParties) return;
 
     const pop = world.getSettlementPopulation(settlement.id);
-    const minPop = world.settlements.length === 1 ? 9 : 11;
+    const minPop = world.settlements.length === 1 ? 9 : 10;
     if (pop < minPop || settlement.getCompletedCount() < 3) return;
     if (settlement.stockpile.timber < 10 || settlement.stockpile.berries + settlement.stockpile.acorns < 10) {
       return;
     }
 
-    const launchChance = world.settlements.length === 1 ? 0.68 : 0.42;
+    const launchChance =
+      world.settlements.length === 1 ? 0.74 : world.settlements.length < 5 ? 0.52 : 0.36;
     if (!rng.chance(launchChance)) return;
 
     const occupied: Vec2[] = world.settlements.map((s) => s.center);
     for (const active of this.activeEmigrations.values()) {
       occupied.push({ x: active.targetX, z: active.targetZ });
     }
-    const site = world.terrain.findNewSettlementSite(occupied, rng);
+    const existingAdaptations = [
+      ...world.settlements.map((s) => s.adaptation),
+      ...Array.from(this.activeEmigrations.values()).map((p) =>
+        world.terrain.getSiteAdaptation(p.targetX, p.targetZ),
+      ),
+    ];
+    const site = world.terrain.findNewSettlementSite(
+      occupied,
+      rng,
+      existingAdaptations,
+      settlement.center,
+    );
     if (!site) return;
 
     // Pick 2-3 sturdy pioneers (preferring at least 1 builder and 1 forager)
@@ -672,18 +727,48 @@ export class SettlementManager {
     settlement.stockpile.berries = Math.max(0, settlement.stockpile.berries - 6);
     settlement.stockpile.acorns = Math.max(0, settlement.stockpile.acorns - 4);
 
+    const destBiome = world.terrain.getBiomeAt(site.x, site.z);
+    const destAdaptation = world.terrain.getSiteAdaptation(site.x, site.z);
+    const destProfile = VILLAGE_ADAPTATION_CATALOG[destAdaptation];
+
     const partyId = `emig_${this.emigrationSeq++}`;
-    const speciesGroup = SPECIES_GROUPS[(world.settlements.length + this.emigrationSeq) % SPECIES_GROUPS.length];
-    const partySpecies = Array.from(new Set([...pioneers.map((p) => p.species), ...speciesGroup])).slice(0, 4);
+    const partySpecies = Array.from(
+      new Set([...pioneers.map((p) => p.species), ...destProfile.adaptedSpecies]),
+    ).slice(0, 4);
+
+    // Build 1 scenic mid-trek scouting waypoint for long expeditions so pioneers visibly wander across biomes
+    const trekDist = Math.hypot(site.x - settlement.center.x, site.z - settlement.center.z);
+    const waypoints: Vec2[] = [];
+    if (trekDist > 62) {
+      const midX = (settlement.center.x + site.x) * 0.5;
+      const midZ = (settlement.center.z + site.z) * 0.5;
+      const perpX = -(site.z - settlement.center.z) / trekDist;
+      const perpZ = (site.x - settlement.center.x) / trekDist;
+      const swing = (rng.chance(0.5) ? 1 : -1) * Math.min(34, trekDist * 0.24);
+      const candX = midX + perpX * swing;
+      const candZ = midZ + perpZ * swing;
+      if (
+        world.terrain.isWithinPlayableArea(candX, candZ, 12) &&
+        !world.terrain.isDeepSeaAt(candX, candZ) &&
+        world.terrain.getSlopeAt(candX, candZ) < 0.3
+      ) {
+        waypoints.push({ x: candX, z: candZ });
+      }
+    }
 
     const party: EmigrationParty = {
       id: partyId,
       sourceSettlementId: settlement.id,
       targetX: site.x,
       targetZ: site.z,
+      waypoints,
+      waypointIndex: 0,
       species: partySpecies,
     };
     this.activeEmigrations.set(partyId, party);
+
+    const firstGoal = waypoints.length > 0 ? waypoints[0] : site;
+    const trekTimeout = Math.max(125, trekDist / 1.35 + 65);
 
     for (const pioneer of pioneers) {
       pioneer.activity = 'emigrating';
@@ -693,18 +778,18 @@ export class SettlementManager {
       pioneer.targetBuildingId = null;
       pioneer.targetBridgeId = null;
       pioneer.targetResourceId = null;
-      pioneer.targetX = site.x + rng.range(-1.5, 1.5);
-      pioneer.targetZ = site.z + rng.range(-1.5, 1.5);
-      pioneer.actionTimer = 75;
-      pioneer.thought = `Emigrating from ${settlement.name} to found a new woodland village`;
+      pioneer.targetX = firstGoal.x + rng.range(-1.5, 1.5);
+      pioneer.targetZ = firstGoal.z + rng.range(-1.5, 1.5);
+      pioneer.actionTimer = trekTimeout;
+      pioneer.thought = `Wandering far toward the ${getBiomeDisplayName(destBiome)} to found a new village`;
     }
 
     world.chronicle.record(
       world.day,
       world.season,
       'settlement',
-      'Woodland Pioneers Depart',
-      `${pioneers.map((p) => p.name).join(', ')} set out from ${settlement.name} to establish a new village across the valley.`,
+      'Pioneers Depart for Distant Lands',
+      `${pioneers.map((p) => p.name).join(', ')} left ${settlement.name} to wander ${Math.round(trekDist)}m toward the ${getBiomeDisplayName(destBiome)} in search of a new village site.`,
       settlement.center,
     );
   }
@@ -725,13 +810,15 @@ export class SettlementManager {
     }
     if (ownedCount >= MAX_BRIDGES_PER_SETTLEMENT) return;
 
-    // Organic pacing so settlements raise bridges when inspired rather than all at once
-    if (!rng.chance(0.35)) return;
+    const profile = settlement.getAdaptationProfile();
+    // Wetland stilt-villages are especially eager to span rivers & tributary channels
+    if (!rng.chance(profile.bridgeEagerness)) return;
 
     const preferStone =
-      (settlement.tier === 'town' || settlement.tier === 'city' || settlement.tier === 'metropolis') &&
-      settlement.stockpile.stone >= 10 &&
-      settlement.stockpile.timber >= 6;
+      (profile.preferredBridgeStyle === 'stone_arch' && settlement.stockpile.stone >= 10) ||
+      ((settlement.tier === 'town' || settlement.tier === 'city' || settlement.tier === 'metropolis') &&
+        settlement.stockpile.stone >= 10 &&
+        settlement.stockpile.timber >= 6);
     const style: BridgeStyle = preferStone ? 'stone_arch' : 'timber_arch';
     const cost = style === 'stone_arch' ? { timber: 6, stone: 10 } : { timber: 11, stone: 3 };
     if (!this.canAfford(settlement, cost)) return;
@@ -754,7 +841,7 @@ export class SettlementManager {
       rng,
       world.bridges,
       avoidPoints,
-      54,
+      68,
     );
     if (!crossing) return;
 
@@ -785,6 +872,7 @@ export class SettlementManager {
     const completedTotal = settlement.getCompletedCount();
     const population = world.getSettlementPopulation(settlement.id);
     const housing = settlement.getHousingCapacity();
+    const profile = settlement.getAdaptationProfile();
 
     const eligible = ALL_BUILDING_TYPES.filter((type) => {
       const bp = BUILDING_CATALOG[type];
@@ -796,13 +884,16 @@ export class SettlementManager {
 
     if (eligible.length === 0) return [];
 
-    // Score each eligible building to guarantee rich architectural variety while meeting city needs
+    // Score each eligible building to guarantee rich biome-adapted architectural skylines
     const scored = eligible.map((type, idx) => {
       const bp = BUILDING_CATALOG[type];
       const count = settlement.getBuildingCount(type);
       const fillRatio = count / bp.maxPerSettlement;
 
       let score = (1 - fillRatio) * 40;
+
+      // Strong regional adaptation preference shapes each village's distinct silhouette
+      score += profile.favoredBuildings[type] ?? 0;
 
       // Strong diversity bonus for building types not yet represented in this city!
       if (count === 0) {
@@ -865,7 +956,7 @@ export class SettlementManager {
       settlement.stockpile.berries = Math.max(0, settlement.stockpile.berries - 6);
       settlement.stockpile.acorns = Math.max(0, settlement.stockpile.acorns - 4);
 
-      const species = world.rng.chance(0.75)
+      const species = world.rng.chance(0.78)
         ? world.rng.pick(settlement.foundingSpecies)
         : world.rng.pick([
             'crow',
@@ -946,6 +1037,7 @@ export class SettlementManager {
     world: WorldState,
   ): { x: number; z: number; groundY: number; rotation: number } | null {
     const bp = BUILDING_CATALOG[type];
+    const maxSlope = settlement.adaptation === 'mountain_stone' ? 0.27 : 0.22;
 
     // Measure current farthest building so cities grow organically outward in concentric rings
     let farthest = 6.5;
@@ -976,7 +1068,7 @@ export class SettlementManager {
 
         if (!world.terrain.isWithinPlayableArea(x, z, 3.5)) continue;
         if (!world.terrain.isWalkable(x, z, false)) continue;
-        if (world.terrain.getSlopeAt(x, z) > 0.22) continue;
+        if (world.terrain.getSlopeAt(x, z) > maxSlope) continue;
 
         // Avoid stepping onto any settlement's central hearth plaza
         let overlapsPlaza = false;

@@ -12,6 +12,10 @@ import {
 import { ALL_SPECIES_IDS, SPECIES_CATALOG } from '@simulation/creatures/SpeciesCatalog';
 import { ALL_BUILDING_TYPES, BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
 import { getBuildingStage, getConstructionStageLabel } from '@simulation/settlements/Settlement';
+import {
+  ALL_VILLAGE_ADAPTATIONS,
+  VILLAGE_ADAPTATION_CATALOG,
+} from '@simulation/settlements/VillageAdaptation';
 import { WorldState } from '@simulation/WorldState';
 
 describe('Forest Procedural God Game — Headless Simulation', () => {
@@ -20,8 +24,12 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     const worldB = new WorldState(new EventBus(), { seed: 424242 });
 
     expect(worldA.deity.name).toBe(worldB.deity.name);
+    expect(worldA.config.initialSettlements).toBe(1);
     expect(worldA.settlements.length).toBe(1);
     expect(worldA.settlements.length).toBe(worldB.settlements.length);
+    expect(worldA.settlements.map((s) => `${s.name}:${s.adaptation}`)).toEqual(
+      worldB.settlements.map((s) => `${s.name}:${s.adaptation}`),
+    );
     expect(worldA.terrain.getHeightAt(12.5, -8.3)).toBeCloseTo(
       worldB.terrain.getHeightAt(12.5, -8.3),
       6,
@@ -45,10 +53,12 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
       expect(h).toBeLessThan(36);
     }
 
-    // Circular invisible playable boundary: corner at (70, 70) is outside radius 75 (hypot ~99)
+    // Expanded world has playableRadius ~151: (70, 70) is well inside, while a corner at 0.8*R (hypot ~1.13*R) is outside
+    const outsideCorner = Math.ceil(world.terrain.playableRadius * 0.8);
     expect(world.terrain.isWithinPlayableArea(0, 0)).toBe(true);
-    expect(world.terrain.isWithinPlayableArea(70, 70)).toBe(false);
-    expect(world.terrain.isWalkable(70, 70)).toBe(false);
+    expect(world.terrain.isWithinPlayableArea(70, 70)).toBe(true);
+    expect(world.terrain.isWithinPlayableArea(outsideCorner, outsideCorner)).toBe(false);
+    expect(world.terrain.isWalkable(outsideCorner, outsideCorner)).toBe(false);
   });
 
   it('includes all requested anthropomorphic woodland species', () => {
@@ -213,7 +223,16 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     expect(walker.x).toBeGreaterThan(building.position.x + bRadius);
 
     // 2. Direct the creature straight across a standing forest tree trunk and confirm it curves around
-    const treeObs = world.obstacles.getObstacles().find((o) => o.kind === 'tree');
+    const treeObs = world.obstacles
+      .getObstacles()
+      .find(
+        (o) =>
+          o.kind === 'tree' &&
+          world.terrain.isWalkable(o.x - 4, o.z, false) &&
+          world.terrain.isWalkable(o.x + 4, o.z, false) &&
+          world.terrain.isWalkable(o.x, o.z + 2, false) &&
+          world.terrain.isWalkable(o.x, o.z - 2, false),
+      );
     expect(treeObs).toBeDefined();
     const matchingTree = treeObs
       ? world.terrain.trees.find((t) => t.x === treeObs.x && t.z === treeObs.z)
@@ -594,7 +613,7 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     founding.stockpile.acorns = 120;
 
     let sawEmigratingPioneer = false;
-    for (let i = 0; i < 2000; i++) {
+    for (let i = 0; i < 2600; i++) {
       world.step(0.1);
       if (world.creatures.some((c) => c.alive && c.activity === 'emigrating')) {
         sawEmigratingPioneer = true;
@@ -606,7 +625,8 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     expect(world.settlements.length).toBeGreaterThanOrEqual(2);
     const founded = world.settlements[1];
     expect(founded.id).not.toBe(founding.id);
-    expect(Math.hypot(founded.center.x - founding.center.x, founded.center.z - founding.center.z)).toBeGreaterThan(20);
+    // Pioneers wander far across the expanded landmass to establish a new village
+    expect(Math.hypot(founded.center.x - founding.center.x, founded.center.z - founding.center.z)).toBeGreaterThan(40);
     // Diplomacy between parent & daughter village is initialized friendly
     expect(world.diplomacy.getStance(founding.id, founded.id)).toBe('friendly');
   });
@@ -642,5 +662,76 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     expect(sawDisassembling).toBe(true);
     expect(replacedBuilding).toBe(true);
     expect(world.structureRevision).toBeGreaterThan(revBefore);
+  });
+
+  it('generates an expanded world with varied landforms, waterways, and diverse biomes', () => {
+    const world = new WorldState(new EventBus(), { seed: 20260501 });
+    expect(world.config.worldSize).toBeGreaterThanOrEqual(340);
+    expect(world.terrain.playableRadius).toBeGreaterThan(160);
+    expect(world.terrain.ponds.length).toBeGreaterThanOrEqual(2);
+
+    const observedBiomes = new Set<string>();
+    let minH = Infinity;
+    let maxH = -Infinity;
+    const r = world.terrain.playableRadius;
+    for (let x = -r; x <= r; x += 8) {
+      for (let z = -r; z <= r; z += 8) {
+        if (!world.terrain.isWithinPlayableArea(x, z)) continue;
+        const h = world.terrain.getHeightAt(x, z);
+        if (h < minH) minH = h;
+        if (h > maxH) maxH = h;
+        observedBiomes.add(world.terrain.getBiomeAt(x, z));
+      }
+    }
+
+    // Dramatic topographic relief from ocean bed & riverbanks up to alpine peaks
+    expect(maxH - minH).toBeGreaterThan(12);
+    // Extensive biome diversity spanning seashore, desert, prairie, forest, mountains, and riverside
+    expect(observedBiomes.size).toBeGreaterThanOrEqual(8);
+    expect(observedBiomes.has('water')).toBe(true);
+    expect(observedBiomes.has('seashore')).toBe(true);
+    expect(observedBiomes.has('desert')).toBe(true);
+    expect(observedBiomes.has('prairie')).toBe(true);
+    expect(observedBiomes.has('deep_woods')).toBe(true);
+    expect(observedBiomes.has('riverbank') || observedBiomes.has('moss_hollow')).toBe(true);
+    expect(
+      observedBiomes.has('rocky_ridge') || observedBiomes.has('alpine_crag'),
+    ).toBe(true);
+  });
+
+  it('founds distinct environmentally adapted villages across biomes with unique profiles and regional identity', () => {
+    const world = new WorldState(new EventBus(), { seed: 8675309 });
+    // Starts with a single founding village by default
+    expect(world.settlements.length).toBe(1);
+    const founding = world.settlements[0];
+    founding.stockpile.timber = 220;
+    founding.stockpile.stone = 160;
+    founding.stockpile.berries = 160;
+    founding.stockpile.acorns = 160;
+
+    // Emigrants wander far to settle unrepresented biomes with distinct adaptations
+    for (let i = 0; i < 3200; i++) {
+      world.step(0.1);
+      if (world.settlements.length >= 2) break;
+    }
+    expect(world.settlements.length).toBeGreaterThanOrEqual(2);
+    const adaptations = new Set(world.settlements.map((s) => s.adaptation));
+    expect(adaptations.size).toBeGreaterThanOrEqual(2);
+
+    for (const s of world.settlements) {
+      const profile = s.getAdaptationProfile();
+      expect(profile.id).toBe(s.adaptation);
+      expect(profile.architectureSummary.length).toBeGreaterThan(10);
+      expect(profile.clothingSummary.length).toBeGreaterThan(10);
+      expect(profile.economySummary.length).toBeGreaterThan(10);
+      expect(s.buildings.length).toBeGreaterThanOrEqual(2);
+    }
+
+    // All 6 adaptation catalog profiles are complete and distinct
+    expect(ALL_VILLAGE_ADAPTATIONS.length).toBe(6);
+    const shortLabels = new Set(
+      ALL_VILLAGE_ADAPTATIONS.map((id) => VILLAGE_ADAPTATION_CATALOG[id].shortLabel),
+    );
+    expect(shortLabels.size).toBe(6);
   });
 });

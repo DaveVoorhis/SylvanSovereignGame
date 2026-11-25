@@ -43,9 +43,9 @@ export class TerrainRenderer {
     textures: TextureLibrary,
   ) {
     const { worldSize, terrainSegments } = world.config;
-    const totalSegments = Math.max(196, terrainSegments + 52);
+    const totalSegments = Math.max(240, terrainSegments + 52);
     const halfCore = worldSize * 0.56;
-    const horizonExtent = worldSize * 3.35; // ~536m radius -> 1072m seamless landscape!
+    const horizonExtent = worldSize * 3.1; // ~992m radius -> ~2km seamless landscape!
 
     const geo = new THREE.PlaneGeometry(2, 2, totalSegments, totalSegments);
     geo.rotateX(-Math.PI / 2);
@@ -60,8 +60,8 @@ export class TerrainRenderer {
       const z = warpTerrainCoord(uz, halfCore, horizonExtent);
       const y = world.terrain.getHeightAt(x, z);
       pos.setXYZ(i, x, y, z);
-      // Uniform world-space UVs so PBR forest floor never stretches in outer hills
-      uv.setXY(i, x / worldSize + 0.5, z / worldSize + 0.5);
+      // Constant meters-per-tile world-space UVs so PBR forest floor stays crisp on larger worlds
+      uv.setXY(i, x / 160 + 0.5, z / 160 + 0.5);
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.computeVertexNormals();
@@ -86,8 +86,8 @@ export class TerrainRenderer {
     this.waterSurface = createRealisticWaterSurface(
       world.terrain,
       worldSize,
-      Math.max(210, terrainSegments + 64),
-      2.6,
+      Math.max(230, terrainSegments + 40),
+      3.05,
     );
     this.waterMesh = this.waterSurface.mesh;
     scene.add(this.waterMesh);
@@ -112,6 +112,13 @@ export class TerrainRenderer {
     const colAttr = geo.attributes.color as THREE.BufferAttribute;
     const c = new THREE.Color();
     const wetTint = new THREE.Color(0x4a4332);
+    const deepBedTint = new THREE.Color(0x2d3326);
+    const deepOceanBedTint = new THREE.Color(0x183142);
+    const wetSandTint = new THREE.Color(0xa68f63);
+    const cliffGranite = new THREE.Color(0x737974);
+    const cliffSandstone = new THREE.Color(0xb86d3f);
+    const snowCapColor = new THREE.Color(0xeef4f8);
+    const alpineRockColor = new THREE.Color(season === 'winter' ? 0xc8d2da : 0x899297);
     const distantForestTint = new THREE.Color(
       season === 'winter'
         ? 0x9eb2bf
@@ -119,6 +126,7 @@ export class TerrainRenderer {
           ? 0x6b5838
           : 0x3b5934,
     );
+    const distantDesertTint = new THREE.Color(season === 'winter' ? 0xc6b496 : 0xc79552);
     const waterLevel = this.world.terrain.waterLevel;
     const halfSize = this.world.terrain.halfSize;
 
@@ -130,6 +138,14 @@ export class TerrainRenderer {
           : season === 'autumn'
             ? 0xa38246
             : 0xcbd5dc;
+    const prairieHex =
+      season === 'spring'
+        ? 0xa8bc56
+        : season === 'summer'
+          ? 0xb5b852
+          : season === 'autumn'
+            ? 0xcca14a
+            : 0xd2d9de;
     const woodsHex =
       season === 'spring'
         ? 0x56753b
@@ -139,20 +155,47 @@ export class TerrainRenderer {
             ? 0x7a5f36
             : 0xb0bec8;
     const mossHex = season === 'winter' ? 0x8ea1a8 : 0x42733f;
+    const desertHex =
+      season === 'spring'
+        ? 0xdcb064
+        : season === 'summer'
+          ? 0xe2ad58
+          : season === 'autumn'
+            ? 0xd4964c
+            : 0xcab58f;
+    const seashoreHex = season === 'winter' ? 0xd2cfc4 : 0xe6d3a0;
 
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
       const y = pos.getY(i);
       const z = pos.getZ(i);
       const biome = this.world.terrain.getBiomeAt(x, z);
+      const coastDist = this.world.terrain.getCoastSignedDistance(x, z);
 
       if (biome === 'water') {
-        const bedDepth = THREE.MathUtils.clamp((waterLevel - y) / 1.4, 0, 1);
-        c.setHex(0x7c6f52).lerp(new THREE.Color(0x2d3326), bedDepth);
+        const bedDepth = THREE.MathUtils.clamp((waterLevel - y) / 1.8, 0, 1);
+        if (coastDist < 4) {
+          c.setHex(0xd6c28e).lerp(deepOceanBedTint, bedDepth);
+        } else {
+          c.setHex(0x7c6f52).lerp(deepBedTint, bedDepth);
+        }
+      } else if (biome === 'seashore') {
+        c.setHex(seashoreHex);
       } else if (biome === 'riverbank') {
         c.setHex(season === 'winter' ? 0x8d9599 : 0x887556);
+      } else if (biome === 'alpine_crag') {
+        c.copy(alpineRockColor);
+        const snowLine = season === 'winter' ? 7.8 : season === 'autumn' ? 10.5 : 11.4;
+        const snowMix = THREE.MathUtils.smoothstep(y, snowLine, snowLine + 4.4);
+        if (snowMix > 0) {
+          c.lerp(snowCapColor, snowMix * (season === 'winter' ? 0.92 : 0.78));
+        }
       } else if (biome === 'rocky_ridge') {
-        c.setHex(season === 'winter' ? 0xc2ccd4 : 0x656c64);
+        c.setHex(season === 'winter' ? 0xc2ccd4 : 0x757b71);
+      } else if (biome === 'desert') {
+        c.setHex(desertHex);
+      } else if (biome === 'prairie') {
+        c.setHex(prairieHex);
       } else if (biome === 'moss_hollow') {
         c.setHex(mossHex);
       } else if (biome === 'meadow') {
@@ -161,21 +204,33 @@ export class TerrainRenderer {
         c.setHex(woodsHex);
       }
 
+      // Expose sculpted cliff stone on steep hillsides & terraced ridges
+      if (biome !== 'water') {
+        const slope = this.world.terrain.getSlopeAt(x, z);
+        const cliffMix = THREE.MathUtils.smoothstep(slope, 0.16, 0.34);
+        if (cliffMix > 0) {
+          c.lerp(biome === 'desert' ? cliffSandstone : cliffGranite, cliffMix * 0.64);
+        }
+      }
+
       // Damp darkened wet-earth fringe hugging the waterline for photorealistic shore transition
       const aboveWater = y - waterLevel;
       if (aboveWater > -0.15 && aboveWater < 0.38) {
         const wetness = 1.0 - THREE.MathUtils.smoothstep(aboveWater, 0.02, 0.38);
-        c.lerp(wetTint, wetness * 0.42);
+        c.lerp(biome === 'seashore' ? wetSandTint : wetTint, wetness * 0.44);
       }
 
       // Gently harmonize distant hills beyond the valley into deep wooded alpine tones
       const radialDist = Math.hypot(x, z);
-      const distantMix = THREE.MathUtils.smoothstep(radialDist, halfSize * 0.95, halfSize * 2.5);
-      if (distantMix > 0) {
-        c.lerp(distantForestTint, distantMix * 0.62);
+      const distantMix = THREE.MathUtils.smoothstep(radialDist, halfSize * 0.98, halfSize * 2.4);
+      if (distantMix > 0 && y < 12.2 && coastDist > 8) {
+        c.lerp(biome === 'desert' ? distantDesertTint : distantForestTint, distantMix * 0.58);
+      } else if (y >= 12.2) {
+        const peakSnow = THREE.MathUtils.smoothstep(y, 12.2, 18.0);
+        c.lerp(snowCapColor, peakSnow * 0.68);
       }
 
-      const shade = THREE.MathUtils.clamp(0.84 + y * 0.018, 0.72, 1.12);
+      const shade = THREE.MathUtils.clamp(0.84 + y * 0.013, 0.72, 1.14);
       c.multiplyScalar(shade);
       colAttr.setXYZ(i, c.r, c.g, c.b);
     }

@@ -1,4 +1,5 @@
 import type { QualityPreset } from '@core/Config';
+import { getBiomeDisplayName } from '@simulation/settlements/VillageAdaptation';
 import type { WorldState } from '@simulation/WorldState';
 
 export interface TopBarCallbacks {
@@ -151,10 +152,12 @@ export class TopBar {
     const aliveCount = world.creatures.filter((c) => c.alive).length;
     const totalBuildings = world.settlements.reduce((sum, s) => sum + s.getCompletedCount(), 0);
     const caravans = world.creatures.filter((c) => c.alive && c.activity === 'trading').length;
+    const pioneerCount = world.creatures.filter((c) => c.alive && c.activity === 'emigrating').length;
     this.statsEl.innerHTML = `
       <span>🐾 ${aliveCount} Kin</span>
       <span>🏡 ${totalBuildings} Bldgs</span>
       <span>⚖️ ${caravans} Caravans</span>
+      ${pioneerCount > 0 ? `<span>🧭 ${pioneerCount} Pioneers</span>` : ''}
     `;
 
     this.settlementsBar.innerHTML = '';
@@ -163,7 +166,9 @@ export class TopBar {
       btn.className = 'settlement-pill';
       const hex = `#${s.bannerColor.toString(16).padStart(6, '0')}`;
       const pop = world.getSettlementPopulation(s.id);
-      btn.innerHTML = `<span class="dot" style="background:${hex}"></span>${s.name} <small>(${s.tier} · ${pop})</small>`;
+      const profile = s.getAdaptationProfile();
+      btn.title = `${s.name} — ${profile.title} (${getBiomeDisplayName(s.biome)}): ${profile.summary}`;
+      btn.innerHTML = `<span class="dot" style="background:${hex}"></span><span class="adapt-icon">${profile.icon}</span>${s.name} <small>(${profile.shortLabel} · ${pop})</small>`;
       btn.addEventListener('click', () => this.callbacks.onFocusSettlement(s.id));
       this.settlementsBar.appendChild(btn);
     }

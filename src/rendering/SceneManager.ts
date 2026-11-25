@@ -74,7 +74,7 @@ export class SceneManager {
       46,
       window.innerWidth / window.innerHeight,
       0.22,
-      880,
+      1650,
     );
     this.cameraController = new CameraController(this.camera, canvas);
 
@@ -150,7 +150,7 @@ export class SceneManager {
 
   renderFrame(dt: number): void {
     this.cameraController.update(dt);
-    this.atmosphere.update(this.world, dt, this.camera);
+    this.atmosphere.update(this.world, dt, this.camera, this.cameraController.controls.target);
     const sky = this.atmosphere.getSkyLightingState();
     this.terrainRenderer.update(dt, sky);
     this.floraRenderer.update(dt, sky);
@@ -164,8 +164,8 @@ export class SceneManager {
         focusDistance,
         focusRange: isPov ? 28 : Math.max(30, focusDistance * 0.72),
         maxBlur: isPov ? 0.011 : 0.0125,
-        horizonFadeStart: isPov ? 175 : 240,
-        horizonFadeEnd: isPov ? 390 : 510,
+        horizonFadeStart: isPov ? 220 : 340,
+        horizonFadeEnd: isPov ? 520 : 760,
         horizonColor: sky.fogColor,
         isPov,
       });
@@ -180,6 +180,7 @@ export class SceneManager {
 
   private buildWorldScene(world: WorldState): void {
     const q = QUALITY_PRESETS[this.quality];
+    this.cameraController.setWorldSize(world.config.worldSize);
     this.textures = createTextureLibrary(q.textureResolution);
     this.atmosphere = new AtmosphereSystem(
       this.scene,

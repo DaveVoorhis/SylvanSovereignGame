@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { BuildingType } from '@core/Types';
+import type { BuildingType, VillageAdaptationId } from '@core/Types';
 import { BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
 import { getBuildingStage, type BuildingInstance, type Settlement } from '@simulation/settlements/Settlement';
 import { sampleBridgeDeckY, type BridgeInstance } from '@simulation/terrain/Bridge';
@@ -87,6 +87,14 @@ export class SettlementRenderer {
   private readonly potteryMat: THREE.MeshStandardMaterial;
   private readonly earthPadMat: THREE.MeshStandardMaterial;
   private readonly ropeMat: THREE.MeshStandardMaterial;
+  private readonly driftwoodMat: THREE.MeshStandardMaterial;
+  private readonly tealTrimMat: THREE.MeshStandardMaterial;
+  private readonly mossRoofMat: THREE.MeshStandardMaterial;
+  private readonly terracottaPlasterMat: THREE.MeshStandardMaterial;
+  private readonly terracottaRoofMat: THREE.MeshStandardMaterial;
+  private readonly ochreCanvasMat: THREE.MeshStandardMaterial;
+  private readonly goldenThatchMat: THREE.MeshStandardMaterial;
+  private readonly graniteMat: THREE.MeshStandardMaterial;
 
   // Shared sculpted architectural geometries
   private readonly bellRoofGeo: THREE.BufferGeometry;
@@ -247,6 +255,60 @@ export class SettlementRenderer {
     this.ropeMat = new THREE.MeshStandardMaterial({
       color: 0xcab48c,
       roughness: 0.92,
+    });
+    this.driftwoodMat = new THREE.MeshStandardMaterial({
+      color: 0x6f6052,
+      map: textures.timber.map,
+      bumpMap: textures.timber.bumpMap,
+      bumpScale: 0.16,
+      roughness: 0.9,
+    });
+    this.tealTrimMat = new THREE.MeshStandardMaterial({
+      color: 0x2e757c,
+      roughness: 0.72,
+      bumpMap: textures.fabricBump,
+      bumpScale: 0.04,
+    });
+    this.mossRoofMat = new THREE.MeshStandardMaterial({
+      color: 0x467036,
+      map: textures.thatch.map,
+      bumpMap: textures.thatch.bumpMap,
+      bumpScale: 0.22,
+      roughness: 0.94,
+    });
+    this.terracottaPlasterMat = new THREE.MeshStandardMaterial({
+      color: 0xe9bf88,
+      roughness: 0.88,
+      bumpMap: textures.fabricBump,
+      bumpScale: 0.04,
+    });
+    this.terracottaRoofMat = new THREE.MeshStandardMaterial({
+      color: 0xc65b36,
+      map: textures.stone.map,
+      bumpMap: textures.stone.bumpMap,
+      bumpScale: 0.18,
+      roughness: 0.8,
+    });
+    this.ochreCanvasMat = new THREE.MeshStandardMaterial({
+      color: 0xf2c972,
+      roughness: 0.85,
+      bumpMap: textures.fabricBump,
+      bumpScale: 0.045,
+      side: THREE.DoubleSide,
+    });
+    this.goldenThatchMat = new THREE.MeshStandardMaterial({
+      color: 0xe6c16a,
+      map: textures.thatch.map,
+      bumpMap: textures.thatch.bumpMap,
+      bumpScale: 0.2,
+      roughness: 0.9,
+    });
+    this.graniteMat = new THREE.MeshStandardMaterial({
+      color: 0x7b8589,
+      map: textures.stone.map,
+      bumpMap: textures.stone.bumpMap,
+      bumpScale: 0.22,
+      roughness: 0.9,
     });
 
     // Bell-curved fairytale thatch cottage roof (LatheGeometry wound bottom-to-top for outward normals)
@@ -460,7 +522,7 @@ export class SettlementRenderer {
       for (const b of settlement.buildings) {
         liveBuildingIds.add(b.id);
         if (!this.buildingMeshes.has(b.id)) {
-          const built = this.createBuildingMesh(b, settlement.bannerColor);
+          const built = this.createBuildingMesh(b, settlement.bannerColor, settlement.adaptation);
           this.buildingMeshes.set(b.id, built);
           this.rootGroup.add(built.group);
           this.applyConstructionStageVisuals(built, b);
@@ -514,14 +576,31 @@ export class SettlementRenderer {
       return obj;
     };
 
-    // Cobblestone hearth plaza + decorative mossy curb stones
-    const plaza = add(new THREE.Mesh(new THREE.CylinderGeometry(2.7, 2.95, 0.2, 24), this.stoneMat));
-    plaza.position.y = 0.06;
+    const adaptation = settlement.adaptation;
+    const plazaMat =
+      adaptation === 'riverside_stilts' || adaptation === 'coastal_harbor'
+        ? this.driftwoodMat
+        : adaptation === 'mountain_stone'
+          ? this.graniteMat
+          : adaptation === 'desert_oasis'
+            ? this.terracottaPlasterMat
+            : this.stoneMat;
+    const plazaY =
+      adaptation === 'riverside_stilts' || adaptation === 'coastal_harbor' ? 0.26 : 0.06;
+
+    // Regional hearth plaza deck / terrace + curb stones
+    const plaza = add(
+      new THREE.Mesh(
+        new THREE.CylinderGeometry(2.8, 3.05, adaptation === 'mountain_stone' ? 0.85 : 0.22, 24),
+        plazaMat,
+      ),
+    );
+    plaza.position.y = adaptation === 'mountain_stone' ? -0.25 : plazaY;
 
     for (let i = 0; i < 12; i++) {
       const a = (i / 12) * Math.PI * 2;
-      const curb = add(new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.22, 0.28), this.stoneMat));
-      curb.position.set(Math.cos(a) * 2.65, 0.15, Math.sin(a) * 2.65);
+      const curb = add(new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.22, 0.28), plazaMat));
+      curb.position.set(Math.cos(a) * 2.7, plazaY + 0.09, Math.sin(a) * 2.7);
       curb.rotation.y = -a + Math.PI / 2;
     }
 
@@ -603,6 +682,168 @@ export class SettlementRenderer {
       leg.rotation.y = 0.65;
     }
 
+    // Unmistakable biome-adapted village centerpiece landmarks!
+    if (adaptation === 'riverside_stilts') {
+      // Heavy cedar stilt pilings & rope-wrapped mooring bollards beneath the riverside boardwalk plaza
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        const piling = add(new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.17, 1.35, 8), this.driftwoodMat));
+        piling.position.set(Math.cos(a) * 2.55, -0.35, Math.sin(a) * 2.55);
+        if (i % 2 === 0) {
+          const bollard = add(new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, 0.78, 8), this.tealTrimMat));
+          bollard.position.set(Math.cos(a) * 2.78, 0.62, Math.sin(a) * 2.78);
+        }
+      }
+      // Moored wooden reed-skiff boat docked beside the village boardwalk
+      const skiff = new THREE.Group();
+      skiff.position.set(-3.35, 0.18, -1.25);
+      skiff.rotation.y = 0.55;
+      const hull = add(new THREE.Mesh(new THREE.CapsuleGeometry(0.36, 1.35, 6, 10), this.driftwoodMat));
+      hull.rotation.x = Math.PI / 2;
+      hull.scale.set(1.15, 1.0, 0.45);
+      skiff.add(hull);
+      const thwart = add(new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.06, 0.24), this.tealTrimMat));
+      thwart.position.set(0, 0.14, 0);
+      skiff.add(thwart);
+      const oar = add(new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.032, 1.45, 6), this.timberMat));
+      oar.rotation.x = Math.PI / 2;
+      oar.rotation.z = 0.25;
+      oar.position.set(0.14, 0.2, 0.1);
+      skiff.add(oar);
+      group.add(skiff);
+    } else if (adaptation === 'coastal_harbor') {
+      // Driftwood wharf pilings, harbor beacon lighthouse tower, and moored coastal sailboat!
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        const piling = add(new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.18, 1.4, 8), this.driftwoodMat));
+        piling.position.set(Math.cos(a) * 2.55, -0.35, Math.sin(a) * 2.55);
+      }
+      // Whitewashed coastal beacon lantern tower
+      const beaconBase = add(new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.64, 2.9, 12), this.plasterMat));
+      beaconBase.position.set(2.35, 1.48, -1.35);
+      const beaconBand = add(new THREE.Mesh(new THREE.CylinderGeometry(0.51, 0.56, 0.45, 12), this.tealTrimMat));
+      beaconBand.position.set(2.35, 1.85, -1.35);
+      const beaconGlow = add(new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.55, 10), this.windowMat));
+      beaconGlow.position.set(2.35, 3.18, -1.35);
+      const beaconCap = add(new THREE.Mesh(new THREE.ConeGeometry(0.5, 0.55, 10), this.slateRoofMat));
+      beaconCap.position.set(2.35, 3.72, -1.35);
+
+      // Moored coastal sailboat with cream canvas sail
+      const boat = new THREE.Group();
+      boat.position.set(-3.35, 0.22, -1.2);
+      boat.rotation.y = 0.48;
+      const hull = add(new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 1.55, 6, 10), this.driftwoodMat));
+      hull.rotation.x = Math.PI / 2;
+      hull.scale.set(1.2, 1.0, 0.46);
+      boat.add(hull);
+      const mast = add(new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.05, 2.3, 8), this.timberMat));
+      mast.position.set(0, 1.15, 0.05);
+      boat.add(mast);
+      const sail = add(new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.55, 1.15), this.ochreCanvasMat));
+      sail.position.set(0.08, 1.28, -0.36);
+      sail.rotation.y = 0.14;
+      boat.add(sail);
+      group.add(boat);
+    } else if (adaptation === 'mountain_stone') {
+      // Curved granite windbreak half-wall sheltering the alpine hearth from mountain gales
+      for (let i = 0; i < 6; i++) {
+        const a = Math.PI * 0.78 + (i / 5) * Math.PI * 0.78;
+        const wallSeg = add(new THREE.Mesh(new THREE.BoxGeometry(0.88, 1.28, 0.36), this.graniteMat));
+        wallSeg.position.set(Math.cos(a) * 2.52, 0.66, Math.sin(a) * 2.52);
+        wallSeg.rotation.y = -a + Math.PI / 2;
+        const coping = add(new THREE.Mesh(new THREE.BoxGeometry(0.94, 0.14, 0.44), this.slateRoofMat));
+        coping.position.set(Math.cos(a) * 2.52, 1.34, Math.sin(a) * 2.52);
+        coping.rotation.y = -a + Math.PI / 2;
+      }
+      // Dressed quarry granite blocks stacked beside the hearth
+      for (let i = 0; i < 3; i++) {
+        const blk = add(new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.36, 0.42), this.graniteMat));
+        blk.position.set(2.15 - i * 0.22, 0.24 + (i === 2 ? 0.36 : 0), -1.55 + (i % 2) * 0.38);
+        blk.rotation.y = i * 0.28;
+      }
+    } else if (adaptation === 'prairie_pastoral') {
+      // Festive prairie-green bunting posts & raised wildflower/berry planter troughs
+      const buntingColors = [this.flowerPinkMat, this.flowerGoldMat, this.flowerBlueMat];
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + 0.35;
+        const px = Math.cos(a) * 2.78;
+        const pz = Math.sin(a) * 2.78;
+        const bPost = add(new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 2.75, 8), this.timberMat));
+        bPost.position.set(px, 1.38, pz);
+
+        const nextA = ((i + 1) / 4) * Math.PI * 2 + 0.35;
+        const nx = Math.cos(nextA) * 2.78;
+        const nz = Math.sin(nextA) * 2.78;
+        for (let k = 1; k <= 3; k++) {
+          const f = k / 4;
+          const flag = add(new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.32, 3), buntingColors[(i + k) % 3]));
+          flag.rotation.x = Math.PI;
+          flag.position.set(
+            THREE.MathUtils.lerp(px, nx, f),
+            2.42 - Math.sin(f * Math.PI) * 0.28,
+            THREE.MathUtils.lerp(pz, nz, f),
+          );
+        }
+      }
+      for (const side of [-1, 1]) {
+        const planter = add(new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.38, 0.48), this.timberMat));
+        planter.position.set(side * 2.15, 0.26, -1.65);
+        planter.rotation.y = side * -0.45;
+        const foliage = add(new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 6), this.mossLeafMat));
+        foliage.scale.set(1.75, 0.65, 0.85);
+        foliage.position.set(side * 2.15, 0.52, -1.65);
+      }
+    } else if (adaptation === 'forest_canopy') {
+      // Twin carved woodland spirit-totem posts with glowing fairy lanterns + toadstool fairy ring
+      for (const side of [-1, 1]) {
+        const tx = side * 2.25;
+        const tz = -1.35;
+        const totem = add(new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.2, 3.1, 8), this.darkTimberMat));
+        totem.position.set(tx, 1.55, tz);
+        const mossCap = add(new THREE.Mesh(new THREE.SphereGeometry(0.26, 8, 6), this.mossRoofMat));
+        mossCap.scale.set(1.1, 0.72, 1.1);
+        mossCap.position.set(tx, 3.16, tz);
+        const lantern = add(new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.09, 0.24, 8), this.windowMat));
+        lantern.position.set(tx - side * 0.34, 2.48, tz + 0.15);
+      }
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2 + 0.5;
+        const cap = add(new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.14, 8), this.potteryMat));
+        cap.position.set(Math.cos(a) * 2.95, 0.26, Math.sin(a) * 2.95);
+      }
+    } else if (adaptation === 'desert_oasis') {
+      // Woven ochre canvas shade-pergola canopy, tiled oasis water cistern & clustered terracotta amphorae!
+      const pergX = -1.65;
+      const pergZ = -1.45;
+      for (const [ox, oz] of [[-0.95, -0.75], [0.95, -0.75], [-0.95, 0.75], [0.95, 0.75]]) {
+        const post = add(new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.08, 2.55, 8), this.timberMat));
+        post.position.set(pergX + ox, 1.28, pergZ + oz);
+      }
+      const canopy = add(new THREE.Mesh(new THREE.BoxGeometry(2.15, 0.08, 1.72), this.ochreCanvasMat));
+      canopy.position.set(pergX, 2.58, pergZ);
+      canopy.rotation.z = 0.08;
+      // Striped terracotta trim along the canopy edge
+      const trim = add(new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.14, 0.12), this.terracottaRoofMat));
+      trim.position.set(pergX, 2.5, pergZ + 0.85);
+
+      // Tiled desert oasis water cistern glistening beside the shade pergola
+      const cisternRim = add(new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.05, 0.38, 12), this.terracottaPlasterMat));
+      cisternRim.position.set(2.35, 0.2, 1.15);
+      const cisternWater = add(new THREE.Mesh(new THREE.CylinderGeometry(0.76, 0.76, 0.32, 12), this.fountainWaterMat));
+      cisternWater.position.set(2.35, 0.25, 1.15);
+
+      // Clustered terracotta water amphorae conserving cool spring water
+      for (let i = 0; i < 4; i++) {
+        const ax = 1.95 + (i % 2) * 0.42;
+        const az = -1.25 - Math.floor(i / 2) * 0.45;
+        const amphora = add(new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), this.terracottaRoofMat));
+        amphora.scale.set(0.92, 1.38, 0.92);
+        amphora.position.set(ax, 0.34, az);
+        const neck = add(new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.09, 0.2, 8), this.terracottaRoofMat));
+        neck.position.set(ax, 0.65, az);
+      }
+    }
+
     this.hearths.push({
       fire,
       banner,
@@ -612,7 +853,11 @@ export class SettlementRenderer {
     this.rootGroup.add(group);
   }
 
-  private createBuildingMesh(b: BuildingInstance, bannerColor: number): RenderedBuilding {
+  private createBuildingMesh(
+    b: BuildingInstance,
+    bannerColor: number,
+    adaptation: VillageAdaptationId = 'forest_canopy',
+  ): RenderedBuilding {
     const group = new THREE.Group();
     group.position.set(b.position.x, b.groundY - 0.05, b.position.z);
     group.rotation.y = b.rotation;
@@ -635,9 +880,45 @@ export class SettlementRenderer {
     finishedGroup.userData.selectionTarget = { kind: 'building', id: b.id };
     group.add(finishedGroup);
 
-    // Pick slight material variations per building instance for richer city silhouettes
-    const wallPlaster = variantHash > 0.5 ? this.warmPlasterMat : this.plasterMat;
-    const altRoofMat = variantHash > 0.62 ? this.slateRoofMat : this.thatchMat;
+    const isStiltRaised =
+      (adaptation === 'riverside_stilts' || adaptation === 'coastal_harbor') &&
+      b.type !== 'fountain_plaza' &&
+      b.type !== 'shrine';
+    const stiltLift = isStiltRaised ? 0.68 : 0;
+    if (isStiltRaised) {
+      // Lift the finished structure onto pilings while keeping local building part coordinates intact!
+      finishedGroup.position.y = stiltLift;
+    }
+
+    // Select biome-adapted wall plaster, stonework, and roofing palettes so each village is unmistakable
+    const wallPlaster =
+      adaptation === 'desert_oasis'
+        ? this.terracottaPlasterMat
+        : adaptation === 'prairie_pastoral' || adaptation === 'coastal_harbor'
+          ? this.plasterMat
+          : adaptation === 'mountain_stone'
+            ? variantHash > 0.55
+              ? this.plasterMat
+              : this.warmPlasterMat
+            : variantHash > 0.5
+              ? this.warmPlasterMat
+              : this.plasterMat;
+    const primaryRoofMat =
+      adaptation === 'mountain_stone' || adaptation === 'coastal_harbor'
+        ? this.slateRoofMat
+        : adaptation === 'desert_oasis'
+          ? this.terracottaRoofMat
+          : adaptation === 'forest_canopy'
+            ? this.mossRoofMat
+            : adaptation === 'prairie_pastoral'
+              ? this.goldenThatchMat
+              : variantHash > 0.45
+                ? this.mossRoofMat
+                : this.thatchMat;
+    const altRoofMat =
+      adaptation === 'riverside_stilts'
+        ? this.mossRoofMat
+        : primaryRoofMat;
 
     let crystalMesh: THREE.Mesh | undefined;
     let runeRingA: THREE.Mesh | undefined;
@@ -707,7 +988,7 @@ export class SettlementRenderer {
       const seed = b.position.x * 0.37 + b.position.z * 0.53 + chimneySmokes.length * 3.17;
       const smokeGeo = createChimneySmokeGeometry(seed, 16);
       const plume = new THREE.Points(smokeGeo, this.chimneySmokeMat);
-      plume.position.set(x, y - 0.06, z);
+      plume.position.set(x, y + stiltLift - 0.06, z);
       // Counter-rotate so local XZ matches world wind direction across all buildings
       plume.rotation.y = -b.rotation;
       plume.renderOrder = 3;
@@ -730,7 +1011,7 @@ export class SettlementRenderer {
         post.position.set(Math.cos(a) * 1.52, 1.05, Math.sin(a) * 1.52);
       }
 
-      const roof = tag(new THREE.Mesh(this.bellRoofGeo, this.thatchMat));
+      const roof = tag(new THREE.Mesh(this.bellRoofGeo, primaryRoofMat));
       roof.position.y = 1.74;
 
       const knob = tag(new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 8), this.timberMat));
@@ -820,7 +1101,7 @@ export class SettlementRenderer {
         hoop.position.y = hy;
       }
 
-      const cap = tag(new THREE.Mesh(this.bellRoofGeo, this.thatchMat));
+      const cap = tag(new THREE.Mesh(this.bellRoofGeo, primaryRoofMat));
       cap.scale.set(0.92, 0.88, 0.92);
       cap.position.y = 3.16;
 
@@ -1252,12 +1533,13 @@ export class SettlementRenderer {
       }
 
       // Main slate gabled roof + cross-wing gable
-      const mainRoof = tag(new THREE.Mesh(this.gableRoofGeo, this.slateRoofMat));
+      const guildRoofMat = adaptation === 'desert_oasis' ? this.terracottaRoofMat : this.slateRoofMat;
+      const mainRoof = tag(new THREE.Mesh(this.gableRoofGeo, guildRoofMat));
       mainRoof.scale.set(1.24, 1.18, 1.56);
       mainRoof.rotation.y = Math.PI / 2;
       mainRoof.position.y = 3.92;
 
-      const crossRoof = tag(new THREE.Mesh(this.gableRoofGeo, this.slateRoofMat));
+      const crossRoof = tag(new THREE.Mesh(this.gableRoofGeo, guildRoofMat));
       crossRoof.scale.set(0.95, 1.05, 1.24);
       crossRoof.position.y = 3.92;
 
@@ -1374,6 +1656,86 @@ export class SettlementRenderer {
       runeRingB = ringB;
     }
 
+    // Add unmistakable structural environmental adaptations to each completed building!
+    const fpR = Math.max(1.45, blueprint.footprintRadius * 0.78);
+    if (isStiltRaised) {
+      // Wetland stilt pilings, elevated boardwalk deck, teal rail posts & front boarding steps
+      const deck = tag(new THREE.Mesh(new THREE.CylinderGeometry(fpR * 1.12, fpR * 1.16, 0.16, 16), this.driftwoodMat));
+      deck.position.y = -0.06;
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2 + 0.35;
+        const piling = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, 1.55, 8), this.driftwoodMat));
+        piling.position.set(Math.cos(a) * fpR * 0.95, -0.78, Math.sin(a) * fpR * 0.95);
+      }
+      for (const sx of [-0.55, 0.55]) {
+        const post = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.065, 0.72, 6), this.tealTrimMat));
+        post.position.set(sx, 0.32, fpR * 1.05);
+        post.userData.buildPhase = 'exterior';
+      }
+      for (let s = 0; s < 3; s++) {
+        const step = tag(new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.12, 0.28), this.driftwoodMat));
+        step.position.set(0, -0.22 * (s + 1), fpR * 1.12 + s * 0.24);
+        step.userData.buildPhase = 'exterior';
+      }
+      if (adaptation === 'coastal_harbor') {
+        addHangingLantern(0.55, 0.78, fpR * 1.05);
+      }
+    } else if (adaptation === 'mountain_stone') {
+      // Deep buttressed granite retaining terrace so hillside stone-holds never float on mountain slopes
+      const retaining = tag(new THREE.Mesh(new THREE.CylinderGeometry(fpR * 1.04, fpR * 1.24, 1.38, 10), this.graniteMat));
+      retaining.position.y = -0.52;
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+        const buttress = tag(new THREE.Mesh(new THREE.BoxGeometry(0.42, 1.15, 0.55), this.graniteMat));
+        buttress.position.set(Math.cos(a) * fpR * 0.98, 0.28, Math.sin(a) * fpR * 0.98);
+        buttress.rotation.y = -a;
+        buttress.rotation.x = 0.14;
+      }
+    } else if (adaptation === 'prairie_pastoral' && b.type !== 'fountain_plaza') {
+      // Sunlit raised prairie garden flower-and-berry planter trough beside the cottage
+      const trough = tag(new THREE.Mesh(new THREE.BoxGeometry(1.18, 0.34, 0.44), this.timberMat));
+      trough.position.set(fpR * 0.98, 0.18, 0.22);
+      trough.rotation.y = Math.PI / 2;
+      trough.userData.buildPhase = 'exterior';
+      const foliage = tag(new THREE.Mesh(new THREE.SphereGeometry(0.24, 8, 6), this.mossLeafMat));
+      foliage.scale.set(0.85, 0.62, 1.85);
+      foliage.position.set(fpR * 0.98, 0.42, 0.22);
+      foliage.userData.buildPhase = 'exterior';
+      const bloom = tag(new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 6), this.flowerGoldMat));
+      bloom.position.set(fpR * 0.98, 0.55, 0.34);
+      bloom.userData.buildPhase = 'exterior';
+    } else if (adaptation === 'forest_canopy' && b.type !== 'fountain_plaza') {
+      // Mossy root-curb cluster & dangling woodland fairy-lantern on an oak bracket
+      for (let i = 0; i < 3; i++) {
+        const a = -0.7 + i * 0.7;
+        const moss = tag(new THREE.Mesh(new THREE.DodecahedronGeometry(0.28, 0), this.mossRoofMat));
+        moss.scale.set(1.3, 0.55, 1.1);
+        moss.position.set(Math.cos(a) * fpR * 1.02, 0.12, Math.sin(a) * fpR * 1.02);
+        moss.userData.buildPhase = 'exterior';
+      }
+      const lPost = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.065, 2.05, 6), this.darkTimberMat));
+      lPost.position.set(-fpR * 0.95, 1.02, fpR * 0.62);
+      lPost.userData.buildPhase = 'exterior';
+      addHangingLantern(-fpR * 0.95, 1.88, fpR * 0.78);
+    } else if (adaptation === 'desert_oasis' && b.type !== 'fountain_plaza' && b.type !== 'shrine') {
+      // Woven ochre desert sun-shade canopy awning & paired terracotta water amphorae by the entrance
+      const shade = tag(new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.07, 0.95), this.ochreCanvasMat));
+      shade.position.set(0, 1.62, fpR * 1.02);
+      shade.rotation.x = 0.24;
+      shade.userData.buildPhase = 'exterior';
+      for (const sx of [-0.68, 0.68]) {
+        const pole = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.048, 1.55, 6), this.timberMat));
+        pole.position.set(sx, 0.76, fpR * 1.38);
+        pole.userData.buildPhase = 'exterior';
+      }
+      for (let i = 0; i < 2; i++) {
+        const jar = tag(new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 8), this.terracottaRoofMat));
+        jar.scale.set(0.9, 1.35, 0.9);
+        jar.position.set(0.88 + i * 0.34, 0.25, fpR * 0.96);
+        jar.userData.buildPhase = 'exterior';
+      }
+    }
+
     // Classify every finished architectural component into progressive reveal order:
     // 0.78-0.86 structural shell -> 0.86-0.92 roofs/domes -> 0.92-0.99 exterior features & trim
     const roofMaterials = new Set<THREE.Material>([
@@ -1381,6 +1743,9 @@ export class SettlementRenderer {
       this.slateRoofMat,
       this.verdigrisMat,
       this.glassMat,
+      this.mossRoofMat,
+      this.terracottaRoofMat,
+      this.goldenThatchMat,
     ]);
     const exteriorMaterials = new Set<THREE.Material>([
       this.doorMat,
@@ -1395,6 +1760,8 @@ export class SettlementRenderer {
       this.shrineCrystalMat,
       this.fountainWaterMat,
       this.ovenFireMat,
+      this.ochreCanvasMat,
+      this.tealTrimMat,
       bannerMat,
     ]);
 
@@ -1942,5 +2309,13 @@ export class SettlementRenderer {
     this.potteryMat.dispose();
     this.earthPadMat.dispose();
     this.ropeMat.dispose();
+    this.driftwoodMat.dispose();
+    this.tealTrimMat.dispose();
+    this.mossRoofMat.dispose();
+    this.terracottaPlasterMat.dispose();
+    this.terracottaRoofMat.dispose();
+    this.ochreCanvasMat.dispose();
+    this.goldenThatchMat.dispose();
+    this.graniteMat.dispose();
   }
 }

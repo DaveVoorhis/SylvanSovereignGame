@@ -19,10 +19,6 @@ const WORLD_NEAR = 0.22;
 const POV_FOV = 64;
 const POV_NEAR = 0.12;
 
-// Invisible circular soft-boundary radii so panning glides smoothly without hitting harsh box walls
-const SOFT_BOUNDARY_RADIUS = 62;
-const MAX_BOUNDARY_RADIUS = 76;
-
 /**
  * Smooth spectator camera controller supporting:
  * - Orbital world exploration (drag, scroll, WASD/arrows, cinematic drift)
@@ -34,6 +30,9 @@ export class CameraController {
   readonly controls: OrbitControls;
   cinematicDrift = false;
 
+  private softBoundaryRadius = 140;
+  private maxBoundaryRadius = 158;
+  private overviewScale = 1.5;
   private mode: CameraMode = 'world';
   private readonly keys = new Set<string>();
   private desiredTarget: THREE.Vector3 | null = null;
@@ -68,7 +67,7 @@ export class CameraController {
     this.controls.maxPolarAngle = Math.PI * 0.468;
     this.controls.minPolarAngle = 0.18;
     this.controls.minDistance = 3.2;
-    this.controls.maxDistance = 112;
+    this.controls.maxDistance = 198;
     this.controls.panSpeed = 0.9;
     this.controls.rotateSpeed = 0.65;
     this.controls.zoomSpeed = 0.95;
@@ -124,6 +123,14 @@ export class CameraController {
       this.desiredPosition = null;
       this.desiredTarget = null;
     });
+  }
+
+  /** Scales soft circular exploration boundaries and zoom ceiling to match the current world size. */
+  setWorldSize(worldSize: number): void {
+    this.softBoundaryRadius = worldSize * 0.44;
+    this.maxBoundaryRadius = worldSize * 0.5;
+    this.controls.maxDistance = Math.max(175, worldSize * 0.62);
+    this.overviewScale = Math.max(1, worldSize / 195);
   }
 
   getMode(): CameraMode {
@@ -221,7 +228,11 @@ export class CameraController {
     }
     this.followProvider = null;
     this.desiredTarget = new THREE.Vector3(0, 2, 0);
-    this.desiredPosition = new THREE.Vector3(46, 36, 56);
+    this.desiredPosition = new THREE.Vector3(
+      46 * this.overviewScale,
+      38 * this.overviewScale,
+      56 * this.overviewScale,
+    );
   }
 
   update(dt: number): void {
@@ -258,8 +269,9 @@ export class CameraController {
       }
     }
 
-    // 3. Keyboard WASD / Arrow panning relative to camera yaw
-    const panSpeed = 34 * dt;
+    // 3. Keyboard WASD / Arrow panning relative to camera yaw (scales smoothly with zoom altitude)
+    const camDist = this.camera.position.distanceTo(this.controls.target);
+    const panSpeed = (28 + camDist * 0.45) * dt;
     const forward = new THREE.Vector3();
     this.camera.getWorldDirection(forward);
     forward.y = 0;
@@ -289,10 +301,10 @@ export class CameraController {
     const tx = this.controls.target.x;
     const tz = this.controls.target.z;
     const radialDist = Math.hypot(tx, tz);
-    if (radialDist > SOFT_BOUNDARY_RADIUS && radialDist > 0.001) {
-      const clampedR = Math.min(radialDist, MAX_BOUNDARY_RADIUS);
+    if (radialDist > this.softBoundaryRadius && radialDist > 0.001) {
+      const clampedR = Math.min(radialDist, this.maxBoundaryRadius);
       const springT = Math.min(1, dt * 2.8);
-      const targetR = THREE.MathUtils.lerp(clampedR, SOFT_BOUNDARY_RADIUS, springT * 0.55);
+      const targetR = THREE.MathUtils.lerp(clampedR, this.softBoundaryRadius, springT * 0.55);
       const scale = targetR / radialDist;
       const newX = tx * scale;
       const newZ = tz * scale;
