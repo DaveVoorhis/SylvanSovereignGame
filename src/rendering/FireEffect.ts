@@ -400,6 +400,115 @@ const OVEN_FIRE_FRAG = /* glsl */ `
   }
 `;
 
+// ── 6. Volumetric Cottage Chimney Woodsmoke Plume Shader ─────────────────────
+const CHIMNEY_SMOKE_VERT = /* glsl */ `
+  attribute float aSeed;
+  attribute float aSpeed;
+  attribute float aRadius;
+  attribute float aHeight;
+  attribute float aSize;
+
+  uniform float uTime;
+  uniform vec2 uWind;
+  uniform float uPixelRatio;
+
+  varying float vLife;
+  varying float vSeed;
+
+  void main() {
+    float life = fract(uTime * aSpeed + aSeed);
+    vLife = life;
+    vSeed = aSeed;
+
+    // Buoyant rise: exits chimney pot briskly, then slows and spreads aloft as it cools
+    float y = pow(life, 0.84) * aHeight;
+
+    // Gentle vortex curl & ambient turbulence widening smoothly with altitude
+    float swirlAngle = aSeed * 6.28318 + life * 4.4 + uTime * 0.45;
+    float spread = aRadius * (0.28 + pow(life, 1.15) * 3.85);
+    float gust = sin(uTime * 0.65 + life * 3.1 + aSeed * 11.3) * 0.14 * life;
+
+    // Progressive quadratic wind bend: rises vertically from flue, then leans gracefully downwind
+    float windCurve = pow(life, 1.82) * 3.2;
+    vec3 pos = vec3(
+      cos(swirlAngle) * spread + uWind.x * windCurve + gust,
+      y,
+      sin(swirlAngle) * spread + uWind.y * windCurve - gust * 0.6
+    );
+
+    vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
+    float grow = 0.36 + pow(life, 0.78) * 2.75;
+    gl_PointSize = clamp(aSize * uPixelRatio * grow * (195.0 / max(1.4, -mvPos.z)), 4.0, 108.0);
+    gl_Position = projectionMatrix * mvPos;
+  }
+`;
+
+const CHIMNEY_SMOKE_FRAG = /* glsl */ `
+  uniform float uTime;
+  uniform float uDaylight;
+  uniform vec3 uSunDir;
+
+  varying float vLife;
+  varying float vSeed;
+
+  ${SHARED_NOISE_GLSL}
+
+  void main() {
+    vec2 uv = gl_PointCoord - vec2(0.5);
+    float r = length(uv);
+    if (r > 0.5) discard;
+
+    // Slowly tumbling wispy domain-warped FBM so puffs read as tattered woodsmoke, never spheres
+    float spinDir = vSeed > 0.5 ? 1.0 : -1.0;
+    float ang = vSeed * 6.28318 + vLife * 1.9 * spinDir;
+    float cs = cos(ang);
+    float sn = sin(ang);
+    vec2 rotUv = mat2(cs, -sn, sn, cs) * uv;
+
+    vec2 flow = vec2(vSeed * 17.3, -uTime * 0.22 - vLife * 0.85);
+    float warpX = fbm4(rotUv * 3.2 + flow) - 0.5;
+    float warpY = fbm4(rotUv * 3.2 + flow + vec2(4.7, 2.3)) - 0.5;
+    vec2 warpedUv = rotUv + vec2(warpX, warpY) * (0.24 + vLife * 0.16);
+
+    float density = fbm4(warpedUv * 4.4 + flow * 1.15);
+    float densityShift = fbm4((warpedUv + vec2(0.06, -0.06)) * 4.4 + flow * 1.15);
+
+    // Soft feathery radial envelope that loosens and breaks apart aloft
+    float radial = smoothstep(0.5, 0.05, r);
+    float cutLow = mix(0.18, 0.34, vLife);
+    float wisp = smoothstep(cutLow, 0.84, density + radial * 0.46);
+    float shape = radial * radial * wisp;
+
+    // Smooth emergence at the chimney lip and delicate dissipation into the sky
+    float fadeIn = smoothstep(0.0, 0.09, vLife);
+    float fadeOut = 1.0 - smoothstep(0.24, 1.0, vLife);
+    float alpha = shape * fadeIn * fadeOut * 0.34;
+    if (alpha <= 0.004) discard;
+
+    // Volumetric directional lighting: warm sunlit crests & soft cool shadowed undersides
+    vec2 lobeGrad = vec2(densityShift - density, density - densityShift) * 2.4;
+    vec3 pseudoNormal = normalize(vec3(uv.x * 1.7 + lobeGrad.x, -uv.y * 1.7 + lobeGrad.y + 0.35, 0.72));
+    float sunWrap = clamp(dot(pseudoNormal, normalize(uSunDir)) * 0.5 + 0.55, 0.0, 1.0);
+    float rimSoft = smoothstep(0.45, 0.12, r) * 0.15;
+
+    vec3 dayShadow = vec3(0.57, 0.61, 0.67);
+    vec3 dayLit = vec3(0.95, 0.93, 0.90);
+    vec3 dayCol = mix(dayShadow, dayLit, clamp(sunWrap + rimSoft, 0.0, 1.0));
+
+    vec3 nightShadow = vec3(0.16, 0.20, 0.27);
+    vec3 nightLit = vec3(0.36, 0.42, 0.52);
+    vec3 nightCol = mix(nightShadow, nightLit, sunWrap);
+
+    vec3 col = mix(nightCol, dayCol, uDaylight);
+
+    // Subtle warm hearth-flue glow tinting the lowest emerging smoke right at the chimney pot
+    float flueWarmth = (1.0 - smoothstep(0.0, 0.18, vLife)) * (0.28 + (1.0 - uDaylight) * 0.42);
+    col = mix(col, vec3(0.84, 0.58, 0.34), flueWarmth * 0.55);
+
+    gl_FragColor = vec4(col, alpha);
+  }
+`;
+
 function getDevicePixelRatio(): number {
   if (typeof window === 'undefined') return 1;
   return Math.min(window.devicePixelRatio || 1, 2);
@@ -773,5 +882,59 @@ export function createOvenFireMaterial(): THREE.ShaderMaterial {
     uniforms: {
       uTime: { value: 0 },
     },
+  });
+}
+
+/**
+ * Builds deterministic GPU-animated volumetric cottage chimney woodsmoke geometry
+ * (26 staggered rising turbulent wisps per flue).
+ */
+export function createChimneySmokeGeometry(seed: number, puffCount = 26): THREE.BufferGeometry {
+  const positions = new Float32Array(puffCount * 3);
+  const seeds = new Float32Array(puffCount);
+  const speeds = new Float32Array(puffCount);
+  const radii = new Float32Array(puffCount);
+  const heights = new Float32Array(puffCount);
+  const sizes = new Float32Array(puffCount);
+
+  const rand = (k: number) => {
+    const x = Math.sin((seed + 2.71) * 89.3 + k * 197.3) * 43758.5453;
+    return x - Math.floor(x);
+  };
+
+  for (let i = 0; i < puffCount; i++) {
+    seeds[i] = (i + rand(i * 5 + 1) * 0.55) / puffCount;
+    speeds[i] = 0.14 + rand(i * 5 + 2) * 0.065;
+    radii[i] = 0.1 + rand(i * 5 + 3) * 0.14;
+    heights[i] = 3.1 + rand(i * 5 + 4) * 1.45;
+    sizes[i] = 8.5 + rand(i * 5 + 5) * 6.5;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 1));
+  geo.setAttribute('aSpeed', new THREE.BufferAttribute(speeds, 1));
+  geo.setAttribute('aRadius', new THREE.BufferAttribute(radii, 1));
+  geo.setAttribute('aHeight', new THREE.BufferAttribute(heights, 1));
+  geo.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 2.4, 0), 4.8);
+  return geo;
+}
+
+/** Creates the shared volumetric woodsmoke shader material used by all building chimneys. */
+export function createChimneySmokeMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: CHIMNEY_SMOKE_VERT,
+    fragmentShader: CHIMNEY_SMOKE_FRAG,
+    uniforms: {
+      uTime: { value: 0 },
+      uWind: { value: new THREE.Vector2(0.28, 0.12) },
+      uDaylight: { value: 0.9 },
+      uSunDir: { value: new THREE.Vector3(0.45, 0.78, 0.42).normalize() },
+      uPixelRatio: { value: getDevicePixelRatio() },
+    },
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.NormalBlending,
   });
 }

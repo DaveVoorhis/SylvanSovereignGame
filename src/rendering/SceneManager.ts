@@ -148,8 +148,8 @@ export class SceneManager {
         focusDistance,
         focusRange: isPov ? 28 : Math.max(30, focusDistance * 0.72),
         maxBlur: isPov ? 0.011 : 0.0125,
-        horizonFadeStart: isPov ? 135 : 195,
-        horizonFadeEnd: isPov ? 340 : 455,
+        horizonFadeStart: isPov ? 175 : 240,
+        horizonFadeEnd: isPov ? 390 : 510,
         horizonColor: sky.fogColor,
         isPov,
       });

@@ -57,6 +57,10 @@ export class Creature {
   navLoopCount = 0;
   detourSign: -1 | 0 | 1 = 0;
   detourTimer = 0;
+  /** Last target coordinates & obstacle map version validated for obstacle clearance. */
+  validatedTargetX = NaN;
+  validatedTargetZ = NaN;
+  validatedObstacleVersion = -1;
 
   /** Optional target entity IDs for active behaviors. */
   targetResourceId: string | null = null;

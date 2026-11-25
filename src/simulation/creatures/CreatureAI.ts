@@ -45,6 +45,12 @@ function creatureCellKey(cx: number, cz: number): number {
  */
 export class CreatureAI {
   private readonly nearbyObstacles: SolidObstacle[] = [];
+  private readonly activeObsX: number[] = [];
+  private readonly activeObsZ: number[] = [];
+  private readonly activeObsToX: number[] = [];
+  private readonly activeObsToZ: number[] = [];
+  private readonly activeObsDSq: number[] = [];
+  private readonly activeObsMinR: number[] = [];
   private readonly nearbyCreatures: Creature[] = [];
   private readonly creatureCells = new Map<number, Creature[]>();
   private creatureGridStep = -1;
@@ -876,8 +882,21 @@ export class CreatureAI {
   }
 
   private moveCreature(creature: Creature, world: WorldState, dt: number): void {
-    this.pushTargetOutsideObstacles(creature, world);
+    const obsVersion = world.obstacles.version;
+    const obstaclesChanged = creature.validatedObstacleVersion !== obsVersion;
+    if (
+      obstaclesChanged ||
+      creature.targetX !== creature.validatedTargetX ||
+      creature.targetZ !== creature.validatedTargetZ
+    ) {
+      this.pushTargetOutsideObstacles(creature, world);
+      creature.validatedTargetX = creature.targetX;
+      creature.validatedTargetZ = creature.targetZ;
+      creature.validatedObstacleVersion = obsVersion;
+    }
 
+    const startX = creature.x;
+    const startZ = creature.z;
     const creatureR = this.getCreatureRadius(creature);
     const personalR = getCreaturePersonalRadius(creature);
     const altitude = creature.def.aerial ? creature.flightAltitude : 0;
@@ -1001,6 +1020,26 @@ export class CreatureAI {
       const tieSign = (creature.id.charCodeAt(creature.id.length - 1) & 1) === 0 ? 1 : -1;
 
       if (pathBlocked) {
+        // Pre-filter nearby obstacles to only those within ray-interaction range (10x fewer inner-loop checks)
+        let activeObsCount = 0;
+        for (let i = 0; i < this.nearbyObstacles.length; i++) {
+          const obs = this.nearbyObstacles[i];
+          if (altitude > obs.height) continue;
+          const minR = world.obstacles.getEffectiveRadius(obs, creatureR);
+          const toObsX = obs.x - creature.x;
+          const toObsZ = obs.z - creature.z;
+          const dSq = toObsX * toObsX + toObsZ * toObsZ;
+          const maxReach = lookahead + minR + 0.6;
+          if (dSq > maxReach * maxReach) continue;
+          this.activeObsX[activeObsCount] = obs.x;
+          this.activeObsZ[activeObsCount] = obs.z;
+          this.activeObsToX[activeObsCount] = toObsX;
+          this.activeObsToZ[activeObsCount] = toObsZ;
+          this.activeObsDSq[activeObsCount] = dSq;
+          this.activeObsMinR[activeObsCount] = minR;
+          activeObsCount++;
+        }
+
         const baseAngle = Math.atan2(baseDirZ, baseDirX);
         const prevDirX = Math.sin(creature.heading);
         const prevDirZ = Math.cos(creature.heading);
@@ -1051,27 +1090,28 @@ export class CreatureAI {
           }
 
           // Evaluate obstacle clearance along this candidate ray
-          for (let i = 0; i < this.nearbyObstacles.length; i++) {
-            const obs = this.nearbyObstacles[i];
-            if (altitude > obs.height) continue;
-
-            const minR = world.obstacles.getEffectiveRadius(obs, creatureR);
-            const toObsX = obs.x - creature.x;
-            const toObsZ = obs.z - creature.z;
-            const dSq = toObsX * toObsX + toObsZ * toObsZ;
+          for (let i = 0; i < activeObsCount; i++) {
+            const minR = this.activeObsMinR[i];
+            const toObsX = this.activeObsToX[i];
+            const toObsZ = this.activeObsToZ[i];
+            const dSq = this.activeObsDSq[i];
             const proj = toObsX * cx + toObsZ * cz;
 
             // Penalize stepping deeper into an obstacle already touching us
-            const probeDist = Math.hypot(nearProbeX - obs.x, nearProbeZ - obs.z);
-            if (probeDist < minR + 0.12) {
-              hazard += 5.0 * (1 + (minR + 0.12 - probeDist));
+            const pdx = nearProbeX - this.activeObsX[i];
+            const pdz = nearProbeZ - this.activeObsZ[i];
+            const probeR = minR + 0.12;
+            const probeDSq = pdx * pdx + pdz * pdz;
+            if (probeDSq < probeR * probeR) {
+              hazard += 5.0 * (1 + (probeR - Math.sqrt(probeDSq)));
             }
 
             // Penalize rays that intersect an obstacle within lookahead distance
             if (proj > 0 && proj < lookahead + minR) {
-              const perpDist = Math.sqrt(Math.max(0, dSq - proj * proj));
               const clearMargin = minR + 0.32;
-              if (perpDist < clearMargin) {
+              const perpSq = Math.max(0, dSq - proj * proj);
+              if (perpSq < clearMargin * clearMargin) {
+                const perpDist = Math.sqrt(perpSq);
                 const hitSeverity = (clearMargin - perpDist) / clearMargin;
                 const distFactor = 1 - Math.max(0, proj - minR) / (lookahead + 0.5);
                 hazard += 3.2 * (0.35 + hitSeverity) * (0.4 + 0.6 * distFactor);
@@ -1217,7 +1257,7 @@ export class CreatureAI {
           creature.navLoopCount = 0;
         } else {
           creature.navProgressTimer += dt;
-          if (creature.navProgressTimer >= 3.2) {
+          if (creature.navProgressTimer >= 2.2) {
             creature.navBestGoalDist = postDist;
             creature.navProgressTimer = 0;
             creature.navLoopCount += 1;
@@ -1265,20 +1305,24 @@ export class CreatureAI {
       creature.navProgressTimer = 0;
     }
 
-    // Also keep stationary/just-landed creatures safely outside newly placed buildings & obstacles
-    const finalSep = world.obstacles.resolveCollisions(
-      creature.x,
-      creature.z,
-      creatureR,
-      creature.def.aerial ? creature.flightAltitude : 0,
-      creature.heading,
-    );
-    if (finalSep.collided) {
-      creature.x = finalSep.x;
-      creature.z = finalSep.z;
+    // Keep stationary/just-landed creatures outside newly placed buildings & obstacles
+    if (dist <= 0.25 && (obstaclesChanged || creature.def.aerial)) {
+      const finalSep = world.obstacles.resolveCollisions(
+        creature.x,
+        creature.z,
+        creatureR,
+        creature.def.aerial ? creature.flightAltitude : 0,
+        creature.heading,
+      );
+      if (finalSep.collided) {
+        creature.x = finalSep.x;
+        creature.z = finalSep.z;
+      }
     }
 
-    this.updateCreatureElevation(creature, world);
+    if (creature.x !== startX || creature.z !== startZ || creature.def.aerial) {
+      this.updateCreatureElevation(creature, world);
+    }
   }
 
   /**

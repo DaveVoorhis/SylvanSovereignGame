@@ -105,7 +105,6 @@ export const DIVINE_EVENT_CATALOG: Record<DivineEventType, DivineEventDefinition
     energyCost: 26,
     radius: 18,
     duration: 11,
-    weatherShift: 'mist',
     alignment: 'wrathful',
     description: 'Creeping brambles briefly wither nearby forage, testing woodland resilience.',
   },

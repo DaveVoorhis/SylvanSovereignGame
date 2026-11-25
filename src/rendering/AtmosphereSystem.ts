@@ -103,7 +103,7 @@ export class AtmosphereSystem {
     shadowMapSize: number,
     softParticleTex?: THREE.Texture,
   ) {
-    this.fog = new THREE.FogExp2(0xc4dac9, 0.0056);
+    this.fog = new THREE.FogExp2(0xc4dac9, 0.002);
     this.scene.fog = this.fog;
 
     // Infinite-horizon Procedural Sky Dome (tracks camera XZ each frame)
@@ -329,12 +329,12 @@ export class AtmosphereSystem {
     this.fog.color.copy(this.skyUniforms.uHorizonColor.value);
     const baseFog =
       world.weather === 'mist'
-        ? 0.0115
+        ? 0.0072
         : world.weather === 'storm'
-          ? 0.009
+          ? 0.005
           : world.weather === 'rain'
-            ? 0.0076
-            : 0.0056;
+            ? 0.0038
+            : 0.002;
     this.fog.density += (baseFog - this.fog.density) * Math.min(1, dt * 1.5);
 
     // Periodically refresh PMREM environment map for accurate sky reflections on water/stone

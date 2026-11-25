@@ -25,6 +25,18 @@ import { TerrainMap } from './terrain/TerrainMap';
 const SEASONS: readonly Season[] = ['spring', 'summer', 'autumn', 'winter'];
 
 /**
+ * Smooth time-of-day pace multiplier that lingers in bright daylight & golden hour
+ * (~80% of real play time) and passes briskly through deep night (~16-20% of real play time).
+ */
+export function getTimeOfDayPace(timeOfDay: number): number {
+  const sunY = Math.sin((timeOfDay - 0.25) * Math.PI * 2);
+  const t = Math.max(0, Math.min(1, (sunY + 0.18) / 0.33));
+  const smooth = t * t * (3 - 2 * t);
+  // Deep night (smooth = 0): 3.0x speed; bright daylight (smooth = 1): 0.68x speed
+  return 3.0 + (0.68 - 3.0) * smooth;
+}
+
+/**
  * Central headless simulation container.
  * Has zero Three.js dependencies so it can be unit-tested or run in a Worker.
  */
@@ -198,8 +210,8 @@ export class WorldState {
 
     this.elapsedSeconds += dt;
 
-    // Advance day / time-of-day / seasons
-    const dayFraction = dt / this.config.dayLengthSeconds;
+    // Advance day / time-of-day / seasons with daylight-biased pacing (lingering days, brisk nights)
+    const dayFraction = (dt * getTimeOfDayPace(this.timeOfDay)) / this.config.dayLengthSeconds;
     this.timeOfDay += dayFraction;
     if (this.timeOfDay >= 1) {
       this.timeOfDay -= 1;
@@ -272,13 +284,38 @@ export class WorldState {
   }
 
   private rollSeasonalWeather(): void {
-    const pool: Record<Season, WeatherType[]> = {
-      spring: ['sunbeams', 'blossom', 'clear', 'rain', 'mist'],
-      summer: ['clear', 'sunbeams', 'clear', 'rain', 'storm'],
-      autumn: ['mist', 'clear', 'sunbeams', 'rain', 'storm'],
-      winter: ['snow', 'mist', 'clear', 'snow'],
+    const weightedPool: Record<Season, { item: WeatherType; weight: number }[]> = {
+      spring: [
+        { item: 'sunbeams', weight: 36 },
+        { item: 'clear', weight: 28 },
+        { item: 'blossom', weight: 24 },
+        { item: 'rain', weight: 10 },
+        { item: 'mist', weight: 2 },
+      ],
+      summer: [
+        { item: 'clear', weight: 40 },
+        { item: 'sunbeams', weight: 38 },
+        { item: 'rain', weight: 12 },
+        { item: 'storm', weight: 8 },
+        { item: 'mist', weight: 2 },
+      ],
+      autumn: [
+        { item: 'clear', weight: 35 },
+        { item: 'sunbeams', weight: 31 },
+        { item: 'rain', weight: 18 },
+        { item: 'storm', weight: 11 },
+        { item: 'mist', weight: 5 },
+      ],
+      winter: [
+        { item: 'clear', weight: 36 },
+        { item: 'snow', weight: 42 },
+        { item: 'sunbeams', weight: 19 },
+        { item: 'mist', weight: 3 },
+      ],
     };
-    this.weather = this.rng.pick(pool[this.season]);
-    this.weatherTimer = this.rng.range(24, 52);
+    this.weather = this.rng.weightedPick(weightedPool[this.season]);
+    // Keep rare misty spells brief while clear/sunny skies linger comfortably
+    this.weatherTimer =
+      this.weather === 'mist' ? this.rng.range(12, 20) : this.rng.range(28, 56);
   }
 }

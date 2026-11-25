@@ -216,7 +216,14 @@ export class ProceduralGod {
       : { x: 0, z: 0 };
 
     if (def.weatherShift) {
-      world.setWeather(def.weatherShift, def.duration * 2.4);
+      if (def.weatherShift === 'mist') {
+        // Keep global mist genuinely rare and brief even during Healing Dew
+        if (world.rng.chance(0.2)) {
+          world.setWeather('mist', Math.min(14, def.duration * 1.2));
+        }
+      } else {
+        world.setWeather(def.weatherShift, def.duration * 2.2);
+      }
     }
 
     // Apply tangible simulation effects

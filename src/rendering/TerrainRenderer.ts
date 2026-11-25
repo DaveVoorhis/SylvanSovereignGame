@@ -28,23 +28,14 @@ function warpTerrainCoord(u: number, halfCore: number, horizonExtent: number): n
 
 /**
  * Renders the continuous endless woodland terrain extending smoothly to the horizon,
- * physically-based depth-aware flowing forest stream/pond water, and charming
- * cobblestone stepping-stone caravan trails dotted with warm trailside lanterns.
+ * and physically-based depth-aware flowing forest stream/pond water.
  */
 export class TerrainRenderer {
   readonly terrainMesh: THREE.Mesh;
   readonly waterMesh: THREE.Mesh;
   private readonly waterSurface: RealisticWaterSurface;
   private readonly terrainMaterial: THREE.MeshStandardMaterial;
-  private readonly routesGroup = new THREE.Group();
-  private readonly steppingStoneGeo: THREE.BufferGeometry;
-  private readonly steppingStoneMat: THREE.MeshStandardMaterial;
-  private readonly lanternPostGeo: THREE.BufferGeometry;
-  private readonly lanternGlowGeo: THREE.BufferGeometry;
-  private readonly lanternPostMat: THREE.MeshStandardMaterial;
-  private readonly lanternGlowMat: THREE.MeshStandardMaterial;
   private lastSeason: Season | null = null;
-  private lastRouteSignature = '';
 
   constructor(
     scene: THREE.Scene,
@@ -101,26 +92,6 @@ export class TerrainRenderer {
     this.waterMesh = this.waterSurface.mesh;
     scene.add(this.waterMesh);
 
-    // Cobblestone stepping-stone & miniature milepost lantern resources for trade paths
-    this.steppingStoneGeo = new THREE.CylinderGeometry(0.34, 0.4, 0.1, 10);
-    this.steppingStoneMat = new THREE.MeshStandardMaterial({
-      color: 0xd9cdb2,
-      map: textures.stone.map,
-      roughness: 0.86,
-    });
-    this.lanternPostGeo = new THREE.CylinderGeometry(0.035, 0.05, 0.72, 6);
-    this.lanternPostGeo.translate(0, 0.36, 0);
-    this.lanternGlowGeo = new THREE.SphereGeometry(0.11, 8, 6);
-    this.lanternGlowGeo.translate(0, 0.76, 0);
-    this.lanternPostMat = new THREE.MeshStandardMaterial({ color: 0x5c3e26, roughness: 0.88 });
-    this.lanternGlowMat = new THREE.MeshStandardMaterial({
-      color: 0xffe494,
-      emissive: 0xffb347,
-      emissiveIntensity: 1.3,
-      roughness: 0.25,
-    });
-
-    scene.add(this.routesGroup);
     this.applySeasonalColors(world.season);
   }
 
@@ -129,16 +100,9 @@ export class TerrainRenderer {
       this.waterSurface.update(dt, sky);
     }
 
-    // Evening lantern glow on trade trails
-    const sunY = Math.sin((this.world.timeOfDay - 0.25) * Math.PI * 2);
-    const nightAmt = THREE.MathUtils.clamp(1 - (sunY + 0.1) * 2.1, 0.2, 1.8);
-    this.lanternGlowMat.emissiveIntensity = nightAmt * 1.45;
-
     if (this.lastSeason !== this.world.season) {
       this.applySeasonalColors(this.world.season);
     }
-
-    this.syncTradePaths();
   }
 
   private applySeasonalColors(season: Season): void {
@@ -218,102 +182,9 @@ export class TerrainRenderer {
     colAttr.needsUpdate = true;
   }
 
-  private syncTradePaths(): void {
-    const routes = this.world.economy.activeRoutes;
-    const sig = routes
-      .map((r) => `${r.fromSettlementId}-${r.toSettlementId}:${r.activeCount}`)
-      .join('|');
-    if (sig === this.lastRouteSignature) return;
-    this.lastRouteSignature = sig;
-
-    while (this.routesGroup.children.length > 0) {
-      this.routesGroup.remove(this.routesGroup.children[0]);
-    }
-    if (routes.length === 0) return;
-
-    const stoneTransforms: THREE.Matrix4[] = [];
-    const lanternTransforms: THREE.Matrix4[] = [];
-    const dummy = new THREE.Object3D();
-
-    for (const route of routes) {
-      const dist = Math.hypot(route.to.x - route.from.x, route.to.z - route.from.z);
-      const stoneCount = Math.max(8, Math.floor(dist / 1.45));
-      for (let i = 1; i < stoneCount; i++) {
-        const t = i / stoneCount;
-        const wiggle = Math.sin(t * Math.PI * 3) * 0.65;
-        const dx = route.to.x - route.from.x;
-        const dz = route.to.z - route.from.z;
-        const len = Math.hypot(dx, dz) || 1;
-        const px = -dz / len;
-        const pz = dx / len;
-
-        const x = THREE.MathUtils.lerp(route.from.x, route.to.x, t) + px * wiggle;
-        const z = THREE.MathUtils.lerp(route.from.z, route.to.z, t) + pz * wiggle;
-        const groundY = this.world.terrain.getHeightAt(x, z);
-        const y = Math.max(groundY, this.world.terrain.waterLevel) + 0.02;
-
-        dummy.position.set(x, y, z);
-        dummy.rotation.set(0, i * 1.1, 0);
-        const sx = 0.8 + ((i * 7) % 5) * 0.1;
-        const sz = 0.72 + ((i * 3) % 5) * 0.1;
-        dummy.scale.set(sx, 1, sz);
-        dummy.updateMatrix();
-        stoneTransforms.push(dummy.matrix.clone());
-
-        if (i % 7 === 0 && groundY > this.world.terrain.waterLevel + 0.25) {
-          const side = i % 14 === 0 ? 1 : -1;
-          const lx = x + px * side * 0.85;
-          const lz = z + pz * side * 0.85;
-          const ly = this.world.terrain.getHeightAt(lx, lz);
-          dummy.position.set(lx, ly - 0.04, lz);
-          dummy.rotation.set(0, i, 0);
-          dummy.scale.setScalar(1);
-          dummy.updateMatrix();
-          lanternTransforms.push(dummy.matrix.clone());
-        }
-      }
-    }
-
-    if (stoneTransforms.length > 0) {
-      const stones = new THREE.InstancedMesh(
-        this.steppingStoneGeo,
-        this.steppingStoneMat,
-        stoneTransforms.length,
-      );
-      stones.receiveShadow = true;
-      stoneTransforms.forEach((m, i) => stones.setMatrixAt(i, m));
-      this.routesGroup.add(stones);
-    }
-
-    if (lanternTransforms.length > 0) {
-      const posts = new THREE.InstancedMesh(
-        this.lanternPostGeo,
-        this.lanternPostMat,
-        lanternTransforms.length,
-      );
-      const globes = new THREE.InstancedMesh(
-        this.lanternGlowGeo,
-        this.lanternGlowMat,
-        lanternTransforms.length,
-      );
-      posts.castShadow = true;
-      lanternTransforms.forEach((m, i) => {
-        posts.setMatrixAt(i, m);
-        globes.setMatrixAt(i, m);
-      });
-      this.routesGroup.add(posts, globes);
-    }
-  }
-
   dispose(): void {
     this.terrainMesh.geometry.dispose();
     this.terrainMaterial.dispose();
     this.waterSurface.dispose();
-    this.steppingStoneGeo.dispose();
-    this.steppingStoneMat.dispose();
-    this.lanternPostGeo.dispose();
-    this.lanternGlowGeo.dispose();
-    this.lanternPostMat.dispose();
-    this.lanternGlowMat.dispose();
   }
 }

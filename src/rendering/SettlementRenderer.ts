@@ -3,13 +3,13 @@ import type { BuildingType } from '@core/Types';
 import type { BuildingInstance, Settlement } from '@simulation/settlements/Settlement';
 import type { WorldState } from '@simulation/WorldState';
 import type { TextureLibrary } from './ProceduralTextures';
-import { HearthFire, createOvenFireMaterial, createSharedFlameGeometry } from './FireEffect';
-
-interface SmokePuff {
-  readonly mesh: THREE.Mesh;
-  readonly basePos: THREE.Vector3;
-  readonly phase: number;
-}
+import {
+  HearthFire,
+  createChimneySmokeGeometry,
+  createChimneySmokeMaterial,
+  createOvenFireMaterial,
+  createSharedFlameGeometry,
+} from './FireEffect';
 
 interface RenderedBuilding {
   readonly group: THREE.Group;
@@ -20,7 +20,7 @@ interface RenderedBuilding {
   readonly rotorMesh?: THREE.Object3D;
   readonly fountainJet?: THREE.Object3D;
   readonly swayPart?: THREE.Object3D;
-  readonly smokePuffs?: SmokePuff[];
+  readonly chimneySmokes?: THREE.Points[];
 }
 
 interface RenderedHearth {
@@ -62,14 +62,13 @@ export class SettlementRenderer {
   private readonly flowerBlueMat: THREE.MeshStandardMaterial;
   private readonly charredLogMat: THREE.MeshStandardMaterial;
   private readonly ovenFireMat: THREE.ShaderMaterial;
-  private readonly smokeMat: THREE.MeshStandardMaterial;
+  private readonly chimneySmokeMat: THREE.ShaderMaterial;
   private readonly potteryMat: THREE.MeshStandardMaterial;
 
   // Shared sculpted architectural geometries
   private readonly bellRoofGeo: THREE.BufferGeometry;
   private readonly acornSiloGeo: THREE.BufferGeometry;
   private readonly gableRoofGeo: THREE.BufferGeometry;
-  private readonly smokeGeo: THREE.BufferGeometry;
   private readonly sharedFlameGeo: THREE.BufferGeometry;
 
   private readonly buildingMeshes = new Map<string, RenderedBuilding>();
@@ -209,13 +208,7 @@ export class SettlementRenderer {
       roughness: 0.94,
     });
     this.ovenFireMat = createOvenFireMaterial();
-    this.smokeMat = new THREE.MeshStandardMaterial({
-      color: 0xeae6df,
-      transparent: true,
-      opacity: 0.38,
-      roughness: 1.0,
-      depthWrite: false,
-    });
+    this.chimneySmokeMat = createChimneySmokeMaterial();
     this.potteryMat = new THREE.MeshStandardMaterial({
       color: 0xc26942,
       roughness: 0.48,
@@ -261,7 +254,6 @@ export class SettlementRenderer {
     });
     this.gableRoofGeo.translate(0, 0, -1.45);
 
-    this.smokeGeo = new THREE.SphereGeometry(0.18, 10, 8);
     this.sharedFlameGeo = createSharedFlameGeometry();
 
     scene.add(this.rootGroup);
@@ -274,7 +266,10 @@ export class SettlementRenderer {
     const t = this.world.elapsedSeconds;
 
     // Warm evening window & hearth glow intensity
-    const sunY = Math.sin((this.world.timeOfDay - 0.25) * Math.PI * 2);
+    const sunAngle = (this.world.timeOfDay - 0.25) * Math.PI * 2;
+    const sunY = Math.sin(sunAngle);
+    const sunX = Math.cos(sunAngle) * 0.85;
+    const daylight = THREE.MathUtils.clamp((sunY + 0.16) / 0.55, 0, 1);
     const nightGlow = THREE.MathUtils.clamp(1 - (sunY + 0.1) * 2.2, 0.24, 2.35);
     this.windowMat.emissiveIntensity = nightGlow * 1.45;
     this.fountainWaterMat.emissiveIntensity = 0.25 + nightGlow * 0.35;
@@ -290,6 +285,19 @@ export class SettlementRenderer {
             : this.world.weather === 'snow'
               ? 0.42
             : 0.24;
+
+    // Update shared volumetric chimney woodsmoke uniforms (world-aligned wind & solar lighting)
+    const breezeAngle = Math.sin(t * 0.18) * 0.45 + 0.55;
+    const breezeSpeed = 0.22 + windStrength * 0.72;
+    this.chimneySmokeMat.uniforms.uTime.value = t;
+    (this.chimneySmokeMat.uniforms.uWind.value as THREE.Vector2).set(
+      Math.cos(breezeAngle) * breezeSpeed,
+      Math.sin(breezeAngle) * breezeSpeed,
+    );
+    this.chimneySmokeMat.uniforms.uDaylight.value = daylight;
+    (this.chimneySmokeMat.uniforms.uSunDir.value as THREE.Vector3)
+      .set(sunX, Math.max(0.25, Math.abs(sunY)), 0.42)
+      .normalize();
 
     for (const hearth of this.hearths) {
       hearth.fire.update(t, nightGlow, windStrength);
@@ -331,17 +339,9 @@ export class SettlementRenderer {
         if (entry.swayPart) {
           entry.swayPart.rotation.z = Math.sin(t * 2.1 + b.position.x) * 0.11;
         }
-        if (entry.smokePuffs && b.completed) {
-          for (const puff of entry.smokePuffs) {
-            const cycle = (t * 0.38 + puff.phase) % 1;
-            puff.mesh.position.set(
-              puff.basePos.x + Math.sin(cycle * Math.PI * 2 + puff.phase) * 0.18 + cycle * 0.22,
-              puff.basePos.y + cycle * 1.65,
-              puff.basePos.z + Math.cos(cycle * Math.PI * 2) * 0.1,
-            );
-            const s = 0.45 + cycle * 1.45;
-            puff.mesh.scale.setScalar(s);
-            puff.mesh.visible = cycle > 0.04 && cycle < 0.96;
+        if (entry.chimneySmokes) {
+          for (const plume of entry.chimneySmokes) {
+            plume.visible = b.completed;
           }
         }
       }
@@ -506,7 +506,7 @@ export class SettlementRenderer {
     let rotorMesh: THREE.Object3D | undefined;
     let fountainJet: THREE.Object3D | undefined;
     let swayPart: THREE.Object3D | undefined;
-    const smokePuffs: SmokePuff[] = [];
+    const chimneySmokes: THREE.Points[] = [];
 
     const tag = <T extends THREE.Object3D>(obj: T, parent: THREE.Object3D = group): T => {
       obj.userData.selectionTarget = { kind: 'building', id: b.id };
@@ -561,16 +561,16 @@ export class SettlementRenderer {
     };
 
     const addChimneySmoke = (x: number, y: number, z: number) => {
-      for (let i = 0; i < 3; i++) {
-        const mesh = new THREE.Mesh(this.smokeGeo, this.smokeMat);
-        mesh.position.set(x, y, z);
-        group.add(mesh);
-        smokePuffs.push({
-          mesh,
-          basePos: new THREE.Vector3(x, y, z),
-          phase: i / 3 + ((b.position.x * 0.13) % 1),
-        });
-      }
+      const seed = b.position.x * 0.37 + b.position.z * 0.53 + chimneySmokes.length * 3.17;
+      const smokeGeo = createChimneySmokeGeometry(seed, 26);
+      const plume = new THREE.Points(smokeGeo, this.chimneySmokeMat);
+      plume.position.set(x, y - 0.06, z);
+      // Counter-rotate so local XZ matches world wind direction across all buildings
+      plume.rotation.y = -b.rotation;
+      plume.renderOrder = 3;
+      plume.visible = b.completed;
+      group.add(plume);
+      chimneySmokes.push(plume);
     };
 
     const type: BuildingType = b.type;
@@ -1235,7 +1235,7 @@ export class SettlementRenderer {
       rotorMesh,
       fountainJet,
       swayPart,
-      smokePuffs: smokePuffs.length > 0 ? smokePuffs : undefined,
+      chimneySmokes: chimneySmokes.length > 0 ? chimneySmokes : undefined,
     };
   }
 
@@ -1244,13 +1244,16 @@ export class SettlementRenderer {
       this.bellRoofGeo,
       this.acornSiloGeo,
       this.gableRoofGeo,
-      this.smokeGeo,
       this.sharedFlameGeo,
     ]);
     const fireGroups = new Set<THREE.Object3D>(this.hearths.map((h) => h.fire.group));
     this.rootGroup.traverse((obj) => {
       if (obj.parent && fireGroups.has(obj.parent)) return;
-      if (obj instanceof THREE.Mesh && obj.geometry && !sharedGeos.has(obj.geometry)) {
+      if (
+        (obj instanceof THREE.Mesh || obj instanceof THREE.Points) &&
+        obj.geometry &&
+        !sharedGeos.has(obj.geometry)
+      ) {
         obj.geometry.dispose();
       }
     });
@@ -1284,7 +1287,7 @@ export class SettlementRenderer {
     this.flowerBlueMat.dispose();
     this.charredLogMat.dispose();
     this.ovenFireMat.dispose();
-    this.smokeMat.dispose();
+    this.chimneySmokeMat.dispose();
     this.potteryMat.dispose();
   }
 }

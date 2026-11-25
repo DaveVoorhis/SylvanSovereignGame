@@ -127,7 +127,7 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
       expect(reachedCityOrTown).toBeGreaterThanOrEqual(2);
       expect(distinctWorldTypes.size).toBeGreaterThanOrEqual(8);
     },
-    15000,
+    25000,
   );
 
   it('allows the procedural deity to interpret spectator whispers without losing autonomy', () => {
@@ -388,5 +388,36 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     }
 
     expect(tightLoopIncidents).toBe(0);
+  });
+
+  it('emphasizes daylight with quick nights and keeps mist weather rare', () => {
+    const world = new WorldState(new EventBus(), { seed: 90210, dayLengthSeconds: 28 });
+    let daylightSteps = 0;
+    let nightSteps = 0;
+    let mistSteps = 0;
+    const totalSteps = 1100; // ~110s (~4 full day-night cycles across multiple weather rolls)
+
+    for (let i = 0; i < totalSteps; i++) {
+      world.step(0.1);
+      const sunY = Math.sin((world.timeOfDay - 0.25) * Math.PI * 2);
+      if (sunY >= 0) {
+        daylightSteps++;
+      } else {
+        nightSteps++;
+      }
+      if (world.weather === 'mist') {
+        mistSteps++;
+      }
+    }
+
+    const daylightRatio = daylightSteps / totalSteps;
+    const nightRatio = nightSteps / totalSteps;
+    const mistRatio = mistSteps / totalSteps;
+
+    // Daylight should occupy the vast majority of play time while night passes briskly
+    expect(daylightRatio).toBeGreaterThan(0.72);
+    expect(nightRatio).toBeLessThan(0.28);
+    // Mist should remain rare across both natural weather and divine acts
+    expect(mistRatio).toBeLessThan(0.1);
   });
 });

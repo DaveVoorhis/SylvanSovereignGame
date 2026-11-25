@@ -4,7 +4,13 @@ import { EventBus } from '@core/EventBus';
 import type { CreatureRole } from '@core/Types';
 import { CreatureRenderer } from '@rendering/CreatureRenderer';
 import { DistanceFocusBlurPass } from '@rendering/DistanceFocusBlurPass';
-import { HearthFire, createOvenFireMaterial, createSharedFlameGeometry } from '@rendering/FireEffect';
+import {
+  HearthFire,
+  createChimneySmokeGeometry,
+  createChimneySmokeMaterial,
+  createOvenFireMaterial,
+  createSharedFlameGeometry,
+} from '@rendering/FireEffect';
 import {
   createBerryBushGeo,
   createBirchCanopyGeo,
@@ -235,6 +241,22 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     ovenMat.uniforms.uTime.value = 3.5;
     expect(ovenMat.uniforms.uTime.value).toBe(3.5);
     ovenMat.dispose();
+
+    const chimneyGeo = createChimneySmokeGeometry(2.3, 26);
+    expect(chimneyGeo.attributes.position.count).toBe(26);
+    expect(chimneyGeo.attributes.aSeed).toBeDefined();
+    expect(chimneyGeo.attributes.aSpeed).toBeDefined();
+    expect(chimneyGeo.attributes.aRadius).toBeDefined();
+    expect(chimneyGeo.attributes.aHeight).toBeDefined();
+    expect(chimneyGeo.attributes.aSize).toBeDefined();
+    chimneyGeo.dispose();
+
+    const chimneyMat = createChimneySmokeMaterial();
+    expect(chimneyMat.uniforms.uWind.value).toBeInstanceOf(THREE.Vector2);
+    expect(chimneyMat.uniforms.uSunDir.value).toBeInstanceOf(THREE.Vector3);
+    expect(chimneyMat.transparent).toBe(true);
+    expect(chimneyMat.depthWrite).toBe(false);
+    chimneyMat.dispose();
 
     fire.dispose();
     sharedFlameGeo.dispose();

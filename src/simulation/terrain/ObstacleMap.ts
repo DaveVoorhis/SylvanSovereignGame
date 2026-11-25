@@ -69,6 +69,12 @@ export class ObstacleMap {
   private lastSettlementCount = -1;
   private lastBuildingCount = -1;
   private queryStamp = 0;
+  private _version = 0;
+
+  /** Monotonic version incremented whenever settlements or buildings change and the grid rebuilds. */
+  get version(): number {
+    return this._version;
+  }
 
   /** Rebuilds the spatial grid whenever settlements or buildings change. */
   sync(terrain: TerrainMap, settlements: readonly Settlement[]): void {
@@ -85,6 +91,7 @@ export class ObstacleMap {
 
     this.lastSettlementCount = settlements.length;
     this.lastBuildingCount = totalBuildings;
+    this._version++;
     this.cells.clear();
     this.allObstacles.length = 0;
 

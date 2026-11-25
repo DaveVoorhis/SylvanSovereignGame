@@ -56,12 +56,18 @@ export class TerrainMap {
   private readonly fertilityNoise: Noise2D;
   private readonly riverCurvePhase: number;
   private readonly riverCurveFreq: number;
+  private readonly walkGridHalf: number;
+  private readonly walkGridSize: number;
+  private readonly walkCache: Uint8Array;
 
   constructor(config: WorldConfig) {
     this.size = config.worldSize;
     this.halfSize = config.worldSize / 2;
     this.playableRadius = this.halfSize - 5;
     this.waterLevel = config.waterLevel;
+    this.walkGridHalf = Math.ceil(this.playableRadius * 2) + 2;
+    this.walkGridSize = this.walkGridHalf * 2;
+    this.walkCache = new Uint8Array(this.walkGridSize * this.walkGridSize);
 
     const rng = new SeededRandom(config.seed ^ 0x4f524553);
     this.elevationNoise = new Noise2D(rng.int(1, 1_000_000));
@@ -187,6 +193,26 @@ export class TerrainMap {
 
   isWalkable(x: number, z: number, amphibious = false): boolean {
     if (!this.isWithinPlayableArea(x, z)) return false;
+    const gx = Math.floor(x * 2) + this.walkGridHalf;
+    const gz = Math.floor(z * 2) + this.walkGridHalf;
+    if (gx >= 0 && gx < this.walkGridSize && gz >= 0 && gz < this.walkGridSize) {
+      const idx = gx * this.walkGridSize + gz;
+      let val = this.walkCache[idx];
+      if (val === 0) {
+        const cx = (gx - this.walkGridHalf + 0.5) * 0.5;
+        const cz = (gz - this.walkGridHalf + 0.5) * 0.5;
+        const h = this.getHeightAt(cx, cz);
+        if (h < this.waterLevel - 0.65 || this.getSlopeAt(cx, cz) >= 0.34) {
+          val = 1;
+        } else if (h < this.waterLevel + 0.12) {
+          val = 2;
+        } else {
+          val = 3;
+        }
+        this.walkCache[idx] = val;
+      }
+      return amphibious ? val >= 2 : val === 3;
+    }
     const h = this.getHeightAt(x, z);
     if (!amphibious && h < this.waterLevel + 0.12) return false;
     if (amphibious && h < this.waterLevel - 0.65) return false;
