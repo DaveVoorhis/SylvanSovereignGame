@@ -1,4 +1,6 @@
 import type { ResourceType } from '@core/Types';
+import { BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
+import { getBuildingStage, getConstructionStageLabel } from '@simulation/settlements/Settlement';
 import { getBridgeApproach, getBridgeDeckHeightAt } from '@simulation/terrain/Bridge';
 import {
   HEARTH_FIRE_KEEP_OUT_RADIUS,
@@ -121,6 +123,9 @@ export class CreatureAI {
   updateCreature(creature: Creature, world: WorldState, dt: number): void {
     if (!creature.alive) return;
 
+    creature.isActivelyWorking = false;
+    creature.activeConstructionStage = null;
+
     // Passive physiological drift
     creature.ageDays += dt / world.config.dayLengthSeconds;
     creature.hunger = Math.min(100, creature.hunger + dt * 0.52);
@@ -170,6 +175,8 @@ export class CreatureAI {
       this.handleFighting(creature, world, dt);
     } else if (creature.activity === 'fleeing') {
       this.handleFleeing(creature, world, dt);
+    } else if (creature.activity === 'emigrating') {
+      this.handleEmigrating(creature, world, dt);
     } else if (creature.activity === 'trading') {
       this.handleTrading(creature, world, dt);
     } else if (creature.activity === 'building') {
@@ -298,7 +305,7 @@ export class CreatureAI {
     }
 
     // 3b. Unfinished buildings need builders (builders & artisans eagerly pitch in across expanding districts!)
-    const unfinishedList = home.buildings.filter((b) => !b.completed);
+    const unfinishedList = home.buildings.filter((b) => !b.completed || b.disassembling);
     if (
       unfinishedList.length > 0 &&
       (creature.role === 'builder' ||
@@ -307,11 +314,12 @@ export class CreatureAI {
     ) {
       // Pick the nearest unfinished construction site so builders spread across active projects
       let chosenSite = unfinishedList[0];
-      let bestDist = Infinity;
+      let bestScore = Infinity;
       for (const site of unfinishedList) {
         const d = Math.hypot(site.position.x - creature.x, site.position.z - creature.z);
-        if (d < bestDist) {
-          bestDist = d;
+        const score = d - (site.disassembling ? 4.5 : 0);
+        if (score < bestScore) {
+          bestScore = score;
           chosenSite = site;
         }
       }
@@ -327,7 +335,16 @@ export class CreatureAI {
       creature.targetX = chosenSite.position.x + Math.cos(standAngle) * standR;
       creature.targetZ = chosenSite.position.z + Math.sin(standAngle) * standR;
       creature.actionTimer = 24;
-      creature.thought = `Raising a new ${chosenSite.type.replace(/_/g, ' ')}`;
+      const bp = BUILDING_CATALOG[chosenSite.type];
+      if (chosenSite.disassembling) {
+        const repName = chosenSite.replacementType
+          ? BUILDING_CATALOG[chosenSite.replacementType].displayName
+          : 'a larger building';
+        creature.thought = `Disassembling ${bp.displayName} for ${repName}`;
+      } else {
+        const stage = getBuildingStage(chosenSite);
+        creature.thought = `${getConstructionStageLabel(stage, bp.frameStyle)} for ${bp.displayName}`;
+      }
       return;
     }
 
@@ -492,6 +509,11 @@ export class CreatureAI {
 
     const dist = Math.hypot(node.position.x - creature.x, node.position.z - creature.z);
     if (dist < 3.15) {
+      if (creature.activity === 'gathering_timber') {
+        creature.isActivelyWorking = true;
+        creature.activeConstructionStage = 'clearing';
+        creature.heading = Math.atan2(node.position.x - creature.x, node.position.z - creature.z);
+      }
       const rate = 2.0 * (0.75 + creature.def.buildSkill * 0.5) * dt;
       const taken = Math.min(node.amount, rate);
       node.amount -= taken;
@@ -517,6 +539,9 @@ export class CreatureAI {
       const distEnd = Math.hypot(bridge.endX - creature.x, bridge.endZ - creature.z);
       const nearDist = Math.min(distStart, distEnd);
       if (nearDist < 3.4) {
+        creature.isActivelyWorking = true;
+        creature.activeConstructionStage =
+          bridge.progress < 25 ? 'clearing' : bridge.progress < 50 ? 'foundation' : 'framing';
         if (nearDist < 2.5) {
           creature.targetX = creature.x;
           creature.targetZ = creature.z;
@@ -540,7 +565,7 @@ export class CreatureAI {
     }
 
     const bld = home?.buildings.find((b) => b.id === creature.targetBuildingId);
-    if (!home || !bld || bld.completed || creature.actionTimer <= 0) {
+    if (!home || !bld || (bld.completed && !bld.disassembling) || creature.actionTimer <= 0) {
       creature.activity = 'idle';
       creature.targetBuildingId = null;
       return;
@@ -550,6 +575,10 @@ export class CreatureAI {
     const buildReach =
       getBuildingCollisionRadius(bld.type) + this.getCreatureRadius(creature) + 1.5;
     if (dist < buildReach) {
+      const bp = BUILDING_CATALOG[bld.type];
+      const stage = getBuildingStage(bld);
+      creature.isActivelyWorking = true;
+      creature.activeConstructionStage = stage;
       // Once comfortably within hammering reach, settle and face the construction site
       if (dist < buildReach - 0.35) {
         creature.targetX = creature.x;
@@ -557,15 +586,58 @@ export class CreatureAI {
         creature.heading = Math.atan2(bld.position.x - creature.x, bld.position.z - creature.z);
       }
       const work = dt * (11.0 + creature.def.buildSkill * 11.0);
-      bld.progress = Math.min(100, bld.progress + work);
-      if (bld.progress >= 100 && !bld.completed) {
-        bld.completed = true;
-        creature.mood = Math.min(100, creature.mood + 14);
-        creature.wealth += 4;
-        world.settlementManager.onBuildingCompleted(home, bld, creature, world);
-        creature.activity = 'idle';
-        creature.targetBuildingId = null;
+      if (bld.disassembling) {
+        const repName = bld.replacementType
+          ? BUILDING_CATALOG[bld.replacementType].displayName
+          : 'a larger building';
+        creature.thought = `Disassembling ${bp.displayName} for ${repName}`;
+        bld.progress = Math.max(0, bld.progress - work * 1.25);
+        if (bld.progress <= 0) {
+          creature.mood = Math.min(100, creature.mood + 10);
+          creature.wealth += 3;
+          world.settlementManager.onBuildingDisassembled(home, bld, creature, world);
+          creature.activity = 'idle';
+          creature.targetBuildingId = null;
+        }
+      } else {
+        creature.thought = `${getConstructionStageLabel(stage, bp.frameStyle)} for ${bp.displayName}`;
+        bld.progress = Math.min(100, bld.progress + work);
+        if (bld.progress >= 100 && !bld.completed) {
+          bld.completed = true;
+          creature.mood = Math.min(100, creature.mood + 14);
+          creature.wealth += 4;
+          world.settlementManager.onBuildingCompleted(home, bld, creature, world);
+          creature.activity = 'idle';
+          creature.targetBuildingId = null;
+        }
       }
+    }
+  }
+
+  private handleEmigrating(creature: Creature, world: WorldState, _dt: number): void {
+    const partyId = creature.emigrationPartyId;
+    const tx = creature.emigrationTargetX;
+    const tz = creature.emigrationTargetZ;
+    if (
+      !partyId ||
+      tx === null ||
+      tz === null ||
+      !world.settlementManager.getActiveEmigrations().some((p) => p.id === partyId) ||
+      creature.actionTimer <= 0
+    ) {
+      creature.emigrationPartyId = null;
+      creature.emigrationTargetX = null;
+      creature.emigrationTargetZ = null;
+      creature.activity = 'idle';
+      return;
+    }
+
+    if (creature.detourTimer <= 0) {
+      creature.targetX = tx;
+      creature.targetZ = tz;
+    }
+    if (Math.hypot(tx - creature.x, tz - creature.z) <= 4.5) {
+      world.settlementManager.foundEmigrantVillage(partyId, creature, world);
     }
   }
 
@@ -875,6 +947,13 @@ export class CreatureAI {
       home.stockpile[creature.tradeCarrying] += creature.tradeCargoAmount;
     }
 
+    const keepEmigrating =
+      creature.activity === 'emigrating' &&
+      creature.emigrationPartyId !== null &&
+      creature.emigrationTargetX !== null &&
+      creature.emigrationTargetZ !== null &&
+      creature.actionTimer > 12;
+
     creature.activity = 'idle';
     creature.targetResourceId = null;
     creature.targetBuildingId = null;
@@ -883,6 +962,11 @@ export class CreatureAI {
     creature.tradeDestinationSettlementId = null;
     creature.tradeCarrying = null;
     creature.tradeCargoAmount = 0;
+    if (!keepEmigrating) {
+      creature.emigrationPartyId = null;
+      creature.emigrationTargetX = null;
+      creature.emigrationTargetZ = null;
+    }
     creature.resetNavigationState();
 
     const creatureR = this.getCreatureRadius(creature);
@@ -926,8 +1010,15 @@ export class CreatureAI {
 
     creature.targetX = bestX;
     creature.targetZ = bestZ;
-    creature.actionTimer = bestScore > -Infinity ? 3.2 : 0.4;
-    creature.thought = 'Finding a clearer woodland path';
+    if (keepEmigrating) {
+      creature.activity = 'emigrating';
+      creature.detourTimer = 3.2;
+      creature.detourSign = creature.detourSign === 0 ? 1 : ((-creature.detourSign) as -1 | 1);
+      creature.thought = 'Blazing a trail around obstacles toward a new village';
+    } else {
+      creature.actionTimer = bestScore > -Infinity ? 3.2 : 0.4;
+      creature.thought = 'Finding a clearer woodland path';
+    }
   }
 
   private updateCreatureElevation(creature: Creature, world: WorldState): void {
@@ -999,6 +1090,8 @@ export class CreatureAI {
             ? 1.2
             : creature.activity === 'trading'
               ? 1.1
+              : creature.activity === 'emigrating'
+                ? 1.16
               : 1.0;
 
       const step = Math.min(dist, creature.def.baseSpeed * speedMult * dt);

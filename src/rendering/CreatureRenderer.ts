@@ -1,5 +1,10 @@
 import * as THREE from 'three';
-import type { CombatSparkVisual, SelectionTarget, SpeciesId } from '@core/Types';
+import type {
+  CombatSparkVisual,
+  ConstructionStage,
+  SelectionTarget,
+  SpeciesId,
+} from '@core/Types';
 import type { Creature } from '@simulation/creatures/Creature';
 import type { WorldState } from '@simulation/WorldState';
 import {
@@ -8,6 +13,13 @@ import {
   mergePartGeometries,
 } from './GeometryHelpers';
 import type { TextureLibrary } from './ProceduralTextures';
+
+interface WorkToolKit {
+  readonly axe: THREE.Group;
+  readonly spade: THREE.Group;
+  readonly trowel: THREE.Group;
+  readonly hammer: THREE.Group;
+}
 
 interface CreatureRig {
   readonly root: THREE.Group;
@@ -21,10 +33,14 @@ interface CreatureRig {
   readonly rightEar?: THREE.Object3D;
   readonly tail?: THREE.Object3D;
   readonly selectionGroup: THREE.Group;
+  readonly workTools: WorkToolKit;
+  readonly idleBuilderMallet?: THREE.Group;
+  readonly pioneerPack: THREE.Group;
   readonly seedPhase: number;
   readonly baseLeftEarZ: number;
   readonly baseRightEarZ: number;
   readonly baseTailX: number;
+  workChipCooldown: number;
 }
 
 interface SparkVisual {
@@ -396,6 +412,7 @@ export class CreatureRenderer {
   private readonly owlIrisMat: THREE.MeshStandardMaterial;
   private readonly frogIrisMat: THREE.MeshStandardMaterial;
   private readonly selectionMat: THREE.MeshBasicMaterial;
+  private readonly steelMat: THREE.MeshStandardMaterial;
 
   constructor(
     scene: THREE.Scene,
@@ -489,6 +506,11 @@ export class CreatureRenderer {
       transparent: true,
       opacity: 0.88,
     });
+    this.steelMat = new THREE.MeshStandardMaterial({
+      color: 0xc2ccd6,
+      roughness: 0.32,
+      metalness: 0.78,
+    });
 
     this.disposables.push(
       this.eyeMat,
@@ -509,6 +531,7 @@ export class CreatureRenderer {
       this.owlIrisMat,
       this.frogIrisMat,
       this.selectionMat,
+      this.steelMat,
     );
 
     scene.add(this.rootGroup);
@@ -540,6 +563,43 @@ export class CreatureRenderer {
         vx: (Math.random() - 0.5) * 1.4,
         vy: 0.8 + Math.random() * 1.1,
         vz: (Math.random() - 0.5) * 1.4,
+      });
+    }
+  }
+
+  /** Spawns stage-colored wood chips, earthen clods, stone dust, or hammer sparks when actively constructing. */
+  private spawnWorkChip(c: Creature, stage: ConstructionStage): void {
+    const palette =
+      stage === 'clearing'
+        ? [0xc99a5b, 0x8b5a2b, 0x6ea645]
+        : stage === 'leveling'
+          ? [0x7a5738, 0x5c4028, 0x9c7b55]
+          : stage === 'foundation'
+            ? [0xc7c3b8, 0xa89f91, 0xe3dfd5]
+            : stage === 'disassembling'
+              ? [0xd99b52, 0xb87642, 0xc7bfb2]
+              : [0xf7d88b, 0xd4a362, 0xfff1c2];
+
+    const fx = c.x + Math.sin(c.heading) * 0.42;
+    const fz = c.z + Math.cos(c.heading) * 0.42;
+    for (let i = 0; i < 2; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: palette[Math.floor(Math.random() * palette.length)],
+        transparent: true,
+        opacity: 0.9,
+      });
+      const mesh = new THREE.Mesh(this.geo.sparkStar, mat);
+      mesh.position.set(fx + (Math.random() - 0.5) * 0.22, c.y + 0.52 + Math.random() * 0.28, fz + (Math.random() - 0.5) * 0.22);
+      mesh.scale.setScalar(0.32 + Math.random() * 0.26);
+      this.rootGroup.add(mesh);
+      this.sparks.push({
+        mesh,
+        mat,
+        createdAt: this.world.elapsedSeconds,
+        duration: 0.42 + Math.random() * 0.18,
+        vx: (Math.random() - 0.5) * 1.15,
+        vy: 0.75 + Math.random() * 0.85,
+        vz: (Math.random() - 0.5) * 1.15,
       });
     }
   }
@@ -635,13 +695,99 @@ export class CreatureRenderer {
         rig.rightFoot.rotation.x = isAirborne ? stride : stride;
       }
 
+      // Stage-specific handheld construction tools & pioneer emigration pack
+      const activeStage = c.isActivelyWorking ? c.activeConstructionStage : null;
+      const showAxe = activeStage === 'clearing';
+      const showSpade = activeStage === 'leveling';
+      const showTrowel = activeStage === 'foundation';
+      const showHammer =
+        activeStage === 'framing' ||
+        activeStage === 'finishing' ||
+        activeStage === 'disassembling';
+      const anyWorkTool = showAxe || showSpade || showTrowel || showHammer;
+
+      rig.workTools.axe.visible = showAxe;
+      rig.workTools.spade.visible = showSpade;
+      rig.workTools.trowel.visible = showTrowel;
+      rig.workTools.hammer.visible = showHammer;
+      if (rig.idleBuilderMallet) {
+        rig.idleBuilderMallet.visible = !anyWorkTool;
+      }
+      rig.pioneerPack.visible = c.activity === 'emigrating';
+
       // Expressive activity overrides
-      if (c.activity === 'building' || c.activity === 'gathering_timber') {
+      if (activeStage) {
+        if (activeStage === 'clearing') {
+          // Bold overhead woodcutter / land-clearing axe swing
+          const chop = Math.sin(t * 9.2 + seed);
+          tiltX = 0.16 + chop * 0.24;
+          if (!isBird && rig.rightArm && rig.leftArm) {
+            rig.rightArm.rotation.x = -1.42 + chop * 0.96;
+            rig.rightArm.rotation.z = -0.32 + chop * 0.22;
+            rig.leftArm.rotation.x = -0.65 + chop * 0.45;
+          } else if (isBird) {
+            headPitch = 0.22 + chop * 0.34;
+            if (rig.leftArm && rig.rightArm) {
+              rig.leftArm.rotation.z = 0.48 + Math.sin(t * 14 + seed) * 0.32;
+              rig.rightArm.rotation.z = -0.48 - Math.sin(t * 14 + seed) * 0.32;
+            }
+          }
+        } else if (activeStage === 'leveling') {
+          // Two-handed spading & earth-leveling scoop
+          const scoop = Math.sin(t * 6.8 + seed);
+          tiltX = 0.3 + scoop * 0.2;
+          bobY -= Math.max(0, scoop) * 0.08;
+          if (!isBird && rig.rightArm && rig.leftArm) {
+            rig.rightArm.rotation.x = -0.92 + scoop * 0.68;
+            rig.leftArm.rotation.x = -0.82 + scoop * 0.62;
+            rig.rightArm.rotation.z = 0.14;
+            rig.leftArm.rotation.z = -0.14;
+          } else if (isBird) {
+            headPitch = 0.38 + scoop * 0.24;
+          }
+        } else if (activeStage === 'foundation') {
+          // Crouched stone-laying & mortar troweling
+          const sweep = Math.sin(t * 8.5 + seed);
+          squashY = 0.89 + Math.abs(sweep) * 0.04;
+          tiltX = 0.34;
+          headPitch = 0.28;
+          if (!isBird && rig.rightArm && rig.leftArm) {
+            rig.rightArm.rotation.x = -0.85 + Math.sin(t * 12 + seed) * 0.28;
+            rig.rightArm.rotation.z = -0.25 + sweep * 0.36;
+            rig.leftArm.rotation.x = -0.62;
+          } else if (isBird) {
+            headPitch = 0.36 + sweep * 0.22;
+          }
+        } else {
+          // Framing, finishing, or disassembling: crisp double-tap hammering with bracing arm
+          const rawHit = Math.sin(t * 11.5 + seed);
+          const snap = Math.sign(rawHit) * Math.pow(Math.abs(rawHit), 0.65);
+          tiltX = 0.14 + snap * 0.18;
+          if (!isBird && rig.rightArm && rig.leftArm) {
+            rig.rightArm.rotation.x = -1.25 + snap * 0.82;
+            rig.leftArm.rotation.x = -0.78 + Math.sin(t * 5.75 + seed) * 0.16;
+          } else if (isBird) {
+            headPitch = 0.18 + snap * 0.32;
+            if (rig.leftArm && rig.rightArm) {
+              rig.leftArm.rotation.z = 0.42 + Math.sin(t * 16 + seed) * 0.38;
+              rig.rightArm.rotation.z = -0.42 - Math.sin(t * 16 + seed) * 0.38;
+            }
+          }
+        }
+        rig.workChipCooldown -= dt;
+        if (rig.workChipCooldown <= 0) {
+          rig.workChipCooldown = 0.28 + (seed % 0.14);
+          this.spawnWorkChip(c, activeStage);
+        }
+      } else if (c.activity === 'building' || c.activity === 'gathering_timber') {
         const chop = Math.sin(t * 11 + seed);
         tiltX = 0.14 + chop * 0.18;
         if (!isBird && rig.rightArm) {
           rig.rightArm.rotation.x = -1.15 + chop * 0.78;
         }
+      } else if (c.activity === 'emigrating') {
+        tiltX = 0.12;
+        bobY += Math.abs(Math.sin(phase * 1.2)) * 0.05;
       } else if (c.activity === 'fighting') {
         const lunge = Math.sin(t * 15 + seed);
         tiltX = 0.2 + lunge * 0.24;
@@ -1394,14 +1540,6 @@ export class CreatureRenderer {
         hat.position.set(0, 0.16, 0);
         hat.scale.setScalar(0.95);
       }
-      if (!isBird && rightArm) {
-        const handle = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.02, 0.32, 8), this.woodMat), rightArm);
-        handle.rotation.x = Math.PI / 2;
-        handle.position.set(0, -0.23, 0.16);
-        const malletHead = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.16, 10), this.leatherMat), rightArm);
-        malletHead.rotation.z = Math.PI / 2;
-        malletHead.position.set(0, -0.23, 0.3);
-      }
     } else if (c.role === 'guard') {
       // Brass-rimmed acorn helm + leaf-crest buckler shield + wooden spear!
       if (c.species !== 'frog') {
@@ -1433,6 +1571,82 @@ export class CreatureRenderer {
       const pom = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.036, 8, 6), this.brassMat), headGroup);
       pom.position.set(0.08, 0.32, -0.02);
     }
+
+    // Builder's idle wooden mallet (hidden whenever an active construction stage tool is equipped)
+    let idleBuilderMallet: THREE.Group | undefined;
+    if (c.role === 'builder' && !isBird && rightArm) {
+      idleBuilderMallet = new THREE.Group();
+      const handle = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.02, 0.32, 8), this.woodMat), idleBuilderMallet);
+      handle.rotation.x = Math.PI / 2;
+      handle.position.set(0, -0.23, 0.16);
+      const malletHead = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.16, 10), this.leatherMat), idleBuilderMallet);
+      malletHead.rotation.z = Math.PI / 2;
+      malletHead.position.set(0, -0.23, 0.3);
+      rightArm.add(idleBuilderMallet);
+    }
+
+    // 6b. Stage-specific handheld construction tools (axe, spade, mason's trowel, carpenter's hammer)
+    const toolMount: THREE.Object3D = !isBird && rightArm ? rightArm : headGroup;
+    const toolHolder = new THREE.Group();
+    if (isBird) {
+      toolHolder.position.set(0, -0.04, 0.32);
+      toolHolder.scale.setScalar(0.65);
+    } else {
+      toolHolder.position.set(0, -0.24, 0.06);
+    }
+    toolMount.add(toolHolder);
+
+    const axe = new THREE.Group();
+    const axeHaft = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.022, 0.52, 7), this.woodMat), axe);
+    axeHaft.rotation.x = Math.PI / 2;
+    axeHaft.position.set(0, 0, 0.22);
+    const axeBlade = addPart(new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.16, 0.12), this.steelMat), axe);
+    axeBlade.position.set(0, -0.055, 0.42);
+    axe.visible = false;
+    toolHolder.add(axe);
+
+    const spade = new THREE.Group();
+    const spadeShaft = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.02, 0.58, 7), this.woodMat), spade);
+    spadeShaft.rotation.x = Math.PI / 2;
+    spadeShaft.position.set(0, 0, 0.24);
+    const spadeBlade = addPart(new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.025, 0.18), this.steelMat), spade);
+    spadeBlade.position.set(0, 0, 0.56);
+    spade.visible = false;
+    toolHolder.add(spade);
+
+    const trowel = new THREE.Group();
+    const trowelHandle = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.018, 0.18, 6), this.woodMat), trowel);
+    trowelHandle.rotation.x = Math.PI / 2;
+    trowelHandle.position.set(0, 0, 0.09);
+    const trowelBlade = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.18, 4), this.steelMat), trowel);
+    trowelBlade.rotation.x = Math.PI / 2;
+    trowelBlade.scale.set(1.0, 1.0, 0.22);
+    trowelBlade.position.set(0, 0, 0.25);
+    trowel.visible = false;
+    toolHolder.add(trowel);
+
+    const hammer = new THREE.Group();
+    const hamHandle = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.02, 0.36, 7), this.woodMat), hammer);
+    hamHandle.rotation.x = Math.PI / 2;
+    hamHandle.position.set(0, 0, 0.17);
+    const hamHead = addPart(new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.075, 0.085), this.steelMat), hammer);
+    hamHead.position.set(0, 0, 0.33);
+    hammer.visible = false;
+    toolHolder.add(hammer);
+
+    const workTools: WorkToolKit = { axe, spade, trowel, hammer };
+
+    // 6c. Emigrating pioneer pack (leather satchel + rolled cloak bedroll, shown during village-founding treks)
+    const pioneerPack = new THREE.Group();
+    const pBag = addPart(new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.34, 0.2), this.leatherMat), pioneerPack);
+    pBag.position.set(0, 0.56, -0.29);
+    const pRoll = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.34, 10), mats.scarf), pioneerPack);
+    pRoll.rotation.z = Math.PI / 2;
+    pRoll.position.set(0, 0.76, -0.29);
+    const pLantern = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.038, 0.11, 8), this.lanternGlowMat), pioneerPack);
+    pLantern.position.set(-0.18, 0.44, -0.34);
+    pioneerPack.visible = false;
+    bodyGroup.add(pioneerPack);
 
     // Extra whimsical individual touch: some creatures wear a tiny daisy/leaf tucked behind an ear!
     if (seed > 0.72 && c.role !== 'mystic' && c.role !== 'guard') {
@@ -1467,10 +1681,14 @@ export class CreatureRenderer {
       rightEar,
       tail,
       selectionGroup,
+      workTools,
+      idleBuilderMallet,
+      pioneerPack,
       seedPhase: seed * Math.PI * 2,
       baseLeftEarZ,
       baseRightEarZ,
       baseTailX,
+      workChipCooldown: 0.15,
     };
   }
 

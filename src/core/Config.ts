@@ -6,6 +6,7 @@ export interface WorldConfig {
   readonly terrainSegments: number;
   readonly waterLevel: number;
   readonly initialSettlements: number;
+  readonly maxSettlements: number;
   readonly initialCreaturesPerSettlement: number;
   readonly maxPopulation: number;
   readonly dayLengthSeconds: number;
@@ -60,8 +61,9 @@ export const DEFAULT_WORLD_CONFIG: WorldConfig = {
   worldSize: 160,
   terrainSegments: 144,
   waterLevel: -0.65,
-  initialSettlements: 5,
-  initialCreaturesPerSettlement: 10,
+  initialSettlements: 1,
+  maxSettlements: 5,
+  initialCreaturesPerSettlement: 12,
   maxPopulation: 175,
   dayLengthSeconds: 110,
   daysPerSeason: 6,

@@ -15,16 +15,46 @@ const MAX_BUILDINGS_PER_SETTLEMENT = 34;
 const MAX_BRIDGES_PER_WORLD = 6;
 const MAX_BRIDGES_PER_SETTLEMENT = 2;
 
+const SPECIES_GROUPS: readonly SpeciesId[][] = [
+  ['squirrel', 'robin', 'mouse', 'owl'],
+  ['rabbit', 'hedgehog', 'sparrow', 'badger'],
+  ['fox', 'crow', 'rat', 'squirrel'],
+  ['frog', 'sparrow', 'mouse', 'robin'],
+  ['badger', 'hedgehog', 'owl', 'rabbit'],
+];
+
+const STARTER_CIVICS: readonly BuildingType[] = [
+  'workshop',
+  'market_stall',
+  'bakery',
+  'granary',
+  'shrine',
+];
+
+export interface EmigrationParty {
+  readonly id: string;
+  readonly sourceSettlementId: string;
+  readonly targetX: number;
+  readonly targetZ: number;
+  readonly species: SpeciesId[];
+}
+
 /**
  * Manages woodland settlement creation, organic multi-ring city expansion,
- * variety-seeking building queues, waterway bridge spans, civic production, and population growth.
+ * pioneer emigration to found new villages, structural disassembly & redevelopment,
+ * waterway bridge spans, civic production, and population growth.
  */
 export class SettlementManager {
+  private settlementSeq = 1;
   private buildingSeq = 1;
   private bridgeSeq = 1;
+  private emigrationSeq = 1;
   private expansionCooldown = 2.5;
   private bridgeCooldown = 5.5;
+  private emigrationCooldown = 14.0;
   private bridgeRng: SeededRandom | null = null;
+  private emigrationRng: SeededRandom | null = null;
+  private readonly activeEmigrations = new Map<string, EmigrationParty>();
 
   createInitialSettlements(world: WorldState): void {
     const sites = world.terrain.findSettlementSites(
@@ -32,24 +62,8 @@ export class SettlementManager {
       world.rng,
     );
 
-    const speciesGroups: SpeciesId[][] = [
-      ['squirrel', 'robin', 'mouse', 'owl'],
-      ['rabbit', 'hedgehog', 'sparrow', 'badger'],
-      ['fox', 'crow', 'rat', 'squirrel'],
-      ['frog', 'sparrow', 'mouse', 'robin'],
-      ['badger', 'hedgehog', 'owl', 'rabbit'],
-    ];
-
-    const starterCivic: BuildingType[] = [
-      'market_stall',
-      'shrine',
-      'bakery',
-      'workshop',
-      'granary',
-    ];
-
     sites.forEach((site, idx) => {
-      const id = `settlement_${idx + 1}`;
+      const id = `settlement_${this.settlementSeq++}`;
       const name = SETTLEMENT_NAMES[idx % SETTLEMENT_NAMES.length];
       const bannerColor = FACTION_BANNER_COLORS[idx % FACTION_BANNER_COLORS.length];
       const groundY = world.terrain.getHeightAt(site.x, site.z);
@@ -60,14 +74,15 @@ export class SettlementManager {
         bannerColor,
         center: site,
         groundY,
-        foundingSpecies: speciesGroups[idx % speciesGroups.length],
+        foundingSpecies: [...SPECIES_GROUPS[idx % SPECIES_GROUPS.length]],
       });
 
       world.settlements.push(settlement);
+      world.structureRevision++;
 
-      // Start each settlement with a cozy cottage, a signature civic building, and an active build site
+      // Start each founding village with a cozy cottage, a starter civic hall, and a fresh stage-0 build plot
       this.placeBuilding(settlement, 'burrow_cottage', world, true);
-      this.placeBuilding(settlement, starterCivic[idx % starterCivic.length], world, true);
+      this.placeBuilding(settlement, STARTER_CIVICS[idx % STARTER_CIVICS.length], world, true);
       this.placeBuilding(
         settlement,
         idx % 2 === 0 ? 'timber_house' : 'workshop',
@@ -177,6 +192,18 @@ export class SettlementManager {
       }
     }
 
+    this.emigrationCooldown -= dt;
+    if (this.emigrationCooldown <= 0) {
+      this.emigrationCooldown = 14.0;
+      if (!this.emigrationRng) {
+        this.emigrationRng = new SeededRandom(world.config.seed ^ 0x454d4947);
+      }
+      this.pruneStaleEmigrations(world);
+      for (const settlement of world.settlements) {
+        this.considerEmigration(settlement, world, this.emigrationRng);
+      }
+    }
+
     if (this.expansionCooldown > 0) return;
     this.expansionCooldown = 3.0;
 
@@ -216,6 +243,182 @@ export class SettlementManager {
         settlement.center,
       );
       world.deity.observeCivilizationMilestone(settlement);
+    }
+  }
+
+  /**
+   * Called once builders finish disassembling an older structure: salvages timber & stone,
+   * removes the old structure, and raises the larger replacement building on the reclaimed plot.
+   */
+  onBuildingDisassembled(
+    settlement: Settlement,
+    building: BuildingInstance,
+    builder: Creature,
+    world: WorldState,
+  ): void {
+    const oldBp = BUILDING_CATALOG[building.type];
+    const salvagedTimber = Math.round((oldBp.cost.timber ?? 0) * 0.5);
+    const salvagedStone = Math.round((oldBp.cost.stone ?? 0) * 0.5);
+    settlement.stockpile.timber += salvagedTimber;
+    settlement.stockpile.stone += salvagedStone;
+
+    const idx = settlement.buildings.findIndex((b) => b.id === building.id);
+    if (idx !== -1) {
+      settlement.buildings.splice(idx, 1);
+    }
+    world.structureRevision++;
+
+    const replacement = building.replacementType;
+    if (replacement) {
+      const newBp = BUILDING_CATALOG[replacement];
+      if (this.canAfford(settlement, newBp.cost)) {
+        this.spendResources(settlement, newBp.cost);
+        // Plot is already cleared; begin leveling & foundation for the larger replacement
+        this.commitBuilding(
+          settlement,
+          replacement,
+          {
+            x: building.position.x,
+            z: building.position.z,
+            groundY: building.groundY,
+            rotation: building.rotation,
+          },
+          false,
+          world,
+          20,
+        );
+        settlement.lastBuiltType = replacement;
+        settlement.recalculateTierAndRadius();
+        world.chronicle.record(
+          world.day,
+          world.season,
+          'settlement',
+          `${oldBp.displayName} Replaced`,
+          `${builder.name} dismantled an old ${oldBp.displayName} in ${settlement.name} to make room for a ${newBp.displayName}.`,
+          building.position,
+        );
+        return;
+      }
+    }
+
+    settlement.recalculateTierAndRadius();
+    world.chronicle.record(
+      world.day,
+      world.season,
+      'settlement',
+      `${oldBp.displayName} Disassembled`,
+      `${builder.name} carefully dismantled an older ${oldBp.displayName} in ${settlement.name}, salvaging materials.`,
+      building.position,
+    );
+  }
+
+  /**
+   * Founds a brand-new woodland village when emigrating pioneer creatures arrive at their chosen clearing.
+   */
+  foundEmigrantVillage(partyId: string, leader: Creature, world: WorldState): Settlement | null {
+    const party = this.activeEmigrations.get(partyId);
+    if (!party) return null;
+    this.activeEmigrations.delete(partyId);
+
+    if (world.settlements.length >= world.config.maxSettlements) {
+      this.clearPartyCreatures(partyId, world);
+      return null;
+    }
+
+    const parent = world.getSettlement(party.sourceSettlementId);
+    const seqIdx = this.settlementSeq - 1;
+    const id = `settlement_${this.settlementSeq++}`;
+    const usedNames = new Set(world.settlements.map((s) => s.name));
+    const name =
+      SETTLEMENT_NAMES.find((n) => !usedNames.has(n)) ??
+      SETTLEMENT_NAMES[seqIdx % SETTLEMENT_NAMES.length];
+    const bannerColor = FACTION_BANNER_COLORS[seqIdx % FACTION_BANNER_COLORS.length];
+    const groundY = world.terrain.getHeightAt(party.targetX, party.targetZ);
+
+    const settlement = new Settlement({
+      id,
+      name,
+      bannerColor,
+      center: { x: party.targetX, z: party.targetZ },
+      groundY,
+      foundingSpecies: [...party.species],
+    });
+    // Pioneers arrive with modest starter supplies (less than the founding capital)
+    settlement.stockpile.timber = 24;
+    settlement.stockpile.stone = 12;
+    settlement.stockpile.berries = 20;
+    settlement.stockpile.acorns = 18;
+    settlement.stockpile.herbs = 8;
+    settlement.stockpile.crafts = 3;
+
+    world.settlements.push(settlement);
+    world.structureRevision++;
+
+    // Transfer all living emigrants in the party to their new village
+    for (const c of world.creatures) {
+      if (c.alive && c.emigrationPartyId === partyId) {
+        c.settlementId = settlement.id;
+        c.emigrationPartyId = null;
+        c.emigrationTargetX = null;
+        c.emigrationTargetZ = null;
+        c.activity = 'idle';
+        c.targetX = settlement.center.x + world.rng.range(-3, 3);
+        c.targetZ = settlement.center.z + world.rng.range(-3, 3);
+        c.mood = Math.min(100, c.mood + 20);
+        c.thought = `Founding our new home at ${settlement.name}!`;
+      }
+    }
+
+    // Accompanying kin who traveled with the settlers help break ground right away
+    const companionRoles: CreatureRole[] = ['builder', 'forager', 'builder', 'artisan'];
+    for (const role of companionRoles) {
+      if (world.creatures.filter((c) => c.alive).length >= world.config.maxPopulation) break;
+      const species = world.rng.pick(settlement.foundingSpecies);
+      world.spawnCreature(settlement, species, role);
+    }
+
+    // Stake out the fledgling village's very first construction plots at stage 0 (clearing land!)
+    this.placeBuilding(settlement, 'burrow_cottage', world, false);
+    this.placeBuilding(settlement, STARTER_CIVICS[seqIdx % STARTER_CIVICS.length], world, false);
+    settlement.recalculateTierAndRadius();
+
+    world.diplomacy.registerSettlement(settlement, world, parent);
+
+    world.chronicle.record(
+      world.day,
+      world.season,
+      'settlement',
+      `${settlement.name} Founded by Pioneers`,
+      `${leader.name} and pioneers from ${parent?.name ?? 'the valley'} settled ${settlement.name} and began clearing land.`,
+      settlement.center,
+    );
+    return settlement;
+  }
+
+  /** Returns active pioneer expeditions currently trekking across the valley. */
+  getActiveEmigrations(): readonly EmigrationParty[] {
+    return Array.from(this.activeEmigrations.values());
+  }
+
+  private clearPartyCreatures(partyId: string, world: WorldState): void {
+    for (const c of world.creatures) {
+      if (c.emigrationPartyId === partyId) {
+        c.emigrationPartyId = null;
+        c.emigrationTargetX = null;
+        c.emigrationTargetZ = null;
+        if (c.activity === 'emigrating') c.activity = 'idle';
+      }
+    }
+  }
+
+  private pruneStaleEmigrations(world: WorldState): void {
+    for (const [partyId] of this.activeEmigrations) {
+      const hasLivingPioneer = world.creatures.some(
+        (c) => c.alive && c.emigrationPartyId === partyId && c.activity === 'emigrating',
+      );
+      if (!hasLivingPioneer) {
+        this.activeEmigrations.delete(partyId);
+      }
     }
   }
 
@@ -277,20 +480,233 @@ export class SettlementManager {
     const candidates = this.rankBuildingCandidates(settlement, world);
     settlement.nextPlannedBuilding = candidates[0] ?? null;
 
+    // As villages grow, creatures may disassemble an older small structure to make space for a larger one
+    if (this.considerRedevelopment(settlement, world, candidates)) {
+      return;
+    }
+
     for (const type of candidates) {
       const bp = BUILDING_CATALOG[type];
       if (!this.canAfford(settlement, bp.cost)) continue;
 
       // Verify a valid building spot BEFORE spending resources so stockpiles are never wasted
       const spot = this.findBuildingSpot(settlement, type, world);
-      if (!spot) continue;
+      if (!spot) {
+        // Plot space is full: try disassembling a smaller older structure for this larger one
+        if (this.tryScheduleDisassemblyFor(settlement, type, world)) {
+          return;
+        }
+        continue;
+      }
 
       this.spendResources(settlement, bp.cost);
-      this.commitBuilding(settlement, type, spot, false);
+      this.commitBuilding(settlement, type, spot, false, world, 0);
       settlement.lastBuiltType = type;
       settlement.recalculateTierAndRadius();
       return;
     }
+  }
+
+  /**
+   * Organically schedules redevelopment when a growing village has older small structures
+   * and wants to raise a grander, larger civic or residential building in prime town space.
+   */
+  private considerRedevelopment(
+    settlement: Settlement,
+    world: WorldState,
+    candidates: readonly BuildingType[],
+  ): boolean {
+    if (settlement.getCompletedCount() < 5) return false;
+    if (settlement.buildings.some((b) => b.disassembling)) return false;
+    if (!world.rng.chance(0.24)) return false;
+
+    for (const desired of candidates) {
+      const bp = BUILDING_CATALOG[desired];
+      if (bp.footprintRadius < 2.5 && bp.prosperityValue < 22) continue;
+      if (this.tryScheduleDisassemblyFor(settlement, desired, world)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private tryScheduleDisassemblyFor(
+    settlement: Settlement,
+    replacementType: BuildingType,
+    world: WorldState,
+  ): boolean {
+    if (settlement.buildings.some((b) => b.disassembling)) return false;
+    const newBp = BUILDING_CATALOG[replacementType];
+
+    // Prefer replacing smaller, earlier structures (cottages, stalls, duplicate small workshops/granaries)
+    const replaceable = settlement.buildings.filter((b) => {
+      if (!b.completed || b.disassembling) return false;
+      const oldBp = BUILDING_CATALOG[b.type];
+      const isStrictlyLarger = newBp.footprintRadius > oldBp.footprintRadius + 0.05;
+      const isMuchGrander = newBp.prosperityValue >= oldBp.prosperityValue + 12;
+      if (!isStrictlyLarger && !isMuchGrander) return false;
+      if (b.type === 'burrow_cottage') return settlement.getCompletedCount('burrow_cottage') >= 2;
+      if (b.type === 'market_stall' || b.type === 'granary' || b.type === 'workshop') {
+        return settlement.getCompletedCount(b.type) >= 2 || oldBp.footprintRadius < newBp.footprintRadius;
+      }
+      return false;
+    });
+    if (replaceable.length === 0) return false;
+
+    for (const victim of replaceable) {
+      const oldBp = BUILDING_CATALOG[victim.type];
+      // Verify affordability factoring in 50% salvaged timber/stone
+      const effectiveCost: Partial<Record<ResourceType, number>> = { ...newBp.cost };
+      if (effectiveCost.timber) {
+        effectiveCost.timber = Math.max(
+          0,
+          effectiveCost.timber - Math.round((oldBp.cost.timber ?? 0) * 0.5),
+        );
+      }
+      if (effectiveCost.stone) {
+        effectiveCost.stone = Math.max(
+          0,
+          effectiveCost.stone - Math.round((oldBp.cost.stone ?? 0) * 0.5),
+        );
+      }
+      if (!this.canAfford(settlement, effectiveCost)) continue;
+
+      // Check that the larger footprint fits cleanly on the victim's plot
+      let fits = true;
+      const minCenterDist = 3.5 + newBp.footprintRadius * 0.45;
+      if (
+        Math.hypot(settlement.center.x - victim.position.x, settlement.center.z - victim.position.z) <
+        minCenterDist
+      ) {
+        fits = false;
+      }
+      if (fits) {
+        for (const otherSettlement of world.settlements) {
+          for (const existing of otherSettlement.buildings) {
+            if (existing.id === victim.id) continue;
+            const minGap =
+              newBp.footprintRadius + BUILDING_CATALOG[existing.type].footprintRadius + 0.55;
+            if (
+              Math.hypot(
+                existing.position.x - victim.position.x,
+                existing.position.z - victim.position.z,
+              ) < minGap
+            ) {
+              fits = false;
+              break;
+            }
+          }
+          if (!fits) break;
+        }
+      }
+      if (!fits) continue;
+
+      victim.disassembling = true;
+      victim.completed = false;
+      victim.replacementType = replacementType;
+      world.structureRevision++;
+
+      world.chronicle.record(
+        world.day,
+        world.season,
+        'settlement',
+        `Redeveloping ${settlement.name}`,
+        `Builders began disassembling an older ${oldBp.displayName} in ${settlement.name} to make space for a ${newBp.displayName}.`,
+        victim.position,
+      );
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Dispatches adventurous pioneer creatures from growing settlements to emigrate across
+   * the valley and establish new villages.
+   */
+  private considerEmigration(settlement: Settlement, world: WorldState, rng: SeededRandom): void {
+    if (world.settlements.length + this.activeEmigrations.size >= world.config.maxSettlements) return;
+
+    const pop = world.getSettlementPopulation(settlement.id);
+    const minPop = world.settlements.length === 1 ? 9 : 11;
+    if (pop < minPop || settlement.getCompletedCount() < 3) return;
+    if (settlement.stockpile.timber < 10 || settlement.stockpile.berries + settlement.stockpile.acorns < 10) {
+      return;
+    }
+
+    const launchChance = world.settlements.length === 1 ? 0.68 : 0.42;
+    if (!rng.chance(launchChance)) return;
+
+    const occupied: Vec2[] = world.settlements.map((s) => s.center);
+    for (const active of this.activeEmigrations.values()) {
+      occupied.push({ x: active.targetX, z: active.targetZ });
+    }
+    const site = world.terrain.findNewSettlementSite(occupied, rng);
+    if (!site) return;
+
+    // Pick 2-3 sturdy pioneers (preferring at least 1 builder and 1 forager)
+    const eligible = world.creatures.filter(
+      (c) =>
+        c.alive &&
+        c.settlementId === settlement.id &&
+        c.activity !== 'fighting' &&
+        c.activity !== 'fleeing' &&
+        c.activity !== 'emigrating',
+    );
+    if (eligible.length < 4) return;
+
+    const pioneers: Creature[] = [];
+    const pickByRole = (role: CreatureRole) => {
+      const found = eligible.find((c) => c.role === role && !pioneers.includes(c));
+      if (found) pioneers.push(found);
+    };
+    pickByRole('builder');
+    pickByRole('forager');
+    for (const c of eligible) {
+      if (pioneers.length >= 3) break;
+      if (!pioneers.includes(c)) pioneers.push(c);
+    }
+    if (pioneers.length < 2) return;
+
+    settlement.stockpile.timber = Math.max(0, settlement.stockpile.timber - 10);
+    settlement.stockpile.berries = Math.max(0, settlement.stockpile.berries - 6);
+    settlement.stockpile.acorns = Math.max(0, settlement.stockpile.acorns - 4);
+
+    const partyId = `emig_${this.emigrationSeq++}`;
+    const speciesGroup = SPECIES_GROUPS[(world.settlements.length + this.emigrationSeq) % SPECIES_GROUPS.length];
+    const partySpecies = Array.from(new Set([...pioneers.map((p) => p.species), ...speciesGroup])).slice(0, 4);
+
+    const party: EmigrationParty = {
+      id: partyId,
+      sourceSettlementId: settlement.id,
+      targetX: site.x,
+      targetZ: site.z,
+      species: partySpecies,
+    };
+    this.activeEmigrations.set(partyId, party);
+
+    for (const pioneer of pioneers) {
+      pioneer.activity = 'emigrating';
+      pioneer.emigrationPartyId = partyId;
+      pioneer.emigrationTargetX = site.x;
+      pioneer.emigrationTargetZ = site.z;
+      pioneer.targetBuildingId = null;
+      pioneer.targetBridgeId = null;
+      pioneer.targetResourceId = null;
+      pioneer.targetX = site.x + rng.range(-1.5, 1.5);
+      pioneer.targetZ = site.z + rng.range(-1.5, 1.5);
+      pioneer.actionTimer = 75;
+      pioneer.thought = `Emigrating from ${settlement.name} to found a new woodland village`;
+    }
+
+    world.chronicle.record(
+      world.day,
+      world.season,
+      'settlement',
+      'Woodland Pioneers Depart',
+      `${pioneers.map((p) => p.name).join(', ')} set out from ${settlement.name} to establish a new village across the valley.`,
+      settlement.center,
+    );
   }
 
   /**
@@ -352,6 +768,7 @@ export class SettlementManager {
       completed: false,
     };
     world.bridges.push(bridge);
+    world.structureRevision++;
 
     const styleLabel = style === 'stone_arch' ? 'stone arch bridge' : 'timber footbridge';
     world.chronicle.record(
@@ -497,7 +914,7 @@ export class SettlementManager {
   ): BuildingInstance | null {
     const spot = this.findBuildingSpot(settlement, type, world);
     if (!spot) return null;
-    return this.commitBuilding(settlement, type, spot, completed);
+    return this.commitBuilding(settlement, type, spot, completed, world, 0);
   }
 
   private commitBuilding(
@@ -505,6 +922,8 @@ export class SettlementManager {
     type: BuildingType,
     spot: { x: number; z: number; groundY: number; rotation: number },
     completed: boolean,
+    world: WorldState,
+    initialProgress = 0,
   ): BuildingInstance {
     const instance: BuildingInstance = {
       id: `bld_${this.buildingSeq++}`,
@@ -513,10 +932,11 @@ export class SettlementManager {
       position: { x: spot.x, z: spot.z },
       groundY: spot.groundY,
       rotation: spot.rotation,
-      progress: completed ? 100 : 14,
+      progress: completed ? 100 : initialProgress,
       completed,
     };
     settlement.buildings.push(instance);
+    world.structureRevision++;
     return instance;
   }
 

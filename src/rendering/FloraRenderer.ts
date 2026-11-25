@@ -137,7 +137,7 @@ export class FloraRenderer {
   private readonly disposables: (THREE.BufferGeometry | THREE.Material)[] = [];
   private readonly foliageUniforms: FoliageUniforms;
   private lastSeason: Season | null = null;
-  private lastBuildingCount = -1;
+  private lastStructureRevision = -1;
 
   constructor(
     scene: THREE.Scene,
@@ -832,12 +832,8 @@ export class FloraRenderer {
     }
 
     // Dynamically clear trees wherever growing cities raise new buildings or waterway bridges
-    let totalStructures = this.world.bridges.length;
-    for (const s of this.world.settlements) {
-      totalStructures += s.buildings.length;
-    }
-    if (totalStructures !== this.lastBuildingCount) {
-      this.lastBuildingCount = totalStructures;
+    if (this.world.structureRevision !== this.lastStructureRevision) {
+      this.lastStructureRevision = this.world.structureRevision;
       this.clearTreesNearBuildings();
     }
 
@@ -871,6 +867,10 @@ export class FloraRenderer {
 
         let blocked = false;
         for (const settlement of this.world.settlements) {
+          if (Math.hypot(tree.x - settlement.center.x, tree.z - settlement.center.z) < 7.5) {
+            blocked = true;
+            break;
+          }
           for (const b of settlement.buildings) {
             const clearDist = BUILDING_CATALOG[b.type].footprintRadius + 1.45;
             if (Math.hypot(tree.x - b.position.x, tree.z - b.position.z) < clearDist) {

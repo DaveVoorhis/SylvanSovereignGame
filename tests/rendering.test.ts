@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { EventBus } from '@core/EventBus';
-import type { CreatureRole } from '@core/Types';
+import type { ConstructionStage, CreatureRole } from '@core/Types';
 import { CreatureRenderer } from '@rendering/CreatureRenderer';
 import { DistanceFocusBlurPass } from '@rendering/DistanceFocusBlurPass';
 import {
@@ -395,5 +395,74 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     expect(meshCount).toBeGreaterThan(world.creatures.length * 10);
 
     renderer.dispose();
+  });
+
+  it('renders 5-stage timber and masonry construction kits, disposes disassembled buildings, and animates creature stage tools', () => {
+    const world = new WorldState(new EventBus(), { seed: 444555 });
+    const settlement = world.settlements[0];
+
+    // Add one timber-frame and one masonry building at stage 0 (clearing land)
+    const timberPlot = {
+      id: 'stage_test_timber',
+      settlementId: settlement.id,
+      type: 'timber_house' as const,
+      position: { x: settlement.center.x + 8, z: settlement.center.z + 2 },
+      groundY: 2,
+      rotation: 0.3,
+      progress: 5,
+      completed: false,
+    };
+    const masonryPlot = {
+      id: 'stage_test_masonry',
+      settlementId: settlement.id,
+      type: 'library' as const,
+      position: { x: settlement.center.x - 8, z: settlement.center.z + 2 },
+      groundY: 2,
+      rotation: 0.8,
+      progress: 5,
+      completed: false,
+    };
+    settlement.buildings.push(timberPlot, masonryPlot);
+
+    const scene = new THREE.Scene();
+    const textures = createStubTextureLibrary();
+    const settlementRenderer = new SettlementRenderer(scene, world, textures);
+    const creatureRenderer = new CreatureRenderer(scene, world, textures);
+
+    // Step across all 5 construction stages + completion + disassembly
+    const progressSteps = [5, 25, 45, 68, 90, 100];
+    const stages: ConstructionStage[] = [
+      'clearing',
+      'leveling',
+      'foundation',
+      'framing',
+      'finishing',
+      'disassembling',
+    ];
+    for (let i = 0; i < progressSteps.length; i++) {
+      timberPlot.progress = progressSteps[i];
+      timberPlot.completed = progressSteps[i] >= 100;
+      masonryPlot.progress = progressSteps[i];
+      masonryPlot.completed = progressSteps[i] >= 100;
+
+      world.creatures[0].activity = 'building';
+      world.creatures[0].isActivelyWorking = true;
+      world.creatures[0].activeConstructionStage = stages[i];
+      world.creatures[1].activity = 'emigrating';
+
+      settlementRenderer.update(0.05);
+      creatureRenderer.update(0.05, null);
+    }
+
+    const childrenBeforeRemove = settlementRenderer.rootGroup.children.length;
+    // Remove the disassembled building and verify SettlementRenderer cleanly removes its 3D group
+    const rmIdx = settlement.buildings.findIndex((b) => b.id === timberPlot.id);
+    if (rmIdx !== -1) settlement.buildings.splice(rmIdx, 1);
+    settlementRenderer.update(0.05);
+    expect(settlementRenderer.rootGroup.children.length).toBe(childrenBeforeRemove - 1);
+
+    creatureRenderer.dispose();
+    settlementRenderer.dispose();
+    textures.dispose();
   });
 });

@@ -641,7 +641,7 @@ export class TerrainMap {
   /** Finds well-spaced, gently sloped clearings suitable for founding growing cities. */
   findSettlementSites(count: number, rng: SeededRandom): Vec2[] {
     const chosen: Vec2[] = [];
-    const maxRadius = this.playableRadius - 18;
+    const maxRadius = count === 1 ? Math.min(this.playableRadius - 18, this.halfSize * 0.56) : this.playableRadius - 18;
     const passes = [
       {
         attempts: 1100,
@@ -650,6 +650,7 @@ export class TerrainMap {
         maxH: 5.4,
         maxSlope: 0.13,
         minWaterDist: 6.5,
+        radiusLimit: maxRadius,
       },
       {
         attempts: 900,
@@ -658,13 +659,14 @@ export class TerrainMap {
         maxH: 6.4,
         maxSlope: 0.19,
         minWaterDist: 3.5,
+        radiusLimit: this.playableRadius - 16,
       },
     ];
 
     for (const pass of passes) {
       for (let attempt = 0; attempt < pass.attempts && chosen.length < count; attempt++) {
         const angle = rng.range(0, Math.PI * 2);
-        const r = Math.sqrt(rng.next()) * maxRadius;
+        const r = Math.sqrt(rng.next()) * pass.radiusLimit;
         const x = Math.cos(angle) * r;
         const z = Math.sin(angle) * r;
         const h = this.getHeightAt(x, z);
@@ -687,6 +689,55 @@ export class TerrainMap {
     }
 
     return chosen;
+  }
+
+  /**
+   * Finds a fresh dry, gentle clearing for an emigrating pioneer party, well spaced from
+   * all existing villages and other pending pioneer destinations.
+   */
+  findNewSettlementSite(existingCenters: readonly Vec2[], rng: SeededRandom): Vec2 | null {
+    const maxRadius = this.playableRadius - 17;
+    const passes = [
+      {
+        attempts: 420,
+        minSpacing: this.size * 0.24,
+        minH: 0.7,
+        maxH: 5.5,
+        maxSlope: 0.14,
+        minWaterDist: 6.5,
+      },
+      {
+        attempts: 360,
+        minSpacing: this.size * 0.185,
+        minH: 0.55,
+        maxH: 6.3,
+        maxSlope: 0.19,
+        minWaterDist: 4.0,
+      },
+    ];
+
+    for (const pass of passes) {
+      for (let attempt = 0; attempt < pass.attempts; attempt++) {
+        const angle = rng.range(0, Math.PI * 2);
+        const r = Math.sqrt(rng.next()) * maxRadius;
+        const x = Math.cos(angle) * r;
+        const z = Math.sin(angle) * r;
+        const h = this.getHeightAt(x, z);
+        const slope = this.getSlopeAt(x, z);
+        if (h < this.waterLevel + pass.minH || h > pass.maxH || slope > pass.maxSlope) continue;
+        if (this.getWaterDistance(x, z) < pass.minWaterDist) continue;
+
+        let tooClose = false;
+        for (const site of existingCenters) {
+          if (Math.hypot(site.x - x, site.z - z) < pass.minSpacing) {
+            tooClose = true;
+            break;
+          }
+        }
+        if (!tooClose) return { x, z };
+      }
+    }
+    return null;
   }
 
   /** Regenerates ecological resource nodes over time (scaled by season/divine blessings). */

@@ -24,6 +24,22 @@ export class DiplomacySystem {
     }
   }
 
+  /** Registers diplomatic ties for a newly founded emigrant village (starting friendly with its parent). */
+  registerSettlement(
+    newSettlement: Settlement,
+    world: WorldState,
+    parentSettlement?: Settlement,
+  ): void {
+    for (const other of world.settlements) {
+      if (other.id === newSettlement.id) continue;
+      const key = DiplomacySystem.pairKey(newSettlement.id, other.id);
+      if (this.relations.has(key)) continue;
+      const initialScore =
+        parentSettlement && other.id === parentSettlement.id ? 38 : world.rng.range(-10, 28);
+      this.relations.set(key, initialScore);
+    }
+  }
+
   getScore(a: string, b: string): number {
     if (a === b) return 100;
     return this.relations.get(DiplomacySystem.pairKey(a, b)) ?? 0;

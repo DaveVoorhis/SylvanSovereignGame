@@ -1,5 +1,6 @@
 import type { SelectionTarget } from '@core/Types';
 import { BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
+import { getBuildingStage, getConstructionStageLabel } from '@simulation/settlements/Settlement';
 import type { WorldState } from '@simulation/WorldState';
 
 export interface InspectorCallbacks {
@@ -156,12 +157,22 @@ export class InspectorPanel {
         return;
       }
       const bp = BUILDING_CATALOG[foundBuilding.type];
+      const stage = getBuildingStage(foundBuilding);
+      const statusLabel = foundBuilding.disassembling
+        ? `Disassembling for ${
+            foundBuilding.replacementType
+              ? BUILDING_CATALOG[foundBuilding.replacementType].displayName
+              : 'Larger Structure'
+          } · ${Math.round(foundBuilding.progress)}% left`
+        : foundBuilding.completed
+          ? 'Completed'
+          : `${getConstructionStageLabel(stage, bp.frameStyle)} · ${Math.round(foundBuilding.progress)}%`;
       this.contentEl.innerHTML = `
         <div class="panel-header">
           <span>🏡 ${bp.displayName}</span>
           <button class="close-btn" data-action="close">✕</button>
         </div>
-        <div class="inspector-sub">${owner.name} · ${foundBuilding.completed ? 'Completed' : `${Math.round(foundBuilding.progress)}% Built`}</div>
+        <div class="inspector-sub">${owner.name} · ${statusLabel}</div>
         <div class="inspector-lore">${bp.description}</div>
         <div class="kv-grid">
           <div>Housing</div><div>+${bp.housingCapacity}</div>

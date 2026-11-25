@@ -70,6 +70,7 @@ export class ObstacleMap {
   private lastSettlementCount = -1;
   private lastBuildingCount = -1;
   private lastBridgeCount = -1;
+  private lastStructureRevision = -1;
   private queryStamp = 0;
   private _version = 0;
 
@@ -83,6 +84,7 @@ export class ObstacleMap {
     terrain: TerrainMap,
     settlements: readonly Settlement[],
     bridges: readonly BridgeInstance[] = [],
+    structureRevision = 0,
   ): void {
     let totalBuildings = 0;
     for (const s of settlements) {
@@ -91,7 +93,8 @@ export class ObstacleMap {
     if (
       settlements.length === this.lastSettlementCount &&
       totalBuildings === this.lastBuildingCount &&
-      bridges.length === this.lastBridgeCount
+      bridges.length === this.lastBridgeCount &&
+      structureRevision === this.lastStructureRevision
     ) {
       return;
     }
@@ -99,6 +102,7 @@ export class ObstacleMap {
     this.lastSettlementCount = settlements.length;
     this.lastBuildingCount = totalBuildings;
     this.lastBridgeCount = bridges.length;
+    this.lastStructureRevision = structureRevision;
     this._version++;
     this.cells.clear();
     this.allObstacles.length = 0;

@@ -63,6 +63,8 @@ export class WorldState {
   day = 1;
   timeOfDay = 0.34; // 0..1 (0.25 dawn, 0.5 noon, 0.78 dusk, 0/1 midnight)
   season: Season = 'spring';
+  /** Monotonic counter incremented whenever buildings, bridges, or settlements are added/removed/replaced. */
+  structureRevision = 0;
   weather: WeatherType = 'sunbeams';
 
   private weatherTimer = 40;
@@ -86,7 +88,7 @@ export class WorldState {
     this.diplomacy = new DiplomacySystem();
 
     this.settlementManager.createInitialSettlements(this);
-    this.obstacles.sync(this.terrain, this.settlements, this.bridges);
+    this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision);
     this.diplomacy.initialize(this.settlements, this);
 
     this.chronicle.record(
@@ -99,7 +101,7 @@ export class WorldState {
   }
 
   spawnCreature(settlement: Settlement, species: SpeciesId, role: CreatureRole): Creature {
-    this.obstacles.sync(this.terrain, this.settlements, this.bridges);
+    this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision);
     const def = SPECIES_CATALOG[species];
     const obstacleR = Math.max(0.26, def.bodyScale * 0.36);
     const personalR = Math.max(0.32, def.bodyScale * 0.42);
@@ -256,7 +258,7 @@ export class WorldState {
     // Step subsystems
     this.deity.tick(this, dt);
     this.settlementManager.tick(this, dt);
-    this.obstacles.sync(this.terrain, this.settlements, this.bridges);
+    this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision);
     this.diplomacy.tick(this, dt);
 
     this.creatureAI.prepareStep(this);

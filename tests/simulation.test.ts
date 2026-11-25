@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EventBus } from '@core/EventBus';
 import { generateRandomSeed } from '@core/SeededRandom';
+import type { ConstructionStage } from '@core/Types';
 import { getCreaturePersonalRadius } from '@simulation/creatures/CreatureAI';
 import {
   HEARTH_FIRE_KEEP_OUT_RADIUS,
@@ -10,6 +11,7 @@ import {
 } from '@simulation/terrain/ObstacleMap';
 import { ALL_SPECIES_IDS, SPECIES_CATALOG } from '@simulation/creatures/SpeciesCatalog';
 import { ALL_BUILDING_TYPES, BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
+import { getBuildingStage, getConstructionStageLabel } from '@simulation/settlements/Settlement';
 import { WorldState } from '@simulation/WorldState';
 
 describe('Forest Procedural God Game — Headless Simulation', () => {
@@ -18,7 +20,7 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     const worldB = new WorldState(new EventBus(), { seed: 424242 });
 
     expect(worldA.deity.name).toBe(worldB.deity.name);
-    expect(worldA.settlements.length).toBeGreaterThanOrEqual(4);
+    expect(worldA.settlements.length).toBe(1);
     expect(worldA.settlements.length).toBe(worldB.settlements.length);
     expect(worldA.terrain.getHeightAt(12.5, -8.3)).toBeCloseTo(
       worldB.terrain.getHeightAt(12.5, -8.3),
@@ -531,5 +533,114 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     }
     expect(reachedFarSide).toBe(true);
     expect(maxObservedY).toBeGreaterThan(world.terrain.waterLevel + 0.5);
+  });
+
+  it('progresses buildings through clearing, leveling, foundation, framing, and finishing stages with active builder tool states', () => {
+    const world = new WorldState(new EventBus(), { seed: 314159 });
+    const settlement = world.settlements[0];
+    expect(settlement).toBeDefined();
+
+    // Freshly started plots begin at stage 0 (clearing land)
+    const starterPlot = settlement.buildings.find((b) => !b.completed);
+    expect(starterPlot).toBeDefined();
+    expect(starterPlot!.progress).toBe(0);
+    expect(getBuildingStage(starterPlot!)).toBe('clearing');
+
+    // Verify stage labels clearly distinguish timber-frame vs brick/stone masonry construction
+    expect(getConstructionStageLabel('framing', 'timber')).toMatch(/Timber/i);
+    expect(getConstructionStageLabel('framing', 'masonry')).toMatch(/Brick|Stone/i);
+    expect(BUILDING_CATALOG.timber_house.frameStyle).toBe('timber');
+    expect(BUILDING_CATALOG.library.frameStyle).toBe('masonry');
+
+    const observedPlotStages = new Set<ConstructionStage>();
+    const observedWorkerStages = new Set<ConstructionStage>();
+
+    for (let i = 0; i < 650; i++) {
+      world.step(0.05);
+      observedPlotStages.add(getBuildingStage(starterPlot!));
+      for (const c of world.creatures) {
+        if (c.isActivelyWorking && c.activeConstructionStage) {
+          observedWorkerStages.add(c.activeConstructionStage);
+        }
+      }
+      if (starterPlot!.completed) break;
+    }
+
+    expect(starterPlot!.completed).toBe(true);
+    for (const expectedStage of [
+      'clearing',
+      'leveling',
+      'foundation',
+      'framing',
+      'finishing',
+      'completed',
+    ] as const) {
+      expect(observedPlotStages.has(expectedStage)).toBe(true);
+    }
+    expect(observedWorkerStages.has('clearing')).toBe(true);
+    expect(observedWorkerStages.has('leveling')).toBe(true);
+    expect(observedWorkerStages.has('foundation')).toBe(true);
+    expect(observedWorkerStages.has('framing')).toBe(true);
+    expect(observedWorkerStages.has('finishing')).toBe(true);
+  });
+
+  it('starts with a single founding village and dispatches emigrating pioneers to establish new villages', () => {
+    const world = new WorldState(new EventBus(), { seed: 271828 });
+    expect(world.settlements.length).toBe(1);
+    const founding = world.settlements[0];
+    founding.stockpile.timber = 180;
+    founding.stockpile.stone = 120;
+    founding.stockpile.berries = 120;
+    founding.stockpile.acorns = 120;
+
+    let sawEmigratingPioneer = false;
+    for (let i = 0; i < 2000; i++) {
+      world.step(0.1);
+      if (world.creatures.some((c) => c.alive && c.activity === 'emigrating')) {
+        sawEmigratingPioneer = true;
+      }
+      if (world.settlements.length >= 2) break;
+    }
+
+    expect(sawEmigratingPioneer).toBe(true);
+    expect(world.settlements.length).toBeGreaterThanOrEqual(2);
+    const founded = world.settlements[1];
+    expect(founded.id).not.toBe(founding.id);
+    expect(Math.hypot(founded.center.x - founding.center.x, founded.center.z - founding.center.z)).toBeGreaterThan(20);
+    // Diplomacy between parent & daughter village is initialized friendly
+    expect(world.diplomacy.getStance(founding.id, founded.id)).toBe('friendly');
+  });
+
+  it('disassembles older smaller buildings to reclaim space for larger structures', () => {
+    const world = new WorldState(new EventBus(), { seed: 777888 });
+    const settlement = world.settlements[0];
+    settlement.stockpile.timber = 240;
+    settlement.stockpile.stone = 180;
+    settlement.stockpile.crafts = 40;
+    settlement.stockpile.berries = 140;
+    settlement.stockpile.acorns = 140;
+
+    let sawDisassembling = false;
+    let disassembledId: string | null = null;
+    let replacedBuilding = false;
+    const revBefore = world.structureRevision;
+
+    for (let i = 0; i < 2800; i++) {
+      world.step(0.1);
+      const activeDismantle = settlement.buildings.find((b) => b.disassembling);
+      if (activeDismantle && !sawDisassembling) {
+        sawDisassembling = true;
+        disassembledId = activeDismantle.id;
+        expect(getBuildingStage(activeDismantle)).toBe('disassembling');
+      }
+      if (disassembledId && !settlement.buildings.some((b) => b.id === disassembledId)) {
+        replacedBuilding = true;
+        break;
+      }
+    }
+
+    expect(sawDisassembling).toBe(true);
+    expect(replacedBuilding).toBe(true);
+    expect(world.structureRevision).toBeGreaterThan(revBefore);
   });
 });

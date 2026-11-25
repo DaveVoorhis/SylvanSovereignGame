@@ -46,12 +46,22 @@ export type CreatureActivity =
   | 'foraging'
   | 'gathering_timber'
   | 'building'
+  | 'emigrating'
   | 'trading'
   | 'socialising'
   | 'fighting'
   | 'fleeing'
   | 'resting'
   | 'praying';
+
+export type ConstructionStage =
+  | 'clearing'
+  | 'leveling'
+  | 'foundation'
+  | 'framing'
+  | 'finishing'
+  | 'completed'
+  | 'disassembling';
 
 export type CreatureRole =
   | 'forager'

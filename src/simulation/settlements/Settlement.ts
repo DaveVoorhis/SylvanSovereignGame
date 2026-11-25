@@ -1,6 +1,7 @@
 import {
   createEmptyResources,
   type BuildingType,
+  type ConstructionStage,
   type ResourceBundle,
   type SettlementTier,
   type SpeciesId,
@@ -17,6 +18,46 @@ export interface BuildingInstance {
   readonly rotation: number;
   progress: number; // 0..100
   completed: boolean;
+  /** True while builders are actively dismantling this structure to make room for a larger building. */
+  disassembling?: boolean;
+  /** Larger replacement building queued to rise on this reclaimed plot once disassembly finishes. */
+  replacementType?: BuildingType;
+}
+
+/** Derives the realistic multi-stage construction phase from a building's progress and state. */
+export function getBuildingStage(
+  building: Pick<BuildingInstance, 'progress' | 'completed' | 'disassembling'>,
+): ConstructionStage {
+  if (building.disassembling) return 'disassembling';
+  if (building.completed || building.progress >= 100) return 'completed';
+  if (building.progress < 18) return 'clearing';
+  if (building.progress < 36) return 'leveling';
+  if (building.progress < 56) return 'foundation';
+  if (building.progress < 80) return 'framing';
+  return 'finishing';
+}
+
+/** Human-readable label for the current construction stage. */
+export function getConstructionStageLabel(
+  stage: ConstructionStage,
+  frameStyle: 'timber' | 'masonry' = 'timber',
+): string {
+  switch (stage) {
+    case 'clearing':
+      return 'Clearing land';
+    case 'leveling':
+      return 'Leveling ground';
+    case 'foundation':
+      return 'Constructing foundation';
+    case 'framing':
+      return frameStyle === 'masonry' ? 'Raising brick & stone walls' : 'Raising timber frame';
+    case 'finishing':
+      return 'Adding roof & exterior features';
+    case 'disassembling':
+      return 'Disassembling structure';
+    case 'completed':
+      return 'Completed';
+  }
 }
 
 export class Settlement {

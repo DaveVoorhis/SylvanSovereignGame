@@ -80,6 +80,7 @@ export class SceneManager {
 
     this.setupPostProcessing();
     this.buildWorldScene(world);
+    this.focusFoundingVillage(world, true);
 
     this.onResizeBound = () => this.handleResize();
     this.onPointerDownBound = (e: PointerEvent) => {
@@ -129,7 +130,22 @@ export class SceneManager {
     this.disposeWorldScene();
     this.world = newWorld;
     this.buildWorldScene(newWorld);
-    this.cameraController.resetOverview();
+    this.focusFoundingVillage(newWorld, false);
+  }
+
+  private focusFoundingVillage(world: WorldState, immediate: boolean): void {
+    const founding = world.settlements[0];
+    if (!founding) {
+      this.cameraController.resetOverview();
+      return;
+    }
+    if (immediate) {
+      this.cameraController.controls.target.set(founding.center.x, founding.groundY + 1.6, founding.center.z);
+      this.camera.position.set(founding.center.x + 22, founding.groundY + 18, founding.center.z + 26);
+      this.cameraController.controls.update();
+    } else {
+      this.cameraController.flyTo(founding.center, founding.groundY + 1.6, 34);
+    }
   }
 
   renderFrame(dt: number): void {

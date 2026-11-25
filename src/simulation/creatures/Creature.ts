@@ -1,5 +1,6 @@
 import {
   createEmptyResources,
+  type ConstructionStage,
   type CreatureActivity,
   type CreatureRole,
   type ResourceBundle,
@@ -70,6 +71,15 @@ export class Creature {
   tradeDestinationSettlementId: string | null = null;
   tradeCarrying: ResourceType | null = null;
   tradeCargoAmount = 0;
+
+  /** Live construction tool & animation state (true while actively working on a building or bridge). */
+  isActivelyWorking = false;
+  activeConstructionStage: ConstructionStage | null = null;
+
+  /** Emigration pioneer party state when trekking to found a new village. */
+  emigrationPartyId: string | null = null;
+  emigrationTargetX: number | null = null;
+  emigrationTargetZ: number | null = null;
 
   readonly inventory: ResourceBundle = createEmptyResources();
   /** Maps another creature ID -> affinity score in [-100, 100]. */

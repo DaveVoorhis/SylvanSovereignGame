@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { BuildingType } from '@core/Types';
-import type { BuildingInstance, Settlement } from '@simulation/settlements/Settlement';
+import { BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
+import { getBuildingStage, type BuildingInstance, type Settlement } from '@simulation/settlements/Settlement';
 import { sampleBridgeDeckY, type BridgeInstance } from '@simulation/terrain/Bridge';
 import type { WorldState } from '@simulation/WorldState';
 import type { TextureLibrary } from './ProceduralTextures';
@@ -12,8 +13,21 @@ import {
   createSharedFlameGeometry,
 } from './FireEffect';
 
+interface StagedPart {
+  readonly obj: THREE.Object3D;
+  readonly revealAt: number;
+}
+
 interface RenderedBuilding {
   readonly group: THREE.Group;
+  readonly clearingGroup: THREE.Group;
+  readonly levelingPad: THREE.Object3D;
+  readonly levelingExtras: THREE.Group;
+  readonly foundationGroup: THREE.Group;
+  readonly framingParts: StagedPart[];
+  readonly scaffoldingGroup: THREE.Group;
+  readonly finishedParts: StagedPart[];
+  readonly ownedMaterials: THREE.Material[];
   readonly crystalMesh?: THREE.Mesh;
   readonly runeRingA?: THREE.Mesh;
   readonly runeRingB?: THREE.Mesh;
@@ -71,6 +85,8 @@ export class SettlementRenderer {
   private readonly ovenFireMat: THREE.ShaderMaterial;
   private readonly chimneySmokeMat: THREE.ShaderMaterial;
   private readonly potteryMat: THREE.MeshStandardMaterial;
+  private readonly earthPadMat: THREE.MeshStandardMaterial;
+  private readonly ropeMat: THREE.MeshStandardMaterial;
 
   // Shared sculpted architectural geometries
   private readonly bellRoofGeo: THREE.BufferGeometry;
@@ -221,6 +237,17 @@ export class SettlementRenderer {
       color: 0xc26942,
       roughness: 0.48,
     });
+    this.earthPadMat = new THREE.MeshStandardMaterial({
+      color: 0x6b4f35,
+      map: textures.stone.map,
+      bumpMap: textures.stone.bumpMap,
+      bumpScale: 0.14,
+      roughness: 0.96,
+    });
+    this.ropeMat = new THREE.MeshStandardMaterial({
+      color: 0xcab48c,
+      roughness: 0.92,
+    });
 
     // Bell-curved fairytale thatch cottage roof (LatheGeometry)
     const bellPts = [
@@ -318,8 +345,7 @@ export class SettlementRenderer {
         const entry = this.buildingMeshes.get(b.id);
         if (!entry) continue;
 
-        const targetScale = b.completed ? 1.0 : 0.32 + (b.progress / 100) * 0.68;
-        entry.group.scale.y += (targetScale - entry.group.scale.y) * Math.min(1, dt * 6);
+        this.applyConstructionStageVisuals(entry, b);
 
         if (entry.crystalMesh) {
           entry.crystalMesh.rotation.y += dt * 1.1;
@@ -369,7 +395,62 @@ export class SettlementRenderer {
     }
   }
 
+  /**
+   * Updates a building's 5-stage visual state:
+   * 0-18% clearing (staked clearing & felled brush) ->
+   * 18-36% leveling (leveled earthen terrace pad & grading stakes) ->
+   * 36-56% foundation (rising stone/brick plinth & material stacks) ->
+   * 56-80% framing (timber frame/rafters OR rising masonry courses + scaffolding) ->
+   * 80-100% finishing (enclosed walls, roof, windows, doors, lanterns, sails) ->
+   * 100% completed (scaffolding removed). Disassembling steps backward from 100 -> 0.
+   */
+  private applyConstructionStageVisuals(entry: RenderedBuilding, b: BuildingInstance): void {
+    const p = b.completed && !b.disassembling ? 100 : THREE.MathUtils.clamp(b.progress, 0, 100);
+    const stage = getBuildingStage(b);
+
+    // Stage 1: Clearing land (0-18%, and kept lightly visible at low leveling)
+    entry.clearingGroup.visible = !b.completed && p < 24;
+    if (entry.clearingGroup.visible) {
+      const clearFrac = p < 18 ? 1.0 : Math.max(0.25, 1.0 - (p - 18) / 6);
+      entry.clearingGroup.scale.set(1, clearFrac, 1);
+    }
+
+    // Stage 2: Leveled earthen terrace pad (rises 18-36%, remains grounded underneath completed building)
+    const showPad = b.completed || p >= 16;
+    entry.levelingPad.visible = showPad;
+    if (showPad) {
+      const padLift = b.completed ? 1.0 : THREE.MathUtils.clamp((p - 16) / 18, 0.2, 1.0);
+      entry.levelingPad.scale.set(1, padLift, 1);
+    }
+    entry.levelingExtras.visible = !b.completed && p >= 18 && p < 38;
+
+    // Stage 3: Foundation plinth & staged masonry/timber piles (36-80%, subsumed once finished shell appears)
+    const showFoundation = !b.completed && p >= 35 && p < 84;
+    entry.foundationGroup.visible = showFoundation;
+    if (showFoundation) {
+      const fScale = THREE.MathUtils.clamp((p - 35) / 20, 0.16, 1.0);
+      entry.foundationGroup.scale.set(1, fScale, 1);
+    }
+
+    // Stage 4: Rising timber frame OR stone/brick masonry wall courses (56-84%)
+    const showFraming = !b.completed && p >= 55 && p < 88;
+    for (const part of entry.framingParts) {
+      part.obj.visible = showFraming && p >= part.revealAt;
+    }
+
+    // Builders' wooden scaffolding & ladder during framing, finishing, and disassembly
+    entry.scaffoldingGroup.visible =
+      !b.completed && (p >= 54 || (stage === 'disassembling' && p >= 36));
+
+    // Stage 5: Finished structural shell (78-86%), roofs (86-92%), and exterior features (92-99%)
+    const normP = p / 100;
+    for (const part of entry.finishedParts) {
+      part.obj.visible = (b.completed && !b.disassembling) || normP >= part.revealAt;
+    }
+  }
+
   private syncAll(): void {
+    const liveBuildingIds = new Set<string>();
     for (const settlement of this.world.settlements) {
       if (!this.settlementFlags.has(settlement.id)) {
         this.settlementFlags.add(settlement.id);
@@ -377,11 +458,35 @@ export class SettlementRenderer {
       }
 
       for (const b of settlement.buildings) {
+        liveBuildingIds.add(b.id);
         if (!this.buildingMeshes.has(b.id)) {
           const built = this.createBuildingMesh(b, settlement.bannerColor);
           this.buildingMeshes.set(b.id, built);
           this.rootGroup.add(built.group);
+          this.applyConstructionStageVisuals(built, b);
         }
+      }
+    }
+
+    // Cleanly remove & dispose meshes for disassembled buildings
+    const sharedGeos = new Set<THREE.BufferGeometry>([
+      this.bellRoofGeo,
+      this.acornSiloGeo,
+      this.gableRoofGeo,
+      this.sharedFlameGeo,
+    ]);
+    for (const [id, entry] of this.buildingMeshes) {
+      if (!liveBuildingIds.has(id)) {
+        this.rootGroup.remove(entry.group);
+        entry.group.traverse((obj) => {
+          if ((obj instanceof THREE.Mesh || obj instanceof THREE.Points) && obj.geometry && !sharedGeos.has(obj.geometry)) {
+            obj.geometry.dispose();
+          }
+        });
+        for (const mat of entry.ownedMaterials) {
+          mat.dispose();
+        }
+        this.buildingMeshes.delete(id);
       }
     }
 
@@ -514,15 +619,21 @@ export class SettlementRenderer {
     // Subtle organic architectural scale variety so neighborhoods feel hand-crafted
     const variantHash = Math.abs(Math.sin(b.position.x * 12.9898 + b.position.z * 78.233));
     const widthScale = 0.94 + variantHash * 0.14;
-    group.scale.set(widthScale, b.completed ? 1.0 : 0.35, widthScale);
+    group.scale.set(widthScale, 1.0, widthScale);
     group.userData.selectionTarget = { kind: 'building', id: b.id };
 
+    const blueprint = BUILDING_CATALOG[b.type];
     const bannerMat = new THREE.MeshStandardMaterial({
       color: bannerColor,
       roughness: 0.74,
       side: THREE.DoubleSide,
     });
-    this.extraDisposables.push(bannerMat);
+    const ownedMaterials: THREE.Material[] = [bannerMat];
+
+    // Dedicated group holding the final finished architecture so we can cleanly separate construction kit & exterior stages
+    const finishedGroup = new THREE.Group();
+    finishedGroup.userData.selectionTarget = { kind: 'building', id: b.id };
+    group.add(finishedGroup);
 
     // Pick slight material variations per building instance for richer city silhouettes
     const wallPlaster = variantHash > 0.5 ? this.warmPlasterMat : this.plasterMat;
@@ -537,7 +648,7 @@ export class SettlementRenderer {
     let swayPart: THREE.Object3D | undefined;
     const chimneySmokes: THREE.Points[] = [];
 
-    const tag = <T extends THREE.Object3D>(obj: T, parent: THREE.Object3D = group): T => {
+    const tag = <T extends THREE.Object3D>(obj: T, parent: THREE.Object3D = finishedGroup): T => {
       obj.userData.selectionTarget = { kind: 'building', id: b.id };
       if (obj instanceof THREE.Mesh) {
         obj.castShadow = true;
@@ -551,6 +662,7 @@ export class SettlementRenderer {
       const holder = new THREE.Group();
       holder.position.set(x, y, z);
       holder.rotation.y = rotY;
+      holder.userData.buildPhase = 'exterior';
 
       const glass = tag(new THREE.Mesh(new THREE.PlaneGeometry(w, h), this.windowMat), holder);
       glass.position.z = 0.02;
@@ -579,14 +691,16 @@ export class SettlementRenderer {
         blossom.position.set(i * 0.16, -h * 0.5 + 0.03, 0.16);
       }
 
-      group.add(holder);
+      finishedGroup.add(holder);
     };
 
     const addHangingLantern = (x: number, y: number, z: number) => {
       const glass = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.08, 0.22, 8), this.windowMat));
       glass.position.set(x, y, z);
+      glass.userData.buildPhase = 'exterior';
       const cap = tag(new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.1, 8), this.brassMat));
       cap.position.set(x, y + 0.15, z);
+      cap.userData.buildPhase = 'exterior';
     };
 
     const addChimneySmoke = (x: number, y: number, z: number) => {
@@ -853,7 +967,8 @@ export class SettlementRenderer {
       signBoard.position.y = -0.35;
       const emblem = tag(new THREE.Mesh(new THREE.OctahedronGeometry(0.16, 0), this.brassMat), signPivot);
       emblem.position.set(0, -0.35, 0.06);
-      group.add(signPivot);
+      signPivot.userData.buildPhase = 'exterior';
+      finishedGroup.add(signPivot);
       swayPart = signPivot;
 
       addHangingLantern(-0.58, 1.55, 1.55);
@@ -891,7 +1006,8 @@ export class SettlementRenderer {
       }
       const hub = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.22, 10), this.brassMat), wheelPivot);
       hub.rotation.z = Math.PI / 2;
-      group.add(wheelPivot);
+      wheelPivot.userData.buildPhase = 'exterior';
+      finishedGroup.add(wheelPivot);
       wheelMesh = wheelPivot;
     } else if (type === 'windmill') {
       // Meadow Windmill — tall tapered stone-and-timber mill tower with sweeping 4-sail rotating canvas rotor!
@@ -955,7 +1071,8 @@ export class SettlementRenderer {
         trim.position.set(0.42, 2.98, 0.01);
         rotorPivot.add(armGroup);
       }
-      group.add(rotorPivot);
+      rotorPivot.userData.buildPhase = 'exterior';
+      finishedGroup.add(rotorPivot);
       rotorMesh = rotorPivot;
     } else if (type === 'greenhouse') {
       // Canopy Conservatory — stone dwarf wall, curved brass ribs, sunlit translucent glass dome & lush glowing interior herbs!
@@ -1093,7 +1210,8 @@ export class SettlementRenderer {
       crownRing.rotation.x = Math.PI / 2;
       crownRing.position.y = 0.12;
       crownRing.castShadow = false;
-      group.add(jetPivot);
+      jetPivot.userData.buildPhase = 'exterior';
+      finishedGroup.add(jetPivot);
       fountainJet = jetPivot;
 
       // Four warm corner garden lamp posts + cozy curved benches
@@ -1211,7 +1329,8 @@ export class SettlementRenderer {
       staff.position.y = 0.2;
       const pennant = tag(new THREE.Mesh(new THREE.PlaneGeometry(1.05, 0.48), bannerMat), flagPivot);
       pennant.position.set(0.55, 0.35, 0);
-      group.add(flagPivot);
+      flagPivot.userData.buildPhase = 'exterior';
+      finishedGroup.add(flagPivot);
       swayPart = flagPivot;
     } else {
       // Mystical Sylvan Shrine
@@ -1255,8 +1374,80 @@ export class SettlementRenderer {
       runeRingB = ringB;
     }
 
+    // Classify every finished architectural component into progressive reveal order:
+    // 0.78-0.86 structural shell -> 0.86-0.92 roofs/domes -> 0.92-0.99 exterior features & trim
+    const roofMaterials = new Set<THREE.Material>([
+      this.thatchMat,
+      this.slateRoofMat,
+      this.verdigrisMat,
+      this.glassMat,
+    ]);
+    const exteriorMaterials = new Set<THREE.Material>([
+      this.doorMat,
+      this.windowMat,
+      this.brassMat,
+      this.flowerPinkMat,
+      this.flowerGoldMat,
+      this.flowerBlueMat,
+      this.mossLeafMat,
+      this.potteryMat,
+      this.canvasSailMat,
+      this.shrineCrystalMat,
+      this.fountainWaterMat,
+      this.ovenFireMat,
+      bannerMat,
+    ]);
+
+    const shellObjs: THREE.Object3D[] = [];
+    const roofObjs: THREE.Object3D[] = [];
+    const exteriorObjs: THREE.Object3D[] = [];
+
+    for (const child of finishedGroup.children) {
+      if (child.userData.buildPhase === 'exterior') {
+        exteriorObjs.push(child);
+      } else if (child instanceof THREE.Mesh) {
+        const mat = child.material as THREE.Material;
+        if (child.geometry === this.bellRoofGeo || child.geometry === this.gableRoofGeo || roofMaterials.has(mat)) {
+          roofObjs.push(child);
+        } else if (exteriorMaterials.has(mat)) {
+          exteriorObjs.push(child);
+        } else {
+          shellObjs.push(child);
+        }
+      } else {
+        exteriorObjs.push(child);
+      }
+    }
+
+    shellObjs.sort((a, bObj) => a.position.y - bObj.position.y);
+    roofObjs.sort((a, bObj) => a.position.y - bObj.position.y);
+    exteriorObjs.sort((a, bObj) => a.position.y - bObj.position.y);
+
+    const finishedParts: StagedPart[] = [];
+    const pushRange = (list: THREE.Object3D[], start: number, end: number) => {
+      const n = Math.max(1, list.length - 1);
+      list.forEach((obj, idx) => {
+        finishedParts.push({ obj, revealAt: start + (idx / n) * (end - start) });
+      });
+    };
+    pushRange(shellObjs, 0.78, 0.855);
+    pushRange(roofObjs, 0.86, 0.915);
+    pushRange(exteriorObjs, 0.92, 0.985);
+
+    // Build dedicated 5-stage construction site kit (clearing, leveling, foundation, timber/masonry frame, scaffolding)
+    const kit = this.buildConstructionKit(b, blueprint.footprintRadius, blueprint.frameStyle);
+    group.add(kit.clearingGroup, kit.levelingPad, kit.levelingExtras, kit.foundationGroup, kit.framingGroup, kit.scaffoldingGroup);
+
     return {
       group,
+      clearingGroup: kit.clearingGroup,
+      levelingPad: kit.levelingPad,
+      levelingExtras: kit.levelingExtras,
+      foundationGroup: kit.foundationGroup,
+      framingParts: kit.framingParts,
+      scaffoldingGroup: kit.scaffoldingGroup,
+      finishedParts,
+      ownedMaterials,
       crystalMesh,
       runeRingA,
       runeRingB,
@@ -1265,6 +1456,257 @@ export class SettlementRenderer {
       fountainJet,
       swayPart,
       chimneySmokes: chimneySmokes.length > 0 ? chimneySmokes : undefined,
+    };
+  }
+
+  /**
+   * Builds the authentic multi-stage construction kit for a building plot:
+   * 1. Clearing land: corner wooden survey stakes, taut boundary twine, felled brush logs & stumps
+   * 2. Leveling land: beveled graded earthen terrace pad + grading pegs & loam heaps
+   * 3. Foundation: dressed stone/brick footing plinth + stacked masonry & timber supply piles
+   * 4. Framing: either post-and-beam timber frame + pitched rafters OR rising multi-course brick/stone walls
+   * 5. Scaffolding: wooden builders' scaffold poles, plank catwalks, diagonal braces & leaning ladder
+   */
+  private buildConstructionKit(
+    b: BuildingInstance,
+    footprintRadius: number,
+    frameStyle: 'timber' | 'masonry',
+  ): {
+    clearingGroup: THREE.Group;
+    levelingPad: THREE.Object3D;
+    levelingExtras: THREE.Group;
+    foundationGroup: THREE.Group;
+    framingGroup: THREE.Group;
+    framingParts: StagedPart[];
+    scaffoldingGroup: THREE.Group;
+  } {
+    const r = Math.max(1.35, footprintRadius * 0.78);
+    const halfW = r * 0.88;
+    const halfD = r * 0.76;
+    const wallH = footprintRadius >= 2.9 ? 2.55 : footprintRadius >= 2.2 ? 2.05 : 1.65;
+
+    const addKit = <T extends THREE.Object3D>(obj: T, parent: THREE.Object3D): T => {
+      obj.userData.selectionTarget = { kind: 'building', id: b.id };
+      if (obj instanceof THREE.Mesh) {
+        obj.castShadow = true;
+        obj.receiveShadow = true;
+      }
+      parent.add(obj);
+      return obj;
+    };
+
+    // 1. Clearing Land (0-18%): survey stakes, perimeter twine, felled brush logs & stump
+    const clearingGroup = new THREE.Group();
+    const corners: [number, number][] = [
+      [-halfW * 1.08, -halfD * 1.08],
+      [halfW * 1.08, -halfD * 1.08],
+      [halfW * 1.08, halfD * 1.08],
+      [-halfW * 1.08, halfD * 1.08],
+    ];
+    for (let i = 0; i < corners.length; i++) {
+      const [cx, cz] = corners[i];
+      const stake = addKit(new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 0.75, 6), this.darkTimberMat), clearingGroup);
+      stake.position.set(cx, 0.34, cz);
+
+      const [nx, nz] = corners[(i + 1) % corners.length];
+      const span = Math.hypot(nx - cx, nz - cz);
+      const twine = addKit(new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, span, 5), this.ropeMat), clearingGroup);
+      twine.position.set((cx + nx) * 0.5, 0.54, (cz + nz) * 0.5);
+      twine.rotation.z = Math.PI / 2;
+      twine.rotation.y = -Math.atan2(nz - cz, nx - cx);
+    }
+    // Felled timber logs & freshly cut tree stump being cleared off the plot
+    const stump = addKit(new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.32, 0.32, 8), this.darkTimberMat), clearingGroup);
+    stump.position.set(-halfW * 0.28, 0.14, halfD * 0.18);
+    for (let i = 0; i < 3; i++) {
+      const log = addKit(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, r * 0.95, 7), this.timberMat), clearingGroup);
+      log.rotation.z = Math.PI / 2;
+      log.rotation.y = 0.35 + i * 0.55;
+      log.position.set(halfW * 0.18 + (i - 1) * 0.25, 0.11 + (i === 2 ? 0.15 : 0), -halfD * 0.12 + i * 0.22);
+    }
+    // Cleared leafy brush tufts
+    for (let i = 0; i < 3; i++) {
+      const brush = addKit(new THREE.Mesh(new THREE.DodecahedronGeometry(0.24, 0), this.mossLeafMat), clearingGroup);
+      brush.scale.set(1.3, 0.55, 1.1);
+      brush.position.set(-halfW * 0.52 + i * 0.48, 0.12, -halfD * 0.46 + (i % 2) * 0.28);
+    }
+
+    // 2. Leveling Land (18-36%): graded earthen terrace pad + leveling pegs & soil mounds
+    const levelingPad = new THREE.Mesh(
+      new THREE.CylinderGeometry(r * 1.12, r * 1.24, 0.24, 16),
+      this.earthPadMat,
+    );
+    levelingPad.position.y = 0.04;
+    levelingPad.receiveShadow = true;
+    levelingPad.userData.selectionTarget = { kind: 'building', id: b.id };
+
+    const levelingExtras = new THREE.Group();
+    for (const [cx, cz] of corners) {
+      const peg = addKit(new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.52, 0.08), this.timberMat), levelingExtras);
+      peg.position.set(cx * 0.96, 0.26, cz * 0.96);
+    }
+    const mound = addKit(new THREE.Mesh(new THREE.SphereGeometry(0.42, 10, 8), this.earthPadMat), levelingExtras);
+    mound.scale.set(1.4, 0.52, 1.15);
+    mound.position.set(halfW * 0.72, 0.18, halfD * 0.65);
+
+    // 3. Foundation (36-56%): stone/brick plinth & footing + staged supply stack
+    const foundationGroup = new THREE.Group();
+    const plinthMat = frameStyle === 'masonry' ? this.stoneMat : this.stoneMat;
+    const plinth = addKit(
+      new THREE.Mesh(new THREE.BoxGeometry(halfW * 2.02, 0.44, halfD * 2.02), plinthMat),
+      foundationGroup,
+    );
+    plinth.position.y = 0.26;
+    // Corner dressed footing piers
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const pier = addKit(
+          new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.54, 0.36), frameStyle === 'masonry' ? this.brickMat : this.stoneMat),
+          foundationGroup,
+        );
+        pier.position.set(sx * halfW, 0.31, sz * halfD);
+      }
+    }
+    // Staged building materials stack beside the foundation
+    for (let i = 0; i < 3; i++) {
+      const matPiece = addKit(
+        new THREE.Mesh(
+          frameStyle === 'masonry'
+            ? new THREE.BoxGeometry(0.42, 0.2, 0.26)
+            : new THREE.CylinderGeometry(0.08, 0.08, 1.05, 7),
+          frameStyle === 'masonry' ? this.brickMat : this.timberMat,
+        ),
+        foundationGroup,
+      );
+      if (frameStyle === 'timber') {
+        matPiece.rotation.z = Math.PI / 2;
+        matPiece.position.set(halfW + 0.42, 0.16 + (i === 2 ? 0.14 : 0), -0.18 + (i % 2) * 0.2);
+      } else {
+        matPiece.position.set(halfW + 0.44, 0.2 + (i === 2 ? 0.21 : 0), -0.18 + (i % 2) * 0.28);
+      }
+    }
+
+    // 4. Framing (56-80%): timber frame skeleton + rafters OR rising brick/stone wall courses
+    const framingGroup = new THREE.Group();
+    const framingParts: StagedPart[] = [];
+    const addFrame = (obj: THREE.Object3D, revealAt: number) => {
+      addKit(obj, framingGroup);
+      framingParts.push({ obj, revealAt });
+    };
+
+    if (frameStyle === 'timber') {
+      // Corner & mid timber posts (56-64%)
+      const xPosts = [-halfW * 0.94, 0, halfW * 0.94];
+      const zPosts = [-halfD * 0.94, halfD * 0.94];
+      for (const px of xPosts) {
+        for (const pz of zPosts) {
+          const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, wallH, 0.14), this.darkTimberMat);
+          post.position.set(px, 0.46 + wallH * 0.5, pz);
+          addFrame(post, 56 + (px === 0 ? 4 : 0));
+        }
+      }
+      // Horizontal wall plates & cross-beams (64-70%)
+      for (const pz of zPosts) {
+        const plate = new THREE.Mesh(new THREE.BoxGeometry(halfW * 2.02, 0.14, 0.15), this.timberMat);
+        plate.position.set(0, 0.46 + wallH, pz);
+        addFrame(plate, 64);
+      }
+      for (const px of [-halfW * 0.94, halfW * 0.94]) {
+        const tie = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.14, halfD * 2.02), this.timberMat);
+        tie.position.set(px, 0.46 + wallH, 0);
+        addFrame(tie, 66);
+        // Diagonal wind braces
+        const brace = new THREE.Mesh(new THREE.BoxGeometry(0.1, wallH * 0.85, 0.1), this.darkTimberMat);
+        brace.position.set(px, 0.46 + wallH * 0.5, 0);
+        brace.rotation.x = 0.58;
+        addFrame(brace, 68);
+      }
+      // Pitched triangular roof rafters + ridge pole (71-78%)
+      const roofRise = Math.max(0.85, halfD * 0.95);
+      const rafterLen = Math.hypot(halfD * 1.06, roofRise);
+      const rafterTilt = Math.atan2(halfD * 1.06, roofRise);
+      for (const rx of [-halfW * 0.86, 0, halfW * 0.86]) {
+        for (const side of [-1, 1] as const) {
+          const rafter = new THREE.Mesh(new THREE.BoxGeometry(0.1, rafterLen, 0.1), this.timberMat);
+          rafter.position.set(rx, 0.46 + wallH + roofRise * 0.5, side * halfD * 0.5);
+          rafter.rotation.x = side * rafterTilt;
+          addFrame(rafter, 71 + (rx === 0 ? 3 : 0));
+        }
+      }
+      const ridge = new THREE.Mesh(new THREE.BoxGeometry(halfW * 2.08, 0.12, 0.12), this.darkTimberMat);
+      ridge.position.set(0, 0.46 + wallH + roofRise, 0);
+      addFrame(ridge, 75);
+    } else {
+      // Masonry construction: 4 staggered courses of dressed stone & brick walls rising course-by-course
+      const courseCount = 4;
+      const courseH = wallH / courseCount;
+      for (let cIdx = 0; cIdx < courseCount; cIdx++) {
+        const y = 0.48 + (cIdx + 0.5) * courseH;
+        const revealAt = 56 + cIdx * 5.2;
+        const wallMat = cIdx % 2 === 0 ? this.stoneMat : this.brickMat;
+
+        // Back & side masonry walls
+        const backWall = new THREE.Mesh(new THREE.BoxGeometry(halfW * 1.94, courseH * 0.94, 0.24), wallMat);
+        backWall.position.set(0, y, -halfD * 0.9);
+        addFrame(backWall, revealAt);
+
+        for (const side of [-1, 1] as const) {
+          const sideWall = new THREE.Mesh(new THREE.BoxGeometry(0.24, courseH * 0.94, halfD * 1.84), wallMat);
+          sideWall.position.set(side * halfW * 0.9, y, 0);
+          addFrame(sideWall, revealAt + 0.6);
+
+          // Front wall segments leaving a central doorway opening in the lower courses
+          const frontSegW = cIdx < 2 ? halfW * 0.66 : halfW * 0.97;
+          const frontSegX = cIdx < 2 ? side * (halfW * 0.62) : side * (halfW * 0.48);
+          const frontWall = new THREE.Mesh(new THREE.BoxGeometry(frontSegW, courseH * 0.94, 0.24), wallMat);
+          frontWall.position.set(frontSegX, y, halfD * 0.9);
+          addFrame(frontWall, revealAt + 1.2);
+        }
+      }
+      // Timber doorway lintel & upper cornice beam
+      const lintel = new THREE.Mesh(new THREE.BoxGeometry(halfW * 0.9, 0.14, 0.3), this.darkTimberMat);
+      lintel.position.set(0, 0.48 + courseH * 2.02, halfD * 0.9);
+      addFrame(lintel, 68);
+    }
+
+    // 5. Builders' wooden scaffolding poles, plank catwalks & leaning ladder (visible 54-99%)
+    const scaffoldingGroup = new THREE.Group();
+    const scafH = wallH + 0.7;
+    const scafZ = halfD + 0.46;
+    for (const sx of [-halfW * 0.92, halfW * 0.92]) {
+      const pole = addKit(new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, scafH, 6), this.darkTimberMat), scaffoldingGroup);
+      pole.position.set(sx, scafH * 0.5, scafZ);
+    }
+    for (const catY of [1.18, Math.min(scafH - 0.35, 2.22)]) {
+      const plank = addKit(new THREE.Mesh(new THREE.BoxGeometry(halfW * 2.1, 0.08, 0.36), this.timberMat), scaffoldingGroup);
+      plank.position.set(0, catY, scafZ - 0.12);
+    }
+    // Diagonal scaffold cross-brace
+    const xBrace = addKit(new THREE.Mesh(new THREE.BoxGeometry(halfW * 2.0, 0.06, 0.06), this.darkTimberMat), scaffoldingGroup);
+    xBrace.position.set(0, 1.5, scafZ + 0.04);
+    xBrace.rotation.z = 0.42;
+    // Leaning wooden builders' ladder on the right flank
+    const ladX = halfW + 0.4;
+    for (const lz of [-0.18, 0.18]) {
+      const rail = addKit(new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.032, scafH * 0.95, 6), this.darkTimberMat), scaffoldingGroup);
+      rail.position.set(ladX, scafH * 0.46, lz);
+      rail.rotation.z = 0.24;
+    }
+    for (let rIdx = 0; rIdx < 5; rIdx++) {
+      const rung = addKit(new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.4, 5), this.timberMat), scaffoldingGroup);
+      rung.rotation.x = Math.PI / 2;
+      const ry = 0.4 + rIdx * 0.38;
+      rung.position.set(ladX + 0.22 - ry * 0.24, ry, 0);
+    }
+
+    return {
+      clearingGroup,
+      levelingPad,
+      levelingExtras,
+      foundationGroup,
+      framingGroup,
+      framingParts,
+      scaffoldingGroup,
     };
   }
 
@@ -1463,6 +1905,12 @@ export class SettlementRenderer {
     for (const g of sharedGeos) g.dispose();
     for (const d of this.extraDisposables) d.dispose();
     this.extraDisposables.length = 0;
+    for (const entry of this.buildingMeshes.values()) {
+      for (const mat of entry.ownedMaterials) {
+        mat.dispose();
+      }
+    }
+    this.buildingMeshes.clear();
     for (const h of this.hearths) {
       h.fire.dispose();
     }
@@ -1492,5 +1940,7 @@ export class SettlementRenderer {
     this.ovenFireMat.dispose();
     this.chimneySmokeMat.dispose();
     this.potteryMat.dispose();
+    this.earthPadMat.dispose();
+    this.ropeMat.dispose();
   }
 }
