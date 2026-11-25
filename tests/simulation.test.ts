@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EventBus } from '@core/EventBus';
+import { HEARTH_FIRE_KEEP_OUT_RADIUS } from '@simulation/creatures/CreatureAI';
 import { ALL_SPECIES_IDS, SPECIES_CATALOG } from '@simulation/creatures/SpeciesCatalog';
 import { ALL_BUILDING_TYPES, BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
 import { WorldState } from '@simulation/WorldState';
@@ -131,5 +132,44 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     expect(response).toContain(world.deity.name);
     expect(world.deity.traits.benevolence).toBeGreaterThanOrEqual(beforeBenevolence);
     expect(world.deity.whisperCooldown).toBeGreaterThan(0);
+  });
+
+  it('steers creatures smoothly around settlement hearth fires instead of walking through them', () => {
+    const world = new WorldState(new EventBus(), { seed: 31415 });
+    const settlement = world.settlements[0];
+    expect(settlement).toBeDefined();
+
+    // Place a ground creature on one side of the fire with a target directly across the firepit
+    const walker = world.creatures.find((c) => !c.def.aerial && c.settlementId === settlement.id);
+    expect(walker).toBeDefined();
+    if (!walker) return;
+
+    walker.x = settlement.center.x - 4.5;
+    walker.z = settlement.center.z;
+    walker.activity = 'socialising';
+    walker.actionTimer = 30;
+    walker.targetX = settlement.center.x + 4.5;
+    walker.targetZ = settlement.center.z;
+
+    let minDistToFire = Infinity;
+    for (let i = 0; i < 160; i++) {
+      world.step(0.08);
+      const d = Math.hypot(walker.x - settlement.center.x, walker.z - settlement.center.z);
+      if (d < minDistToFire) minDistToFire = d;
+
+      // Check every grounded creature stays out of every settlement's hearth fire
+      for (const c of world.creatures) {
+        if (!c.alive || (c.def.aerial && c.flightAltitude > 3.0)) continue;
+        for (const s of world.settlements) {
+          expect(Math.hypot(c.x - s.center.x, c.z - s.center.z)).toBeGreaterThanOrEqual(
+            HEARTH_FIRE_KEEP_OUT_RADIUS - 0.02,
+          );
+        }
+      }
+    }
+
+    expect(minDistToFire).toBeGreaterThanOrEqual(HEARTH_FIRE_KEEP_OUT_RADIUS - 0.02);
+    // Confirm the creature successfully curved around the fire and reached the far side
+    expect(walker.x).toBeGreaterThan(settlement.center.x + 3.0);
   });
 });

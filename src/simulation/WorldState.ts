@@ -82,7 +82,7 @@ export class WorldState {
 
   spawnCreature(settlement: Settlement, species: SpeciesId, role: CreatureRole): Creature {
     const angle = this.rng.range(0, Math.PI * 2);
-    const radius = this.rng.range(1.5, Math.min(6.5, settlement.radius * 0.75));
+    const radius = this.rng.range(2.2, Math.min(6.8, Math.max(3.2, settlement.radius * 0.78)));
     const x = settlement.center.x + Math.cos(angle) * radius;
     const z = settlement.center.z + Math.sin(angle) * radius;
     const y = Math.max(this.terrain.getHeightAt(x, z), this.terrain.waterLevel);

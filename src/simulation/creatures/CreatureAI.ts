@@ -2,6 +2,11 @@ import type { ResourceType } from '@core/Types';
 import type { WorldState } from '@simulation/WorldState';
 import type { Creature } from './Creature';
 
+/** Minimum horizontal clearance from every settlement's central hearth firepit (stone ring outer edge ≈ 0.90m). */
+export const HEARTH_FIRE_KEEP_OUT_RADIUS = 1.65;
+/** Distance at which creatures begin smoothly steering around a town firepit. */
+const HEARTH_STEER_RADIUS = 2.75;
+
 /**
  * Autonomous utility-driven AI for anthropomorphic woodland creatures:
  * foraging, continuous city building, inter-settlement trading, tavern/square socialising,
@@ -74,6 +79,7 @@ export class CreatureAI {
       this.handleResting(creature, world, dt);
     } else {
       this.chooseNextActivity(creature, world);
+      this.pushTargetOutsideHearths(creature, world);
     }
 
     // Move smoothly toward target
@@ -533,8 +539,15 @@ export class CreatureAI {
   private handleFleeing(creature: Creature, world: WorldState, _dt: number): void {
     const home = world.getSettlement(creature.settlementId);
     if (home) {
-      creature.targetX = home.center.x;
-      creature.targetZ = home.center.z;
+      // Flee to the safe rim of the home hearth plaza rather than directly into the fire
+      const rx = creature.x - home.center.x;
+      const rz = creature.z - home.center.z;
+      const rd = Math.hypot(rx, rz);
+      const safeR = HEARTH_FIRE_KEEP_OUT_RADIUS + 0.75;
+      const dirX = rd > 0.01 ? rx / rd : 1;
+      const dirZ = rd > 0.01 ? rz / rd : 0;
+      creature.targetX = home.center.x + dirX * safeR;
+      creature.targetZ = home.center.z + dirZ * safeR;
     }
     if (creature.actionTimer <= 0) {
       creature.activity = 'resting';
@@ -554,10 +567,46 @@ export class CreatureAI {
     }
   }
 
+  /** Ensures a creature's destination never lands inside any settlement's hearth firepit. */
+  private pushTargetOutsideHearths(creature: Creature, world: WorldState): void {
+    const targetClearance = HEARTH_FIRE_KEEP_OUT_RADIUS + 0.45;
+    for (const settlement of world.settlements) {
+      const tx = creature.targetX - settlement.center.x;
+      const tz = creature.targetZ - settlement.center.z;
+      const td = Math.hypot(tx, tz);
+      if (td < targetClearance) {
+        // Prefer the side facing the creature so it approaches the cozy plaza rim naturally
+        let ux: number;
+        let uz: number;
+        if (td > 0.05) {
+          ux = tx / td;
+          uz = tz / td;
+        } else {
+          const cx = creature.x - settlement.center.x;
+          const cz = creature.z - settlement.center.z;
+          const cd = Math.hypot(cx, cz);
+          if (cd > 0.05) {
+            ux = cx / cd;
+            uz = cz / cd;
+          } else {
+            const fallbackAngle = (creature.id.charCodeAt(creature.id.length - 1) || 1) * 1.13;
+            ux = Math.cos(fallbackAngle);
+            uz = Math.sin(fallbackAngle);
+          }
+        }
+        creature.targetX = settlement.center.x + ux * targetClearance;
+        creature.targetZ = settlement.center.z + uz * targetClearance;
+      }
+    }
+  }
+
   private moveCreature(creature: Creature, world: WorldState, dt: number): void {
+    this.pushTargetOutsideHearths(creature, world);
+
     const dx = creature.targetX - creature.x;
     const dz = creature.targetZ - creature.z;
     const dist = Math.hypot(dx, dz);
+    const flyingHighAboveFlames = creature.def.aerial && creature.flightAltitude > 3.0;
 
     if (dist > 0.25) {
       const speedMult =
@@ -570,8 +619,50 @@ export class CreatureAI {
               : 1.0;
 
       const step = Math.min(dist, creature.def.baseSpeed * speedMult * dt);
-      let nx = creature.x + (dx / dist) * step;
-      let nz = creature.z + (dz / dist) * step;
+      let dirX = dx / dist;
+      let dirZ = dz / dist;
+
+      // Smooth tangential steering around town hearth firepits so creatures curve around the flames
+      if (!flyingHighAboveFlames) {
+        for (const settlement of world.settlements) {
+          const fx = creature.x - settlement.center.x;
+          const fz = creature.z - settlement.center.z;
+          const fDist = Math.hypot(fx, fz);
+          if (fDist < HEARTH_STEER_RADIUS) {
+            const invF = fDist > 0.001 ? 1 / fDist : 0;
+            const radX = fDist > 0.001 ? fx * invF : 1;
+            const radZ = fDist > 0.001 ? fz * invF : 0;
+            // Positive when creature is heading toward the fire center
+            const towardFire = -(dirX * radX + dirZ * radZ);
+            if (towardFire > -0.15 || fDist < HEARTH_FIRE_KEEP_OUT_RADIUS + 0.35) {
+              // Choose the tangent direction that best preserves travel heading (deterministic tie-break)
+              const ccwX = -radZ;
+              const ccwZ = radX;
+              const ccwDot = dirX * ccwX + dirZ * ccwZ;
+              const tieSign = (creature.id.charCodeAt(creature.id.length - 1) & 1) === 0 ? 1 : -1;
+              const sign = Math.abs(ccwDot) > 0.08 ? (ccwDot >= 0 ? 1 : -1) : tieSign;
+              const tanX = ccwX * sign;
+              const tanZ = ccwZ * sign;
+
+              const proximity = Math.min(
+                1,
+                Math.max(0, (HEARTH_STEER_RADIUS - fDist) / (HEARTH_STEER_RADIUS - HEARTH_FIRE_KEEP_OUT_RADIUS)),
+              );
+              const pushOut = fDist < HEARTH_FIRE_KEEP_OUT_RADIUS + 0.3 ? 0.65 : 0.18 * proximity;
+              dirX = dirX * (1 - proximity * 0.85) + tanX * (0.55 + proximity * 0.95) + radX * pushOut;
+              dirZ = dirZ * (1 - proximity * 0.85) + tanZ * (0.55 + proximity * 0.95) + radZ * pushOut;
+              const dLen = Math.hypot(dirX, dirZ);
+              if (dLen > 0.001) {
+                dirX /= dLen;
+                dirZ /= dLen;
+              }
+            }
+          }
+        }
+      }
+
+      let nx = creature.x + dirX * step;
+      let nz = creature.z + dirZ * step;
 
       // Invisible circular valley boundary: smoothly steer inward rather than clipping a square wall
       const maxR = world.terrain.playableRadius;
@@ -579,6 +670,21 @@ export class CreatureAI {
       if (nr > maxR && nr > 0.001) {
         nx = (nx / nr) * maxR;
         nz = (nz / nr) * maxR;
+      }
+
+      // Hard firepit exclusion guarantee so grounded/low-flying creatures never enter the flames
+      if (!flyingHighAboveFlames) {
+        for (const settlement of world.settlements) {
+          const hx = nx - settlement.center.x;
+          const hz = nz - settlement.center.z;
+          const hd = Math.hypot(hx, hz);
+          if (hd < HEARTH_FIRE_KEEP_OUT_RADIUS) {
+            const ux = hd > 0.001 ? hx / hd : Math.cos(creature.heading);
+            const uz = hd > 0.001 ? hz / hd : Math.sin(creature.heading);
+            nx = settlement.center.x + ux * HEARTH_FIRE_KEEP_OUT_RADIUS;
+            nz = settlement.center.z + uz * HEARTH_FIRE_KEEP_OUT_RADIUS;
+          }
+        }
       }
 
       if (
@@ -589,8 +695,8 @@ export class CreatureAI {
         creature.z = nz;
       } else {
         // Gentle detour around steep slopes or deep water
-        const perpX = creature.x - (dz / dist) * step;
-        const perpZ = creature.z + (dx / dist) * step;
+        const perpX = creature.x - dirZ * step;
+        const perpZ = creature.z + dirX * step;
         if (world.terrain.isWalkable(perpX, perpZ, creature.def.amphibious)) {
           creature.x = perpX;
           creature.z = perpZ;
@@ -600,7 +706,7 @@ export class CreatureAI {
         }
       }
 
-      creature.heading = Math.atan2(dx, dz);
+      creature.heading = Math.atan2(dirX, dirZ);
       creature.animPhase += dt * (creature.def.baseSpeed * 2.4);
 
       if (creature.def.aerial) {
@@ -609,6 +715,21 @@ export class CreatureAI {
       }
     } else if (creature.def.aerial) {
       creature.flightAltitude += (0 - creature.flightAltitude) * Math.min(1, dt * 4.5);
+    }
+
+    // Also keep stationary/just-landed creatures safely outside hearth firepits
+    if (!flyingHighAboveFlames) {
+      for (const settlement of world.settlements) {
+        const hx = creature.x - settlement.center.x;
+        const hz = creature.z - settlement.center.z;
+        const hd = Math.hypot(hx, hz);
+        if (hd < HEARTH_FIRE_KEEP_OUT_RADIUS) {
+          const ux = hd > 0.001 ? hx / hd : 1;
+          const uz = hd > 0.001 ? hz / hd : 0;
+          creature.x = settlement.center.x + ux * HEARTH_FIRE_KEEP_OUT_RADIUS;
+          creature.z = settlement.center.z + uz * HEARTH_FIRE_KEEP_OUT_RADIUS;
+        }
+      }
     }
 
     const groundY = world.terrain.getHeightAt(creature.x, creature.z);
