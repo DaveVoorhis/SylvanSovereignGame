@@ -4,6 +4,9 @@ export interface SpeciesDefinition {
   readonly id: SpeciesId;
   readonly displayName: string;
   readonly pluralName: string;
+  readonly youngSingular: string;
+  readonly youngPlural: string;
+  readonly litterSizeRange: readonly [number, number];
   readonly locomotion: LocomotionKind;
   readonly amphibious: boolean;
   readonly aerial: boolean;
@@ -37,6 +40,9 @@ export const SPECIES_CATALOG: Record<SpeciesId, SpeciesDefinition> = {
     id: 'crow',
     displayName: 'Crow',
     pluralName: 'Crows',
+    youngSingular: 'fledgling',
+    youngPlural: 'fledglings',
+    litterSizeRange: [2, 3],
     locomotion: 'fly',
     amphibious: false,
     aerial: true,
@@ -59,6 +65,9 @@ export const SPECIES_CATALOG: Record<SpeciesId, SpeciesDefinition> = {
     id: 'sparrow',
     displayName: 'Sparrow',
     pluralName: 'Sparrows',
+    youngSingular: 'chick',
+    youngPlural: 'chicks',
+    litterSizeRange: [2, 4],
     locomotion: 'fly',
     amphibious: false,
     aerial: true,
@@ -81,6 +90,9 @@ export const SPECIES_CATALOG: Record<SpeciesId, SpeciesDefinition> = {
     id: 'robin',
     displayName: 'Robin',
     pluralName: 'Robins',
+    youngSingular: 'chick',
+    youngPlural: 'chicks',
+    litterSizeRange: [2, 4],
     locomotion: 'fly',
     amphibious: false,
     aerial: true,
@@ -103,6 +115,9 @@ export const SPECIES_CATALOG: Record<SpeciesId, SpeciesDefinition> = {
     id: 'squirrel',
     displayName: 'Squirrel',
     pluralName: 'Squirrels',
+    youngSingular: 'kit',
+    youngPlural: 'kits',
+    litterSizeRange: [2, 4],
     locomotion: 'scurry',
     amphibious: false,
     aerial: false,
@@ -125,6 +140,9 @@ export const SPECIES_CATALOG: Record<SpeciesId, SpeciesDefinition> = {
     id: 'mouse',
     displayName: 'Mouse',
     pluralName: 'Mice',
+    youngSingular: 'pup',
+    youngPlural: 'pups',
+    litterSizeRange: [3, 4],
     locomotion: 'scurry',
     amphibious: false,
     aerial: false,
@@ -147,6 +165,9 @@ export const SPECIES_CATALOG: Record<SpeciesId, SpeciesDefinition> = {
     id: 'rat',
     displayName: 'Rat',
     pluralName: 'Rats',
+    youngSingular: 'pup',
+    youngPlural: 'pups',
+    litterSizeRange: [3, 4],
     locomotion: 'scurry',
     amphibious: false,
     aerial: false,
@@ -169,6 +190,9 @@ export const SPECIES_CATALOG: Record<SpeciesId, SpeciesDefinition> = {
     id: 'frog',
     displayName: 'Frog',
     pluralName: 'Frogs',
+    youngSingular: 'froglet',
+    youngPlural: 'froglets',
+    litterSizeRange: [3, 4],
     locomotion: 'hop',
     amphibious: true,
     aerial: false,
@@ -191,6 +215,9 @@ export const SPECIES_CATALOG: Record<SpeciesId, SpeciesDefinition> = {
     id: 'rabbit',
     displayName: 'Rabbit',
     pluralName: 'Rabbits',
+    youngSingular: 'kit',
+    youngPlural: 'kits',
+    litterSizeRange: [3, 4],
     locomotion: 'hop',
     amphibious: false,
     aerial: false,
@@ -213,6 +240,9 @@ export const SPECIES_CATALOG: Record<SpeciesId, SpeciesDefinition> = {
     id: 'fox',
     displayName: 'Fox',
     pluralName: 'Foxes',
+    youngSingular: 'kit',
+    youngPlural: 'kits',
+    litterSizeRange: [2, 4],
     locomotion: 'walk',
     amphibious: false,
     aerial: false,
@@ -235,6 +265,9 @@ export const SPECIES_CATALOG: Record<SpeciesId, SpeciesDefinition> = {
     id: 'hedgehog',
     displayName: 'Hedgehog',
     pluralName: 'Hedgehogs',
+    youngSingular: 'hoglet',
+    youngPlural: 'hoglets',
+    litterSizeRange: [2, 4],
     locomotion: 'scurry',
     amphibious: false,
     aerial: false,
@@ -257,6 +290,9 @@ export const SPECIES_CATALOG: Record<SpeciesId, SpeciesDefinition> = {
     id: 'badger',
     displayName: 'Badger',
     pluralName: 'Badgers',
+    youngSingular: 'cub',
+    youngPlural: 'cubs',
+    litterSizeRange: [2, 3],
     locomotion: 'walk',
     amphibious: false,
     aerial: false,
@@ -279,6 +315,9 @@ export const SPECIES_CATALOG: Record<SpeciesId, SpeciesDefinition> = {
     id: 'owl',
     displayName: 'Owl',
     pluralName: 'Owls',
+    youngSingular: 'owlet',
+    youngPlural: 'owlets',
+    litterSizeRange: [2, 3],
     locomotion: 'fly',
     amphibious: false,
     aerial: true,
@@ -319,4 +358,18 @@ export function generateCreatureName(nextRand: () => number): string {
   const first = FIRST_NAMES[Math.floor(nextRand() * FIRST_NAMES.length)];
   const last = SURNAMES[Math.floor(nextRand() * SURNAMES.length)];
   return `${first} ${last}`;
+}
+
+export function generateOffspringName(nextRand: () => number, familySurname?: string): string {
+  const first = FIRST_NAMES[Math.floor(nextRand() * FIRST_NAMES.length)];
+  const last =
+    familySurname && familySurname.trim().length > 0
+      ? familySurname.trim()
+      : SURNAMES[Math.floor(nextRand() * SURNAMES.length)];
+  return `${first} ${last}`;
+}
+
+export function extractSurname(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/);
+  return parts.length > 1 ? parts[parts.length - 1] : fullName;
 }

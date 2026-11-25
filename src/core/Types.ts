@@ -53,6 +53,8 @@ export type SpeciesId =
 
 export type LocomotionKind = 'walk' | 'hop' | 'scurry' | 'fly';
 
+export type LifeStage = 'young' | 'juvenile' | 'adult' | 'elder';
+
 export type CreatureActivity =
   | 'idle'
   | 'foraging'
@@ -61,6 +63,9 @@ export type CreatureActivity =
   | 'emigrating'
   | 'trading'
   | 'socialising'
+  | 'courting'
+  | 'nesting'
+  | 'playing'
   | 'fighting'
   | 'fleeing'
   | 'resting'

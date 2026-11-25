@@ -51,8 +51,8 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     for (const [x, z] of sampleCoords) {
       const h = world.terrain.getHeightAt(x, z);
       expect(Number.isFinite(h)).toBe(true);
-      expect(h).toBeGreaterThan(-4);
-      expect(h).toBeLessThan(36);
+      expect(h).toBeGreaterThan(-6);
+      expect(h).toBeLessThan(56);
     }
 
     // Expanded world has playableRadius ~151: (70, 70) is well inside, while a corner at 0.8*R (hypot ~1.13*R) is outside
@@ -497,8 +497,8 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
       ]) {
         const h = w.terrain.getHeightAt(x, z);
         expect(Number.isFinite(h)).toBe(true);
-        expect(h).toBeGreaterThan(-4);
-        expect(h).toBeLessThan(36);
+        expect(h).toBeGreaterThan(-6);
+        expect(h).toBeLessThan(56);
       }
     }
   });
@@ -668,8 +668,8 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
 
   it('generates an expanded world with varied landforms, waterways, and diverse biomes', () => {
     const world = new WorldState(new EventBus(), { seed: 20260501 });
-    expect(world.config.worldSize).toBeGreaterThanOrEqual(340);
-    expect(world.terrain.playableRadius).toBeGreaterThan(160);
+    expect(world.config.worldSize).toBeGreaterThanOrEqual(600);
+    expect(world.terrain.playableRadius).toBeGreaterThan(280);
     expect(world.terrain.ponds.length).toBeGreaterThanOrEqual(2);
 
     const observedBiomes = new Set<string>();
@@ -686,8 +686,8 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
       }
     }
 
-    // Dramatic topographic relief from ocean bed & riverbanks up to alpine peaks
-    expect(maxH - minH).toBeGreaterThan(12);
+    // Dramatic country-scale topographic relief from deep ocean floor up to snowcapped alpine peaks
+    expect(maxH - minH).toBeGreaterThan(22);
     // Extensive biome diversity spanning seashore, desert, prairie, forest, mountains, and riverside
     expect(observedBiomes.size).toBeGreaterThanOrEqual(8);
     expect(observedBiomes.has('water')).toBe(true);
@@ -764,5 +764,83 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
       expect(enteredBeachZone).toBe(true);
       expect(reachedOpenSea).toBe(true);
     }
+  });
+
+  it('runs full creature lifecycle: adults pair off, raise litters of young, and offspring grow up to pair and have young', () => {
+    // Short dayLengthSeconds so we can witness multi-generation growth, pairing, and litters deterministically
+    const world = new WorldState(new EventBus(), {
+      seed: 314159,
+      dayLengthSeconds: 24,
+    });
+    const village = world.settlements[0];
+    village.stockpile.berries = 220;
+    village.stockpile.acorns = 220;
+    village.stockpile.timber = 180;
+    village.stockpile.stone = 120;
+
+    let sawBondedPair = false;
+    let sawLitterOfYoung = false;
+    let sawGen2Adult = false;
+    let sawGen2ParentOrGen3 = false;
+
+    for (let i = 0; i < 2400; i++) {
+      world.step(0.1);
+      if (i % 100 === 0) {
+        village.stockpile.berries = Math.max(village.stockpile.berries, 140);
+        village.stockpile.acorns = Math.max(village.stockpile.acorns, 140);
+      }
+
+      if (!sawBondedPair) {
+        sawBondedPair = world.creatures.some((c) => {
+          if (!c.alive || !c.mateId) return false;
+          const mate = world.getCreature(c.mateId);
+          return Boolean(mate && mate.alive && mate.mateId === c.id && mate.species === c.species);
+        });
+      }
+
+      if (!sawLitterOfYoung) {
+        const litterCounts = new Map<string, number>();
+        for (const c of world.creatures) {
+          if (c.litterId && c.generation >= 2 && c.parentIds.length === 2) {
+            litterCounts.set(c.litterId, (litterCounts.get(c.litterId) ?? 0) + 1);
+          }
+        }
+        for (const count of litterCounts.values()) {
+          if (count >= 2) {
+            sawLitterOfYoung = true;
+            break;
+          }
+        }
+      }
+
+      const gen2Adults = world.creatures.filter(
+        (c) => c.alive && c.generation >= 2 && c.lifeStage === 'adult',
+      );
+      if (gen2Adults.length > 0) {
+        sawGen2Adult = true;
+        if (
+          gen2Adults.some((c) => Boolean(c.mateId)) ||
+          world.creatures.some((c) => c.generation >= 3)
+        ) {
+          sawGen2ParentOrGen3 = true;
+        }
+      }
+
+      if (sawBondedPair && sawLitterOfYoung && sawGen2Adult && sawGen2ParentOrGen3) {
+        break;
+      }
+    }
+
+    expect(sawBondedPair).toBe(true);
+    expect(sawLitterOfYoung).toBe(true);
+    expect(sawGen2Adult).toBe(true);
+    expect(sawGen2ParentOrGen3).toBe(true);
+
+    // Verify developmental growth scale increases smoothly from newborn young to full-grown adult
+    const sampleYoung = world.spawnCreature(village, 'fox', 'forager', { ageDays: 0 });
+    const sampleAdult = world.spawnCreature(village, 'fox', 'forager', { ageDays: 4 });
+    expect(sampleYoung.lifeStage).toBe('young');
+    expect(sampleAdult.lifeStage).toBe('adult');
+    expect(sampleYoung.getSizeScale()).toBeLessThan(sampleAdult.getSizeScale() * 0.6);
   });
 });

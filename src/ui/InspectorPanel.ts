@@ -45,13 +45,33 @@ export class InspectorPanel {
       const homeProfile = home?.getAdaptationProfile();
       const statusText = c.alive ? c.activity.replace('_', ' ') : 'fallen';
       const isInThisPov = povCreatureId === c.id;
+      const stageLabel =
+        c.lifeStage === 'young'
+          ? `Young ${c.def.youngSingular}`
+          : c.lifeStage === 'juvenile'
+            ? 'Juvenile'
+            : c.lifeStage === 'elder'
+              ? 'Elder'
+              : 'Adult';
+      const mate = c.mateId ? world.getCreature(c.mateId) : undefined;
+      const parents = c.parentIds
+        .map((pid) => world.getCreature(pid)?.name)
+        .filter((n): n is string => Boolean(n));
+      const littermates = c.litterId
+        ? world.creatures
+            .filter((o) => o.id !== c.id && o.litterId === c.litterId)
+            .map((o) => o.name.split(' ')[0])
+        : [];
+      const livingOffspring = c.offspringIds
+        .map((oid) => world.getCreature(oid))
+        .filter((o): o is NonNullable<typeof o> => Boolean(o && o.alive));
 
       this.contentEl.innerHTML = `
         <div class="panel-header">
           <span>🐾 ${c.name}</span>
           <button class="close-btn" data-action="close">✕</button>
         </div>
-        <div class="inspector-sub">${c.def.displayName} ${c.role} · ${home?.name ?? 'Wanderer'}</div>
+        <div class="inspector-sub">${stageLabel} ${c.def.displayName} ${c.isYoung() ? '' : c.role + ' '}· Gen ${c.generation} · ${home?.name ?? 'Wanderer'}</div>
         ${
           homeProfile
             ? `<div class="adaptation-badge">${homeProfile.icon} ${homeProfile.shortLabel} · ${homeProfile.clothingSummary}</div>`
@@ -60,7 +80,12 @@ export class InspectorPanel {
         <div class="inspector-lore">${c.def.lore}</div>
         <div class="inspector-thought">💭 “${c.thought}”</div>
         <div class="kv-grid">
+          <div>Life Stage</div><div><strong>${stageLabel}</strong> (${c.ageDays.toFixed(1)}d)</div>
           <div>Activity</div><div><strong>${statusText}</strong></div>
+          ${mate ? `<div>Mate</div><div>❤️ ${mate.name}${mate.alive ? '' : ' (late)'}</div>` : ''}
+          ${parents.length > 0 ? `<div>Parents</div><div>${parents.join(' & ')}</div>` : ''}
+          ${littermates.length > 0 ? `<div>Littermates</div><div>${littermates.join(', ')}</div>` : ''}
+          ${livingOffspring.length > 0 ? `<div>Young</div><div>${livingOffspring.length} ${livingOffspring.length === 1 ? c.def.youngSingular : c.def.youngPlural}</div>` : ''}
           <div>Health</div><div>${Math.round(c.health)} / ${c.maxHealth}</div>
           <div>Energy</div><div>${Math.round(c.energy)}%</div>
           <div>Mood</div><div>${Math.round(c.mood)}%</div>

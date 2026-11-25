@@ -109,6 +109,16 @@ export class TerrainMap {
   private readonly tribCurveFreq: number;
   private readonly tribCurveAmp: number;
 
+  // Second upstream highland tributary feeding the main river basin from the opposite flank
+  private readonly trib2OriginX: number;
+  private readonly trib2OriginZ: number;
+  private readonly trib2Cos: number;
+  private readonly trib2Sin: number;
+  private readonly trib2HalfWidth: number;
+  private readonly trib2CurvePhase: number;
+  private readonly trib2CurveFreq: number;
+  private readonly trib2CurveAmp: number;
+
   // Seeded macro-region centers (mountain range, golden desert, windswept prairie, misty fen)
   private readonly mountainCenterX: number;
   private readonly mountainCenterZ: number;
@@ -116,6 +126,8 @@ export class TerrainMap {
   private readonly mountainPeakBoost: number;
   private readonly secondaryPeakX: number;
   private readonly secondaryPeakZ: number;
+  private readonly thirdPeakX: number;
+  private readonly thirdPeakZ: number;
 
   private readonly desertCenterX: number;
   private readonly desertCenterZ: number;
@@ -180,20 +192,20 @@ export class TerrainMap {
     this.coastAngle = rng.range(0, Math.PI * 2);
     this.coastCos = Math.cos(this.coastAngle);
     this.coastSin = Math.sin(this.coastAngle);
-    this.coastBaseDist = this.halfSize * rng.range(0.6, 0.68);
+    this.coastBaseDist = this.halfSize * rng.range(0.56, 0.65);
     this.coastPhase = rng.range(0, Math.PI * 2);
 
     // 2. Main River flowing from the mountain interior toward the seashore bay
     this.riverAngle = this.coastAngle + rng.range(-0.42, 0.42);
     this.riverCos = Math.cos(this.riverAngle);
     this.riverSin = Math.sin(this.riverAngle);
-    this.riverOffset = rng.range(-18, 18) * Math.sqrt(worldScale);
-    this.riverHalfWidth = rng.range(4.2, 6.4);
+    this.riverOffset = rng.range(-22, 22) * Math.sqrt(worldScale);
+    this.riverHalfWidth = rng.range(5.4, 7.8) * Math.min(1.25, 0.8 + worldScale * 0.12);
     this.riverCurvePhase = rng.range(0, Math.PI * 2);
-    this.riverCurveFreq = rng.range(0.014, 0.026);
-    this.riverCurveAmp1 = rng.range(12, 24) * Math.min(1.5, worldScale * 0.82);
-    this.riverCurveFreq2 = rng.range(0.008, 0.015);
-    this.riverCurveAmp2 = rng.range(5.0, 11.0) * Math.min(1.4, worldScale * 0.82);
+    this.riverCurveFreq = rng.range(0.009, 0.018);
+    this.riverCurveAmp1 = rng.range(18, 34) * Math.min(1.9, worldScale * 0.56);
+    this.riverCurveFreq2 = rng.range(0.0055, 0.011);
+    this.riverCurveAmp2 = rng.range(8.0, 16.0) * Math.min(1.8, worldScale * 0.54);
 
     // 3. Branching tributary stream meeting the main river in the central valley
     const confluenceAlong = rng.range(-this.halfSize * 0.34, this.halfSize * 0.16);
@@ -205,23 +217,42 @@ export class TerrainMap {
     this.tributaryAngle = this.riverAngle + Math.PI - tribSide * rng.range(0.75, 1.28);
     this.tribCos = Math.cos(this.tributaryAngle);
     this.tribSin = Math.sin(this.tributaryAngle);
-    this.tribHalfWidth = rng.range(2.6, 3.9);
+    this.tribHalfWidth = rng.range(3.2, 4.8);
     this.tribCurvePhase = rng.range(0, Math.PI * 2);
-    this.tribCurveFreq = rng.range(0.024, 0.042);
-    this.tribCurveAmp = rng.range(6.5, 13.0);
+    this.tribCurveFreq = rng.range(0.016, 0.028);
+    this.tribCurveAmp = rng.range(10.0, 20.0);
 
-    // 4. Mountain Range opposite the seashore (terraced granite slopes + alpine crags)
+    // 3b. Second highland tributary feeding from the opposite alpine/prairie flank
+    const conf2Along = rng.range(-this.halfSize * 0.52, -this.halfSize * 0.14);
+    const conf2Across = this.getRiverCenterAcross(conf2Along);
+    this.trib2OriginX = conf2Along * this.riverCos - conf2Across * this.riverSin;
+    this.trib2OriginZ = conf2Along * this.riverSin + conf2Across * this.riverCos;
+    const trib2Angle = this.riverAngle + Math.PI + tribSide * rng.range(0.68, 1.18);
+    this.trib2Cos = Math.cos(trib2Angle);
+    this.trib2Sin = Math.sin(trib2Angle);
+    this.trib2HalfWidth = rng.range(2.8, 4.2);
+    this.trib2CurvePhase = rng.range(0, Math.PI * 2);
+    this.trib2CurveFreq = rng.range(0.018, 0.032);
+    this.trib2CurveAmp = rng.range(9.0, 18.0);
+
+    // 4. Towering Alpine Mountain Range opposite the seashore (glaciated peaks + granite ridges)
     const mountainAngle = this.coastAngle + Math.PI + rng.range(-0.28, 0.28);
     const mountainDist = this.halfSize * rng.range(0.56, 0.72);
     this.mountainCenterX = Math.cos(mountainAngle) * mountainDist;
     this.mountainCenterZ = Math.sin(mountainAngle) * mountainDist;
-    this.mountainRadius = this.halfSize * rng.range(0.5, 0.62);
-    this.mountainPeakBoost = rng.range(10.8, 14.2);
+    this.mountainRadius = this.halfSize * rng.range(0.48, 0.6);
+    this.mountainPeakBoost = rng.range(23.5, 31.0) * Math.min(1.2, 0.72 + worldScale * 0.12);
 
-    const secPeakAngle = mountainAngle + rng.range(0.52, 0.92) * (rng.chance(0.5) ? 1 : -1);
+    const peakSide = rng.chance(0.5) ? 1 : -1;
+    const secPeakAngle = mountainAngle + rng.range(0.48, 0.85) * peakSide;
     const secPeakDist = this.halfSize * rng.range(0.64, 0.84);
     this.secondaryPeakX = Math.cos(secPeakAngle) * secPeakDist;
     this.secondaryPeakZ = Math.sin(secPeakAngle) * secPeakDist;
+
+    const thirdPeakAngle = mountainAngle - rng.range(0.45, 0.82) * peakSide;
+    const thirdPeakDist = this.halfSize * rng.range(0.6, 0.82);
+    this.thirdPeakX = Math.cos(thirdPeakAngle) * thirdPeakDist;
+    this.thirdPeakZ = Math.sin(thirdPeakAngle) * thirdPeakDist;
 
     // 5. Golden Desert in the warm dry leeward flank between mountains and coast
     const desertSide = -tribSide; // Place desert away from the wet tributary!
@@ -262,16 +293,16 @@ export class TerrainMap {
     this.fertOffsetZ = rng.range(-100, 100);
     this.climOffsetX = rng.range(-100, 100);
     this.climOffsetZ = rng.range(-100, 100);
-    this.hillScale = rng.range(0.01, 0.0155);
-    this.hillAmplitude = rng.range(4.2, 6.2);
-    this.ridgeScale = rng.range(0.0075, 0.012);
-    this.ridgeAmplitude = rng.range(2.8, 4.4);
-    this.warpStrength = rng.range(6.0, 13.0);
+    this.hillScale = rng.range(0.0072, 0.0115);
+    this.hillAmplitude = rng.range(5.6, 8.2);
+    this.ridgeScale = rng.range(0.0055, 0.0095);
+    this.ridgeAmplitude = rng.range(4.4, 6.8);
+    this.warpStrength = rng.range(9.0, 18.0);
     this.valleyBaseHeight = rng.range(1.6, 2.25);
     // Gentle continental slope downhill toward the sea
     this.tiltCos = -this.coastCos;
     this.tiltSin = -this.coastSin;
-    this.tiltStrength = rng.range(0.65, 1.35);
+    this.tiltStrength = rng.range(1.1, 2.1);
 
     this.ponds = this.generatePonds(rng.fork());
     this.generateResourceNodes(rng.fork());
@@ -323,7 +354,7 @@ export class TerrainMap {
     }
 
     // 3. Additional inland tarns & lakes (1-2 more depending on worldSize)
-    const extraCount = worldScale >= 1.5 ? 2 : rng.chance(0.6) ? 1 : 0;
+    const extraCount = worldScale >= 3.0 ? 3 : worldScale >= 1.5 ? 2 : rng.chance(0.6) ? 1 : 0;
     for (let k = 0; k < extraCount; k++) {
       for (let attempt = 0; attempt < 28; attempt++) {
         const angle = rng.range(0, Math.PI * 2);
@@ -371,11 +402,13 @@ export class TerrainMap {
   getCoastSignedDistance(x: number, z: number): number {
     const seaProj = x * this.coastCos + z * this.coastSin;
     const alongCoast = -x * this.coastSin + z * this.coastCos;
+    const bayScale = Math.min(2.15, Math.max(1.0, this.size / 320));
     const coveWave =
-      Math.sin(alongCoast * 0.022 + this.coastPhase) * 14.5 +
-      Math.cos(alongCoast * 0.047 - this.coastPhase * 0.7) * 6.5;
+      Math.sin(alongCoast * (0.019 / Math.sqrt(bayScale)) + this.coastPhase) * (15.5 * bayScale) +
+      Math.cos(alongCoast * (0.042 / Math.sqrt(bayScale)) - this.coastPhase * 0.7) * (7.2 * bayScale);
     const fineNoise =
-      this.elevationNoise.sample(alongCoast * 0.015 + this.elevOffsetX, this.coastPhase) * 11.0;
+      this.elevationNoise.sample(alongCoast * 0.012 + this.elevOffsetX, this.coastPhase) *
+      (12.0 * Math.sqrt(bayScale));
     const shorelinePos = this.coastBaseDist + coveWave + fineNoise;
     return shorelinePos - seaProj;
   }
@@ -438,6 +471,28 @@ export class TerrainMap {
     return perpDist - this.tribHalfWidth;
   }
 
+  /** Signed distance to the second upstream highland tributary (negative inside water). */
+  private getTributary2SignedDistance(x: number, z: number): number {
+    const rx = x - this.trib2OriginX;
+    const rz = z - this.trib2OriginZ;
+    const along = rx * this.trib2Cos + rz * this.trib2Sin;
+    const across = -rx * this.trib2Sin + rz * this.trib2Cos;
+    if (along < -this.trib2HalfWidth) {
+      return Math.hypot(rx, rz) - this.trib2HalfWidth;
+    }
+    const clampedAlong = Math.max(0, along);
+    const taper = smoothstep(0, 26, clampedAlong);
+    const centerAcross =
+      Math.sin(clampedAlong * this.trib2CurveFreq + this.trib2CurvePhase) *
+      this.trib2CurveAmp *
+      taper;
+    const perpDist = Math.abs(across - centerAcross);
+    if (along < 0) {
+      return Math.hypot(along, perpDist) - this.trib2HalfWidth;
+    }
+    return perpDist - this.trib2HalfWidth;
+  }
+
   /** Signed elliptical distance to a specific pond shoreline (negative inside water). */
   private getPondSignedDistance(x: number, z: number, pond: PondFeature): number {
     const dx = x - pond.x;
@@ -454,11 +509,13 @@ export class TerrainMap {
     const riverAcross = this.getRiverCenterAcross(along);
     // Naturally widen river slightly into an estuary as it nears the sea
     const coastDist = this.getCoastSignedDistance(x, z);
-    const estuaryBoost = (1 - smoothstep(-6, 32, coastDist)) * 6.0;
+    const estuaryBoost = (1 - smoothstep(-8, 42, coastDist)) * 9.5;
     const riverDist = Math.abs(across - riverAcross) - (this.riverHalfWidth + estuaryBoost);
 
     const tribDist = this.getTributarySignedDistance(x, z);
-    let waterDist = smoothMin(riverDist, tribDist, 3.0);
+    const trib2Dist = this.getTributary2SignedDistance(x, z);
+    let waterDist = smoothMin(riverDist, tribDist, 3.4);
+    waterDist = smoothMin(waterDist, trib2Dist, 3.2);
 
     for (const pond of this.ponds) {
       const pondDist = this.getPondSignedDistance(x, z, pond);
@@ -626,13 +683,18 @@ export class TerrainMap {
     const secDist =
       Math.hypot(x - this.secondaryPeakX, z - this.secondaryPeakZ) / (this.mountainRadius * 0.72);
     const secMask = (1 - smoothstep(0.14, 1.05, secDist)) * landMask;
+    const thirdDist =
+      Math.hypot(x - this.thirdPeakX, z - this.thirdPeakZ) / (this.mountainRadius * 0.68);
+    const thirdMask = (1 - smoothstep(0.14, 1.02, thirdDist)) * landMask;
     const rawMassif =
-      (hiMask * this.mountainPeakBoost + secMask * (this.mountainPeakBoost * 0.68)) *
-      (0.56 + ridgeNoise * 0.58);
-    const terraceStep = 3.5;
+      (hiMask * this.mountainPeakBoost +
+        secMask * (this.mountainPeakBoost * 0.74) +
+        thirdMask * (this.mountainPeakBoost * 0.62)) *
+      (0.54 + ridgeNoise * 0.66);
+    const terraceStep = 4.2;
     const terracedMassif =
       rawMassif > 0.5
-        ? rawMassif - Math.sin((rawMassif / terraceStep) * Math.PI * 2) * 0.44
+        ? rawMassif - Math.sin((rawMassif / terraceStep) * Math.PI * 2) * 0.58
         : rawMassif;
 
     // 2. Desert Sand Dunes & Flat-Topped Sandstone Mesas
@@ -642,12 +704,12 @@ export class TerrainMap {
     if (desMask > 0.001) {
       const duneU = x * this.duneCos + z * this.duneSin;
       const duneV = -x * this.duneSin + z * this.duneCos;
-      const duneWarp = this.climateNoise.sample(duneU * 0.015, duneV * 0.015) * 3.2;
-      const dunes = (1 - Math.abs(Math.sin(duneU * 0.125 + duneWarp))) * 1.55;
+      const duneWarp = this.climateNoise.sample(duneU * 0.012, duneV * 0.012) * 4.0;
+      const dunes = (1 - Math.abs(Math.sin(duneU * 0.095 + duneWarp))) * 2.35;
       const mesaRaw =
-        (this.elevationNoise.fbm(x * 0.018 + 31.4, z * 0.018 - 19.2, 2) + 1) * 0.5;
-      const mesa = smoothstep(0.68, 0.79, mesaRaw) * 3.6;
-      desertSculpt = desMask * (1.2 + dunes + mesa);
+        (this.elevationNoise.fbm(x * 0.013 + 31.4, z * 0.013 - 19.2, 2) + 1) * 0.5;
+      const mesa = smoothstep(0.66, 0.76, mesaRaw) * 6.8;
+      desertSculpt = desMask * (1.4 + dunes + mesa);
     }
 
     // 3. Broad Gently Rolling Prairie Plains
@@ -706,12 +768,12 @@ export class TerrainMap {
 
     // Merge seamlessly into the deepening open ocean seabed beyond the shoreline
     if (coastDist <= 0) {
-      const seaT = smoothstep(0, -28, coastDist);
-      const seaFloor = this.waterLevel - 0.06 - seaT * 2.38 + micro * 0.16;
+      const seaT = smoothstep(0, -44, coastDist);
+      const seaFloor = this.waterLevel - 0.06 - seaT * 3.65 + micro * 0.16;
       h = Math.min(h, seaFloor);
     }
 
-    return Math.max(this.waterLevel - 2.6, Math.min(33.5, h));
+    return Math.max(this.waterLevel - 3.9, Math.min(54.0, h));
   }
 
   /** Approximates the surface unit normal via central differences. */
@@ -921,7 +983,7 @@ export class TerrainMap {
       const nz = tx;
 
       const findBank = (sign: 1 | -1): { x: number; z: number; y: number } | null => {
-        for (let d = 2.4; d <= 14.0; d += 0.5) {
+        for (let d = 2.4; d <= 18.5; d += 0.5) {
           const bx = cx + nx * sign * d;
           const bz = cz + nz * sign * d;
           const h = this.getHeightAt(bx, bz);
@@ -946,7 +1008,7 @@ export class TerrainMap {
       if (!bankA || !bankB) return;
 
       const length = Math.hypot(bankB.x - bankA.x, bankB.z - bankA.z);
-      if (length < 7.2 || length > 23.5) return;
+      if (length < 7.2 || length > 32.0) return;
 
       const distA = Math.hypot(bankA.x - originX, bankA.z - originZ);
       const distB = Math.hypot(bankB.x - originX, bankB.z - originZ);
@@ -974,7 +1036,7 @@ export class TerrainMap {
       const chordMidY = (start.y + end.y) * 0.5;
       const minClearCrown = this.waterLevel + 1.35;
       const archHeight = Math.max(
-        Math.min(2.15, 0.9 + length * 0.055),
+        Math.min(2.65, 0.9 + length * 0.055),
         minClearCrown - chordMidY,
       );
       const score = -distFromOrigin - length * 0.45 - Math.abs(start.y - end.y) * 3.0;
@@ -1139,7 +1201,7 @@ export class TerrainMap {
       target === 'riverside_stilts' || target === 'coastal_harbor' ? 3.2 : 5.2;
     const minH =
       target === 'riverside_stilts' || target === 'coastal_harbor' ? 0.46 : 0.65;
-    const maxH = target === 'mountain_stone' ? 14.5 : 8.4;
+    const maxH = target === 'mountain_stone' ? 21.0 : 9.2;
 
     let best: { x: number; z: number; score: number } | null = null;
     for (let i = 0; i < attempts; i++) {
@@ -1183,7 +1245,7 @@ export class TerrainMap {
       // Encourage emigrating pioneers to wander far across the realm into distant lands!
       if (origin) {
         const trekDist = Math.hypot(x - origin.x, z - origin.z);
-        score += Math.min(160, trekDist) * 0.055;
+        score += Math.min(240, trekDist) * 0.045;
       }
 
       if (!best || score > best.score) {
@@ -1207,7 +1269,7 @@ export class TerrainMap {
     origin?: Vec2,
   ): Vec2 | null {
     const maxRadius = this.playableRadius - 18;
-    const minSpacing = Math.max(40, this.size * 0.2);
+    const minSpacing = Math.max(44, this.size * 0.16);
 
     if (existingAdaptations) {
       const present = new Set(existingAdaptations);

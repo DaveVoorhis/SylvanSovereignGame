@@ -658,4 +658,38 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     innerGeo.dispose();
     ringGeo.dispose();
   });
+
+  it('scales newborn young smaller with youthful proportions and grows them smoothly to adult size', () => {
+    const world = new WorldState(new EventBus(), { seed: 551122 });
+    const village = world.settlements[0];
+    const youngKit = world.spawnCreature(village, 'fox', 'forager', { ageDays: 0 });
+    const adultFox = world.spawnCreature(village, 'fox', 'forager', { ageDays: 4 });
+
+    const scene = new THREE.Scene();
+    const textures = createStubTextureLibrary();
+    const creatureRenderer = new CreatureRenderer(scene, world, textures);
+    creatureRenderer.update(0.05, null);
+
+    const findRigGroup = (id: string) =>
+      creatureRenderer.rootGroup.children.find(
+        (child) => child.userData.selectionTarget?.id === id,
+      );
+    const youngGroup = findRigGroup(youngKit.id);
+    const adultGroup = findRigGroup(adultFox.id);
+    expect(youngGroup).toBeDefined();
+    expect(adultGroup).toBeDefined();
+
+    const youngBody = youngGroup!.children[0];
+    const adultBody = adultGroup!.children[0];
+    expect(youngBody.scale.y).toBeLessThan(adultBody.scale.y * 0.6);
+
+    // Age the kit into adulthood and verify its rendered mesh grows to full adult size
+    youngKit.ageDays = 3.0;
+    youngKit.lifeStage = 'adult';
+    creatureRenderer.update(0.05, null);
+    expect(youngBody.scale.y).toBeGreaterThan(adultBody.scale.y * 0.85);
+
+    creatureRenderer.dispose();
+    textures.dispose();
+  });
 });

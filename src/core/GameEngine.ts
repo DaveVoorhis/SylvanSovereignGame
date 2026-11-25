@@ -347,7 +347,7 @@ export class GameEngine {
     const c: Creature | undefined = this.world.getCreature(creatureId);
     if (!c) return null;
 
-    const eyeHeight = Math.max(0.68, c.def.bodyScale * 1.04);
+    const eyeHeight = Math.max(0.38, c.getSizeScale() * 1.04);
     let bobOffset = 0;
     if (c.activity !== 'resting') {
       if (c.def.locomotion === 'hop') {

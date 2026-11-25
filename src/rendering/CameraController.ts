@@ -32,7 +32,7 @@ export class CameraController {
 
   private softBoundaryRadius = 140;
   private maxBoundaryRadius = 158;
-  private overviewScale = 1.5;
+  private worldSize = 640;
   private mode: CameraMode = 'world';
   private readonly keys = new Set<string>();
   private desiredTarget: THREE.Vector3 | null = null;
@@ -66,8 +66,8 @@ export class CameraController {
     this.controls.dampingFactor = 0.065;
     this.controls.maxPolarAngle = Math.PI * 0.468;
     this.controls.minPolarAngle = 0.18;
-    this.controls.minDistance = 3.2;
-    this.controls.maxDistance = 198;
+    this.controls.minDistance = 2.6;
+    this.controls.maxDistance = 760;
     this.controls.panSpeed = 0.9;
     this.controls.rotateSpeed = 0.65;
     this.controls.zoomSpeed = 0.95;
@@ -127,10 +127,10 @@ export class CameraController {
 
   /** Scales soft circular exploration boundaries and zoom ceiling to match the current world size. */
   setWorldSize(worldSize: number): void {
+    this.worldSize = worldSize;
     this.softBoundaryRadius = worldSize * 0.44;
     this.maxBoundaryRadius = worldSize * 0.5;
-    this.controls.maxDistance = Math.max(175, worldSize * 0.62);
-    this.overviewScale = Math.max(1, worldSize / 195);
+    this.controls.maxDistance = Math.max(240, worldSize * 1.22);
   }
 
   getMode(): CameraMode {
@@ -227,11 +227,12 @@ export class CameraController {
       this.exitCreaturePov(false);
     }
     this.followProvider = null;
-    this.desiredTarget = new THREE.Vector3(0, 2, 0);
+    // Zoom out to a sweeping high-altitude country-map vantage showing all regions at once
+    this.desiredTarget = new THREE.Vector3(0, 4, 0);
     this.desiredPosition = new THREE.Vector3(
-      46 * this.overviewScale,
-      38 * this.overviewScale,
-      56 * this.overviewScale,
+      this.worldSize * 0.42,
+      this.worldSize * 0.68,
+      this.worldSize * 0.62,
     );
   }
 

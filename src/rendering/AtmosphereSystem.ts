@@ -3,7 +3,7 @@ import type { DivineEffectVisual } from '@core/Types';
 import type { WorldState } from '@simulation/WorldState';
 import type { SkyLightingState } from './WaterShader';
 
-export const DIVINE_BEAM_HEIGHT = 920;
+export const DIVINE_BEAM_HEIGHT = 1600;
 
 export interface DivineBeamVisual {
   readonly group: THREE.Group;
@@ -242,7 +242,7 @@ export class AtmosphereSystem {
       uStarIntensity: { value: 0 },
     };
 
-    const skyGeo = new THREE.SphereGeometry(1450, 32, 20);
+    const skyGeo = new THREE.SphereGeometry(3200, 32, 20);
     const skyMat = new THREE.ShaderMaterial({
       vertexShader: SKY_VERTEX_SHADER,
       fragmentShader: SKY_FRAGMENT_SHADER,
@@ -269,8 +269,8 @@ export class AtmosphereSystem {
     this.sunLight.castShadow = true;
     this.sunLight.shadow.mapSize.set(shadowMapSize, shadowMapSize);
     this.sunLight.shadow.camera.near = 10;
-    this.sunLight.shadow.camera.far = 360;
-    const d = 120;
+    this.sunLight.shadow.camera.far = 520;
+    const d = 145;
     this.shadowTexelStep = (d * 2) / Math.max(256, shadowMapSize);
     this.sunLight.shadow.camera.left = -d;
     this.sunLight.shadow.camera.right = d;
@@ -462,7 +462,11 @@ export class AtmosphereSystem {
           : world.weather === 'rain'
             ? 0.0038
             : 0.00125;
-    this.fog.density += (baseFog - this.fog.density) * Math.min(1, dt * 1.5);
+    // Relax atmospheric haze smoothly when zoomed high out to the country-map Overview
+    const camY = camera ? camera.position.y : 30;
+    const altitudeClear = 1 - THREE.MathUtils.smoothstep(camY, 85, 360) * 0.68;
+    const targetFog = baseFog * altitudeClear;
+    this.fog.density += (targetFog - this.fog.density) * Math.min(1, dt * 1.8);
 
     // Periodically refresh PMREM environment map for accurate sky reflections on water/stone
     this.envRefreshTimer -= dt;

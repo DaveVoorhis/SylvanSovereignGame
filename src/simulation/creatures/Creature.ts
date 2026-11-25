@@ -3,12 +3,25 @@ import {
   type ConstructionStage,
   type CreatureActivity,
   type CreatureRole,
+  type LifeStage,
   type ResourceBundle,
   type ResourceType,
   type SpeciesId,
   type Vec2,
 } from '@core/Types';
 import { SPECIES_CATALOG, type SpeciesDefinition } from './SpeciesCatalog';
+
+/** Age thresholds (in simulation days) governing the creature lifecycle. */
+export const YOUNG_MAX_AGE_DAYS = 0.75;
+export const ADULT_AGE_DAYS = 1.6;
+export const ELDER_AGE_DAYS = 16.0;
+
+export function resolveLifeStage(ageDays: number): LifeStage {
+  if (ageDays < YOUNG_MAX_AGE_DAYS) return 'young';
+  if (ageDays < ADULT_AGE_DAYS) return 'juvenile';
+  if (ageDays < ELDER_AGE_DAYS) return 'adult';
+  return 'elder';
+}
 
 export interface CreaturePersonality {
   readonly friendliness: number; // 0..1
@@ -43,7 +56,17 @@ export class Creature {
   mood = 72; // 0..100
   devotion = 45; // 0..100
   ageDays = 0;
+  lifeStage: LifeStage = 'adult';
+  lifespanDays = 25;
+  generation = 1;
   wealth = 8;
+
+  /** Family lineage, bonded mate, and litter state for the creature lifecycle. */
+  mateId: string | null = null;
+  readonly parentIds: readonly string[];
+  readonly litterId: string | null;
+  readonly offspringIds: string[] = [];
+  reproductionCooldown = 0;
 
   activity: CreatureActivity = 'idle';
   thought = 'Admiring the canopy';
@@ -96,6 +119,12 @@ export class Creature {
     z: number;
     personality: CreaturePersonality;
     animPhase: number;
+    ageDays?: number;
+    lifespanDays?: number;
+    generation?: number;
+    parentIds?: readonly string[];
+    litterId?: string | null;
+    reproductionCooldown?: number;
   }) {
     this.id = params.id;
     this.name = params.name;
@@ -111,8 +140,66 @@ export class Creature {
     this.heading = params.animPhase;
     this.personality = params.personality;
     this.animPhase = params.animPhase;
+    this.ageDays = params.ageDays ?? 3.5;
+    this.lifeStage = resolveLifeStage(this.ageDays);
+    this.lifespanDays = params.lifespanDays ?? 25;
+    this.generation = params.generation ?? 1;
+    this.parentIds = params.parentIds ? [...params.parentIds] : [];
+    this.litterId = params.litterId ?? null;
+    this.reproductionCooldown = params.reproductionCooldown ?? 18;
     this.maxHealth = this.def.maxHealth;
     this.health = this.def.maxHealth;
+    if (this.lifeStage === 'young') {
+      this.thought = `Cuddling close as a newborn ${this.def.youngSingular}`;
+      this.wealth = 0;
+    }
+  }
+
+  /** Smooth developmental body scale multiplier (0.44 newborn -> 0.68 juvenile -> 1.0 adult). */
+  getGrowthScale(): number {
+    if (this.ageDays < YOUNG_MAX_AGE_DAYS) {
+      const t = Math.max(0, this.ageDays / YOUNG_MAX_AGE_DAYS);
+      return 0.44 + t * 0.22;
+    }
+    if (this.ageDays < ADULT_AGE_DAYS) {
+      const t = (this.ageDays - YOUNG_MAX_AGE_DAYS) / (ADULT_AGE_DAYS - YOUNG_MAX_AGE_DAYS);
+      return 0.66 + t * 0.34;
+    }
+    if (this.lifeStage === 'elder') {
+      return 0.96;
+    }
+    return 1.0;
+  }
+
+  /** Effective world body scale combining species baseline and developmental growth stage. */
+  getSizeScale(): number {
+    return this.def.bodyScale * this.getGrowthScale();
+  }
+
+  isYoung(): boolean {
+    return this.lifeStage === 'young';
+  }
+
+  isAdult(): boolean {
+    return this.lifeStage === 'adult' || this.lifeStage === 'elder';
+  }
+
+  canReproduce(): boolean {
+    return this.alive && this.lifeStage === 'adult' && this.reproductionCooldown <= 0;
+  }
+
+  isCloseKinOf(other: Creature): boolean {
+    if (other.id === this.id) return true;
+    if (this.litterId && other.litterId && this.litterId === other.litterId) return true;
+    if (this.parentIds.includes(other.id) || other.parentIds.includes(this.id)) return true;
+    if (
+      this.parentIds.length > 0 &&
+      other.parentIds.length > 0 &&
+      this.parentIds.some((pid) => other.parentIds.includes(pid))
+    ) {
+      return true;
+    }
+    return false;
   }
 
   /** Resets loop-detection anchor and committed detour when starting a fresh route. */

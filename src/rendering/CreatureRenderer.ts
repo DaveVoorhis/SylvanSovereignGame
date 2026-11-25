@@ -765,7 +765,7 @@ export class CreatureRenderer {
       rig.workTools.trowel.visible = showTrowel;
       rig.workTools.hammer.visible = showHammer;
       if (rig.idleBuilderMallet) {
-        rig.idleBuilderMallet.visible = !anyWorkTool;
+        rig.idleBuilderMallet.visible = !anyWorkTool && !c.isYoung();
       }
       rig.pioneerPack.visible = c.activity === 'emigrating';
 
@@ -842,6 +842,21 @@ export class CreatureRenderer {
       } else if (c.activity === 'emigrating') {
         tiltX = 0.12;
         bobY += Math.abs(Math.sin(phase * 1.2)) * 0.05;
+      } else if (c.activity === 'playing') {
+        // Joyful bouncy hops and playful ear/head wiggles for frolicking litters of young!
+        const hop = Math.abs(Math.sin(t * 7.2 + seed));
+        bobY += hop * 0.16;
+        squashY = 0.92 + hop * 0.14;
+        headRoll = Math.sin(t * 6.5 + seed) * 0.24;
+        headPitch = -0.08 + Math.sin(t * 5.0 + seed) * 0.14;
+      } else if (c.activity === 'courting' || c.activity === 'nesting') {
+        // Warm affectionate head tilt & gentle cozy sway
+        headRoll = Math.sin(t * 2.6 + seed) * 0.22;
+        headPitch = 0.12 + Math.sin(t * 3.1 + seed) * 0.08;
+        if (c.activity === 'nesting') {
+          bobY = -0.06;
+          squashY = 0.92 + Math.sin(t * 2.8 + seed) * 0.03;
+        }
       } else if (c.activity === 'fighting') {
         const lunge = Math.sin(t * 15 + seed);
         tiltX = 0.2 + lunge * 0.24;
@@ -869,12 +884,16 @@ export class CreatureRenderer {
         headPitch = 0.25;
       }
 
-      const scaleXZ = c.def.bodyScale / Math.sqrt(squashY);
-      rig.bodyGroup.scale.set(scaleXZ, c.def.bodyScale * squashY, scaleXZ);
+      const effectiveScale = c.getSizeScale();
+      const scaleXZ = effectiveScale / Math.sqrt(squashY);
+      rig.bodyGroup.scale.set(scaleXZ, effectiveScale * squashY, scaleXZ);
       rig.bodyGroup.position.y = bobY;
       rig.bodyGroup.rotation.z = tiltZ;
       rig.bodyGroup.rotation.x = tiltX;
 
+      // Adorable youthful proportions: slightly larger head on newborn young & juveniles
+      const headScale = c.lifeStage === 'young' ? 1.22 : c.lifeStage === 'juvenile' ? 1.1 : 1.0;
+      rig.headGroup.scale.setScalar(headScale);
       rig.headGroup.rotation.x = headPitch;
       rig.headGroup.rotation.z = headRoll;
 

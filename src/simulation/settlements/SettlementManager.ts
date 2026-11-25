@@ -103,9 +103,14 @@ export class SettlementManager {
         'builder',
       ];
       for (let i = 0; i < world.config.initialCreaturesPerSettlement; i++) {
-        const species = world.rng.pick(settlement.foundingSpecies);
+        // Spawn founding species in matched pairs so adults can pair off and raise litters
+        const species =
+          settlement.foundingSpecies[Math.floor(i / 2) % settlement.foundingSpecies.length];
         const role = roles[i % roles.length];
-        world.spawnCreature(settlement, species, role);
+        world.spawnCreature(settlement, species, role, {
+          ageDays: world.rng.range(2.4, 5.4),
+          reproductionCooldown: world.rng.range(8, 22),
+        });
       }
 
       world.chronicle.record(
@@ -703,12 +708,14 @@ export class SettlementManager {
     const eligible = world.creatures.filter(
       (c) =>
         c.alive &&
+        c.lifeStage === 'adult' &&
         c.settlementId === settlement.id &&
         c.activity !== 'fighting' &&
         c.activity !== 'fleeing' &&
+        c.activity !== 'nesting' &&
         c.activity !== 'emigrating',
     );
-    if (eligible.length < 4) return;
+    if (eligible.length < 3) return;
 
     const pioneers: Creature[] = [];
     const pickByRole = (role: CreatureRole) => {
@@ -717,6 +724,14 @@ export class SettlementManager {
     };
     pickByRole('builder');
     pickByRole('forager');
+    // If a chosen pioneer has an eligible bonded mate in the village, bring them along together
+    for (const p of [...pioneers]) {
+      if (pioneers.length >= 3) break;
+      if (p.mateId) {
+        const mate = eligible.find((c) => c.id === p.mateId && !pioneers.includes(c));
+        if (mate) pioneers.push(mate);
+      }
+    }
     for (const c of eligible) {
       if (pioneers.length >= 3) break;
       if (!pioneers.includes(c)) pioneers.push(c);
@@ -768,7 +783,7 @@ export class SettlementManager {
     this.activeEmigrations.set(partyId, party);
 
     const firstGoal = waypoints.length > 0 ? waypoints[0] : site;
-    const trekTimeout = Math.max(125, trekDist / 1.35 + 65);
+    const trekTimeout = Math.max(150, trekDist / 1.2 + 80);
 
     for (const pioneer of pioneers) {
       pioneer.activity = 'emigrating';
@@ -841,7 +856,7 @@ export class SettlementManager {
       rng,
       world.bridges,
       avoidPoints,
-      68,
+      Math.max(85, world.terrain.size * 0.25),
     );
     if (!crossing) return;
 
@@ -951,29 +966,104 @@ export class SettlementManager {
     const pop = world.getSettlementPopulation(settlement.id);
     const cap = settlement.getHousingCapacity();
     const food = settlement.stockpile.berries + settlement.stockpile.acorns;
+    if (food < 14) return;
 
-    if (pop < cap && food >= 18 && world.rng.chance(0.58)) {
+    const residents = world.creatures.filter(
+      (c) =>
+        c.alive &&
+        c.settlementId === settlement.id &&
+        c.lifeStage === 'adult' &&
+        (c.activity === 'idle' ||
+          c.activity === 'foraging' ||
+          c.activity === 'gathering_timber' ||
+          c.activity === 'resting'),
+    );
+
+    // 1. Encourage ready bonded pairs to nest and raise a fresh litter of young!
+    if (pop < cap + 2) {
+      for (const adult of residents) {
+        if (!adult.mateId || !adult.canReproduce() || adult.activity === 'nesting') continue;
+        const mate = world.getCreature(adult.mateId);
+        if (
+          !mate ||
+          !mate.alive ||
+          mate.settlementId !== settlement.id ||
+          !mate.canReproduce() ||
+          mate.activity === 'nesting' ||
+          mate.activity === 'emigrating' ||
+          mate.activity === 'fighting' ||
+          mate.activity === 'fleeing' ||
+          mate.activity === 'trading'
+        ) {
+          continue;
+        }
+        if (world.rng.chance(0.68)) {
+          const nestAngle = world.rng.range(0, Math.PI * 2);
+          const nestR = world.rng.range(2.6, Math.min(6.2, Math.max(3.4, settlement.radius * 0.55)));
+          const nx = settlement.center.x + Math.cos(nestAngle) * nestR;
+          const nz = settlement.center.z + Math.sin(nestAngle) * nestR;
+          adult.activity = 'nesting';
+          adult.targetCreatureId = mate.id;
+          adult.targetX = nx;
+          adult.targetZ = nz;
+          adult.actionTimer = 5.5;
+          adult.thought = `Preparing a cozy nest with ${mate.name}`;
+
+          mate.activity = 'nesting';
+          mate.targetCreatureId = adult.id;
+          mate.targetX = nx + 0.65;
+          mate.targetZ = nz + 0.45;
+          mate.actionTimer = 5.5;
+          mate.thought = `Nesting together with ${adult.name}`;
+          return;
+        }
+      }
+    }
+
+    // 2. Encourage eligible unbonded same-species adults to court and pair off!
+    const unbonded = residents.filter((c) => {
+      if (c.activity === 'courting' || c.activity === 'nesting') return false;
+      if (!c.mateId) return true;
+      const existing = world.getCreature(c.mateId);
+      return !existing || !existing.alive;
+    });
+    for (let i = 0; i < unbonded.length; i++) {
+      const a = unbonded[i];
+      const partner = unbonded.find(
+        (b, j) => j > i && b.species === a.species && !a.isCloseKinOf(b),
+      );
+      if (partner && world.rng.chance(0.55)) {
+        a.activity = 'courting';
+        a.targetCreatureId = partner.id;
+        a.targetX = partner.x;
+        a.targetZ = partner.z;
+        a.actionTimer = 16;
+        a.thought = `Courting ${partner.name}`;
+
+        partner.activity = 'courting';
+        partner.targetCreatureId = a.id;
+        partner.targetX = a.x;
+        partner.targetZ = a.z;
+        partner.actionTimer = 16;
+        partner.thought = `Sharing a warm stroll with ${a.name}`;
+        return;
+      }
+    }
+
+    // 3. Fallback: small frontier outposts with < 5 adults can welcome a wandering young adult
+    //    matching a resident species so pioneer villages can establish breeding pairs!
+    const hasSameSpeciesPair = residents.some((a, i) =>
+      residents.some((b, j) => j > i && b.species === a.species && !a.isCloseKinOf(b)),
+    );
+    if (pop < cap && food >= 20 && (!hasSameSpeciesPair || residents.length < 5) && world.rng.chance(0.42)) {
       settlement.stockpile.berries = Math.max(0, settlement.stockpile.berries - 6);
       settlement.stockpile.acorns = Math.max(0, settlement.stockpile.acorns - 4);
 
-      const species = world.rng.chance(0.78)
-        ? world.rng.pick(settlement.foundingSpecies)
-        : world.rng.pick([
-            'crow',
-            'sparrow',
-            'robin',
-            'squirrel',
-            'mouse',
-            'rat',
-            'frog',
-            'rabbit',
-            'fox',
-            'hedgehog',
-            'badger',
-            'owl',
-          ] as const);
+      const species =
+        residents.length > 0 && world.rng.chance(0.75)
+          ? world.rng.pick(residents).species
+          : world.rng.pick(settlement.foundingSpecies);
 
-      // Keep growing cities well-staffed with builders and gatherers alongside merchants/artisans/guards/mystics
       const role = world.rng.pick([
         'builder',
         'builder',
@@ -984,14 +1074,17 @@ export class SettlementManager {
         'guard',
         'mystic',
       ] as const);
-      const newcomer = world.spawnCreature(settlement, species, role);
+      const newcomer = world.spawnCreature(settlement, species, role, {
+        ageDays: world.rng.range(2.0, 4.2),
+        reproductionCooldown: world.rng.range(10, 22),
+      });
 
       world.chronicle.record(
         world.day,
         world.season,
         'social',
-        'New Woodland Kin',
-        `${newcomer.name}, a young ${newcomer.def.displayName}, joined ${settlement.name} as a ${role}.`,
+        'Wandering Settler Arrives',
+        `${newcomer.name}, a young adult ${newcomer.def.displayName}, arrived to settle in ${settlement.name} as a ${role}.`,
         settlement.center,
       );
     }

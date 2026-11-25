@@ -45,7 +45,7 @@ export class TerrainRenderer {
     const { worldSize, terrainSegments } = world.config;
     const totalSegments = Math.max(240, terrainSegments + 52);
     const halfCore = worldSize * 0.56;
-    const horizonExtent = worldSize * 3.1; // ~992m radius -> ~2km seamless landscape!
+    const horizonExtent = worldSize * 2.55; // ~1.6km radius -> ~3.2km seamless horizon!
 
     const geo = new THREE.PlaneGeometry(2, 2, totalSegments, totalSegments);
     geo.rotateX(-Math.PI / 2);
@@ -87,7 +87,7 @@ export class TerrainRenderer {
       world.terrain,
       worldSize,
       Math.max(230, terrainSegments + 40),
-      3.05,
+      2.55,
     );
     this.waterMesh = this.waterSurface.mesh;
     scene.add(this.waterMesh);
@@ -187,10 +187,10 @@ export class TerrainRenderer {
         c.setHex(season === 'winter' ? 0x8d9599 : 0x887556);
       } else if (biome === 'alpine_crag') {
         c.copy(alpineRockColor);
-        const snowLine = season === 'winter' ? 7.8 : season === 'autumn' ? 10.5 : 11.4;
-        const snowMix = THREE.MathUtils.smoothstep(y, snowLine, snowLine + 4.4);
+        const snowLine = season === 'winter' ? 9.5 : season === 'autumn' ? 12.8 : 14.5;
+        const snowMix = THREE.MathUtils.smoothstep(y, snowLine, snowLine + 6.5);
         if (snowMix > 0) {
-          c.lerp(snowCapColor, snowMix * (season === 'winter' ? 0.92 : 0.78));
+          c.lerp(snowCapColor, snowMix * (season === 'winter' ? 0.95 : 0.88));
         }
       } else if (biome === 'rocky_ridge') {
         c.setHex(season === 'winter' ? 0xc2ccd4 : 0x757b71);
@@ -225,11 +225,11 @@ export class TerrainRenderer {
       // Gently harmonize distant hills beyond the valley into deep wooded alpine tones
       const radialDist = Math.hypot(x, z);
       const distantMix = THREE.MathUtils.smoothstep(radialDist, halfSize * 0.98, halfSize * 2.4);
-      if (distantMix > 0 && y < 12.2 && coastDist > 8) {
+      if (distantMix > 0 && y < 14.5 && coastDist > 8) {
         c.lerp(biome === 'desert' ? distantDesertTint : distantForestTint, distantMix * 0.58);
-      } else if (y >= 12.2) {
-        const peakSnow = THREE.MathUtils.smoothstep(y, 12.2, 18.0);
-        c.lerp(snowCapColor, peakSnow * 0.68);
+      } else if (y >= 14.5) {
+        const peakSnow = THREE.MathUtils.smoothstep(y, 14.5, 23.0);
+        c.lerp(snowCapColor, peakSnow * 0.84);
       }
 
       const shade = THREE.MathUtils.clamp(0.84 + y * 0.013, 0.72, 1.14);

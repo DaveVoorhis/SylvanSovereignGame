@@ -12,7 +12,12 @@ import type {
 } from '@core/Types';
 import { Creature } from './creatures/Creature';
 import { CreatureAI } from './creatures/CreatureAI';
-import { SPECIES_CATALOG, generateCreatureName } from './creatures/SpeciesCatalog';
+import {
+  SPECIES_CATALOG,
+  extractSurname,
+  generateCreatureName,
+  generateOffspringName,
+} from './creatures/SpeciesCatalog';
 import { ProceduralGod } from './deity/ProceduralGod';
 import type { Settlement } from './settlements/Settlement';
 import { SettlementManager } from './settlements/SettlementManager';
@@ -69,6 +74,7 @@ export class WorldState {
 
   private weatherTimer = 40;
   private creatureSeq = 1;
+  private litterSeq = 1;
   private sparkSeq = 1;
   private routeRefreshTimer = 0;
 
@@ -100,27 +106,45 @@ export class WorldState {
     );
   }
 
-  spawnCreature(settlement: Settlement, species: SpeciesId, role: CreatureRole): Creature {
+  spawnCreature(
+    settlement: Settlement,
+    species: SpeciesId,
+    role: CreatureRole,
+    options: {
+      ageDays?: number;
+      lifespanDays?: number;
+      generation?: number;
+      parentIds?: readonly string[];
+      litterId?: string | null;
+      familySurname?: string;
+      spawnNear?: { x: number; z: number };
+      reproductionCooldown?: number;
+    } = {},
+  ): Creature {
     this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision);
     const def = SPECIES_CATALOG[species];
-    const obstacleR = Math.max(0.26, def.bodyScale * 0.36);
-    const personalR = Math.max(0.32, def.bodyScale * 0.42);
+    const isNewborn = options.ageDays !== undefined && options.ageDays < 0.75;
+    const sizeScale = def.bodyScale * (isNewborn ? 0.46 : 1.0);
+    const obstacleR = Math.max(0.18, sizeScale * 0.36);
+    const personalR = Math.max(0.22, sizeScale * 0.42);
+    const anchorX = options.spawnNear?.x ?? settlement.center.x;
+    const anchorZ = options.spawnNear?.z ?? settlement.center.z;
     const maxSpawnR = Math.min(7.5, Math.max(3.6, settlement.radius * 0.82));
 
-    let x = settlement.center.x + 2.6;
-    let z = settlement.center.z;
+    let x = anchorX + (options.spawnNear ? 0.9 : 2.6);
+    let z = anchorZ;
     let bestClearance = -Infinity;
 
     for (let attempt = 0; attempt < 14; attempt++) {
       const angle = this.rng.range(0, Math.PI * 2);
-      const radius = this.rng.range(2.2, maxSpawnR);
-      const rawX = settlement.center.x + Math.cos(angle) * radius;
-      const rawZ = settlement.center.z + Math.sin(angle) * radius;
+      const radius = options.spawnNear ? this.rng.range(0.65, 2.35) : this.rng.range(2.2, maxSpawnR);
+      const rawX = anchorX + Math.cos(angle) * radius;
+      const rawZ = anchorZ + Math.sin(angle) * radius;
       const safe = this.obstacles.pushPointOutsideObstacles(
         rawX,
         rawZ,
-        settlement.center.x,
-        settlement.center.z,
+        anchorX,
+        anchorZ,
         obstacleR,
         0,
         0.18,
@@ -133,7 +157,7 @@ export class WorldState {
       let minCreatureGap = Infinity;
       for (const other of this.creatures) {
         if (!other.alive || other.flightAltitude > 1.1) continue;
-        const otherR = Math.max(0.32, other.def.bodyScale * 0.42);
+        const otherR = Math.max(0.22, other.getSizeScale() * 0.42);
         const gap = Math.hypot(safe.x - other.x, safe.z - other.z) - (personalR + otherR);
         if (gap < minCreatureGap) minCreatureGap = gap;
       }
@@ -147,10 +171,13 @@ export class WorldState {
     }
 
     const y = Math.max(this.terrain.getHeightAt(x, z), this.terrain.waterLevel);
+    const name = options.familySurname
+      ? generateOffspringName(() => this.rng.next(), options.familySurname)
+      : generateCreatureName(() => this.rng.next());
 
     const creature = new Creature({
       id: `cr_${this.creatureSeq++}`,
-      name: generateCreatureName(() => this.rng.next()),
+      name,
       species,
       settlementId: settlement.id,
       role,
@@ -158,6 +185,12 @@ export class WorldState {
       y,
       z,
       animPhase: this.rng.range(0, Math.PI * 2),
+      ageDays: options.ageDays ?? this.rng.range(2.4, 5.8),
+      lifespanDays: options.lifespanDays ?? this.rng.range(22, 29),
+      generation: options.generation ?? 1,
+      parentIds: options.parentIds,
+      litterId: options.litterId ?? null,
+      reproductionCooldown: options.reproductionCooldown ?? this.rng.range(16, 36),
       personality: {
         friendliness: this.rng.range(0.25, 0.95),
         ambition: this.rng.range(0.2, 0.95),
@@ -168,6 +201,126 @@ export class WorldState {
     });
     this.creatures.push(creature);
     return creature;
+  }
+
+  /** Bonds two eligible same-species adults as mates so they can raise litters together. */
+  pairCreatures(a: Creature, b: Creature, settlementName?: string): boolean {
+    if (!a.alive || !b.alive || a.id === b.id) return false;
+    if (a.species !== b.species) return false;
+    if (a.lifeStage !== 'adult' || b.lifeStage !== 'adult') return false;
+    if (a.isCloseKinOf(b)) return false;
+
+    const aMate = a.mateId ? this.getCreature(a.mateId) : undefined;
+    const bMate = b.mateId ? this.getCreature(b.mateId) : undefined;
+    if (aMate?.alive || bMate?.alive) return false;
+
+    a.mateId = b.id;
+    b.mateId = a.id;
+    a.adjustRelationship(b.id, 38);
+    b.adjustRelationship(a.id, 38);
+    a.mood = Math.min(100, a.mood + 14);
+    b.mood = Math.min(100, b.mood + 14);
+    a.reproductionCooldown = Math.min(a.reproductionCooldown, this.rng.range(10, 22));
+    b.reproductionCooldown = Math.min(b.reproductionCooldown, this.rng.range(10, 22));
+    a.thought = `Paired for life with ${b.name}!`;
+    b.thought = `Paired for life with ${a.name}!`;
+
+    const place = settlementName ? ` in ${settlementName}` : '';
+    this.chronicle.record(
+      this.day,
+      this.season,
+      'social',
+      'Bonded Pair',
+      `${a.name} and ${b.name} (${a.def.pluralName}) paired off${place}.`,
+      a.position2D,
+    );
+    return true;
+  }
+
+  /**
+   * Spawns a litter of newborn young beside their bonded parents, linking family lineage,
+   * littermate bonds, inherited surname, and recording the birth in the Chronicle.
+   */
+  spawnLitter(parentA: Creature, parentB: Creature, settlement: Settlement): Creature[] {
+    const aliveTotal = this.creatures.filter((c) => c.alive).length;
+    const room = this.config.maxPopulation - aliveTotal;
+    if (room <= 0) return [];
+
+    const [minLitter, maxLitter] = parentA.def.litterSizeRange;
+    const desired = this.rng.int(minLitter, maxLitter);
+    const count = Math.min(desired, room);
+    if (count <= 0) return [];
+
+    const litterId = `litter_${this.litterSeq++}`;
+    const familySurname = extractSurname(this.rng.chance(0.5) ? parentA.name : parentB.name);
+    const nextGen = Math.max(parentA.generation, parentB.generation) + 1;
+    const roles: CreatureRole[] = [
+      'builder',
+      'forager',
+      'artisan',
+      'merchant',
+      'guard',
+      'mystic',
+    ];
+    const nestSpot = {
+      x: (parentA.x + parentB.x) * 0.5,
+      z: (parentA.z + parentB.z) * 0.5,
+    };
+
+    const litter: Creature[] = [];
+    for (let i = 0; i < count; i++) {
+      const role = this.rng.chance(0.55)
+        ? this.rng.chance(0.5)
+          ? parentA.role
+          : parentB.role
+        : this.rng.pick(roles);
+      const baby = this.spawnCreature(settlement, parentA.species, role, {
+        ageDays: 0,
+        generation: nextGen,
+        parentIds: [parentA.id, parentB.id],
+        litterId,
+        familySurname,
+        spawnNear: nestSpot,
+        reproductionCooldown: this.rng.range(18, 34),
+      });
+      baby.activity = 'playing';
+      baby.thought = `Playing beside ${parentA.name} & ${parentB.name}`;
+      baby.adjustRelationship(parentA.id, 72);
+      baby.adjustRelationship(parentB.id, 72);
+      parentA.adjustRelationship(baby.id, 72);
+      parentB.adjustRelationship(baby.id, 72);
+      parentA.offspringIds.push(baby.id);
+      parentB.offspringIds.push(baby.id);
+      litter.push(baby);
+    }
+
+    // Bond littermates warmly with one another so they naturally form tight playful litters
+    for (let i = 0; i < litter.length; i++) {
+      for (let j = i + 1; j < litter.length; j++) {
+        litter[i].adjustRelationship(litter[j].id, 60);
+        litter[j].adjustRelationship(litter[i].id, 60);
+      }
+    }
+
+    const cooldown = this.rng.range(78, 125);
+    parentA.reproductionCooldown = cooldown;
+    parentB.reproductionCooldown = cooldown;
+    parentA.mood = Math.min(100, parentA.mood + 18);
+    parentB.mood = Math.min(100, parentB.mood + 18);
+    parentA.thought = `Caring for our new litter of ${litter.length} ${parentA.def.youngPlural}!`;
+    parentB.thought = `Watching over our new litter of ${litter.length} ${parentB.def.youngPlural}!`;
+
+    const names = litter.map((b) => b.name.split(' ')[0]).join(', ');
+    const youngLabel = litter.length === 1 ? parentA.def.youngSingular : parentA.def.youngPlural;
+    this.chronicle.record(
+      this.day,
+      this.season,
+      'social',
+      `Litter of ${parentA.def.displayName} ${parentA.def.youngPlural.charAt(0).toUpperCase()}${parentA.def.youngPlural.slice(1)} Born`,
+      `${parentA.name} and ${parentB.name} welcomed a litter of ${litter.length} ${youngLabel} (${names}) in ${settlement.name}!`,
+      nestSpot,
+    );
+    return litter;
   }
 
   getSettlement(id: string): Settlement | undefined {

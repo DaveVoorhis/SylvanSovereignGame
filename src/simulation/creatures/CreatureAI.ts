@@ -9,18 +9,18 @@ import {
   type SolidObstacle,
 } from '@simulation/terrain/ObstacleMap';
 import type { WorldState } from '@simulation/WorldState';
-import type { Creature } from './Creature';
+import { resolveLifeStage, type Creature } from './Creature';
 
 export { HEARTH_FIRE_KEEP_OUT_RADIUS };
 
 /** Horizontal collision radius of a creature against static world obstacles. */
 export function getCreatureObstacleRadius(creature: Creature): number {
-  return Math.max(0.26, creature.def.bodyScale * 0.36);
+  return Math.max(0.16, creature.getSizeScale() * 0.36);
 }
 
 /** Personal-space horizontal radius used for creature-to-creature avoidance and separation. */
 export function getCreaturePersonalRadius(creature: Creature): number {
-  return Math.max(0.32, creature.def.bodyScale * 0.42);
+  return Math.max(0.2, creature.getSizeScale() * 0.42);
 }
 
 /**
@@ -129,6 +129,57 @@ export class CreatureAI {
 
     // Passive physiological drift
     creature.ageDays += dt / world.config.dayLengthSeconds;
+    creature.reproductionCooldown = Math.max(0, creature.reproductionCooldown - dt);
+
+    // Natural life-stage progression (young -> juvenile -> adult -> elder -> peaceful passing)
+    const nextStage = resolveLifeStage(creature.ageDays);
+    if (nextStage !== creature.lifeStage) {
+      const prevStage = creature.lifeStage;
+      creature.lifeStage = nextStage;
+      if (nextStage === 'juvenile') {
+        creature.thought = `Growing fast and exploring the village!`;
+      } else if (nextStage === 'adult') {
+        creature.reproductionCooldown = world.rng.range(10, 22);
+        creature.wealth += 5;
+        creature.thought = `Come of age — ready to work and find a mate!`;
+        if (prevStage === 'juvenile' && creature.generation >= 2) {
+          const home = world.getSettlement(creature.settlementId);
+          world.chronicle.record(
+            world.day,
+            world.season,
+            'social',
+            'Coming of Age',
+            `${creature.name}, a ${creature.def.displayName} of generation ${creature.generation}, grew into adulthood${home ? ` in ${home.name}` : ''}.`,
+            creature.position2D,
+          );
+        }
+      } else if (nextStage === 'elder') {
+        creature.thought = 'Sharing hard-won woodland wisdom with the young';
+      }
+    }
+
+    if (creature.ageDays >= creature.lifespanDays) {
+      creature.alive = false;
+      creature.health = 0;
+      if (creature.mateId) {
+        const mate = world.getCreature(creature.mateId);
+        if (mate && mate.mateId === creature.id) {
+          mate.mateId = null;
+        }
+        creature.mateId = null;
+      }
+      const home = world.getSettlement(creature.settlementId);
+      world.chronicle.record(
+        world.day,
+        world.season,
+        'social',
+        'Peaceful Passing',
+        `Elder ${creature.name} (${creature.def.displayName}) passed peacefully in ${home?.name ?? 'the wilds'} after ${Math.round(creature.ageDays)} days.`,
+        creature.position2D,
+      );
+      return;
+    }
+
     creature.hunger = Math.min(100, creature.hunger + dt * 0.52);
     creature.energy = Math.max(
       0,
@@ -178,6 +229,12 @@ export class CreatureAI {
       this.handleFleeing(creature, world, dt);
     } else if (creature.activity === 'emigrating') {
       this.handleEmigrating(creature, world, dt);
+    } else if (creature.activity === 'courting') {
+      this.handleCourting(creature, world, dt);
+    } else if (creature.activity === 'nesting') {
+      this.handleNesting(creature, world, dt);
+    } else if (creature.activity === 'playing') {
+      this.handlePlaying(creature, world, dt);
     } else if (creature.activity === 'trading') {
       this.handleTrading(creature, world, dt);
     } else if (creature.activity === 'building') {
@@ -231,6 +288,7 @@ export class CreatureAI {
       if (dist > sightRange) continue;
 
       const braveEnough =
+        creature.isAdult() &&
         creature.health > creature.maxHealth * 0.42 &&
         (creature.role === 'guard' ||
           creature.def.courage + creature.personality.bravery * 0.4 > 0.78);
@@ -268,6 +326,49 @@ export class CreatureAI {
       creature.actionTimer = world.rng.range(6, 10);
       creature.thought = isNight ? 'Nestling in for the night' : 'Catching a warm rest';
       return;
+    }
+
+    // 1b. Young kits/chicks/pups form playful litters around their parents and stay safe in the village
+    if (creature.lifeStage === 'young') {
+      this.chooseYoungActivity(creature, home, world);
+      return;
+    }
+
+    // 1c. Juveniles balance playful sibling time with light village foraging & socializing
+    if (creature.lifeStage === 'juvenile' && world.rng.chance(0.42)) {
+      this.chooseYoungActivity(creature, home, world);
+      return;
+    }
+
+    // 1d. Unbonded adults naturally look for a same-species mate in their village
+    if (creature.lifeStage === 'adult' && world.rng.chance(0.24)) {
+      const existingMate = creature.mateId ? world.getCreature(creature.mateId) : undefined;
+      if (!existingMate || !existingMate.alive) {
+        creature.mateId = null;
+        const suitor = world.creatures.find(
+          (other) =>
+            other.alive &&
+            other.id !== creature.id &&
+            other.settlementId === home.id &&
+            other.species === creature.species &&
+            other.lifeStage === 'adult' &&
+            other.activity !== 'emigrating' &&
+            other.activity !== 'fighting' &&
+            other.activity !== 'fleeing' &&
+            other.activity !== 'nesting' &&
+            (!other.mateId || !world.getCreature(other.mateId)?.alive) &&
+            !creature.isCloseKinOf(other),
+        );
+        if (suitor) {
+          creature.activity = 'courting';
+          creature.targetCreatureId = suitor.id;
+          creature.targetX = suitor.x;
+          creature.targetZ = suitor.z;
+          creature.actionTimer = 14;
+          creature.thought = `Seeking out ${suitor.name} to court`;
+          return;
+        }
+      }
     }
 
     // 2. Deposit carried resources if hands are full
@@ -352,6 +453,7 @@ export class CreatureAI {
 
     // 4. Trade caravan if merchant or trade-inclined and peaceful neighbor exists
     if (
+      creature.isAdult() &&
       (creature.role === 'merchant' || world.rng.chance(0.18 * creature.def.tradeAffinity)) &&
       world.settlements.length > 1
     ) {
@@ -731,6 +833,19 @@ export class CreatureAI {
             const score = creature.adjustRelationship(nearby.id, 10);
             nearby.adjustRelationship(creature.id, 10);
             creature.thought = `Laughing with ${nearby.name}`;
+            // Same-species unbonded adults who grow fond of one another can pair off naturally!
+            if (
+              sameFaction &&
+              score >= 22 &&
+              creature.lifeStage === 'adult' &&
+              nearby.lifeStage === 'adult' &&
+              creature.species === nearby.species &&
+              !creature.isCloseKinOf(nearby) &&
+              world.rng.chance(0.45)
+            ) {
+              const home = world.getSettlement(creature.settlementId);
+              world.pairCreatures(creature, nearby, home?.name);
+            }
             if (score >= 45 && score - 10 < 45) {
               world.chronicle.record(
                 world.day,
@@ -762,6 +877,187 @@ export class CreatureAI {
 
     if (creature.actionTimer <= 0) {
       creature.activity = 'idle';
+    }
+  }
+
+  /** Chooses safe, lively village play & parent-following behaviors for litters of young & juveniles. */
+  private chooseYoungActivity(
+    creature: Creature,
+    home: { center: { x: number; z: number }; radius: number; name: string },
+    world: WorldState,
+  ): void {
+    creature.activity = 'playing';
+    creature.actionTimer = world.rng.range(4.5, 8.5);
+
+    // Gather with littermates or follow closely behind a parent
+    const littermates = creature.litterId
+      ? world.creatures.filter(
+          (c) =>
+            c.alive &&
+            c.id !== creature.id &&
+            c.litterId === creature.litterId &&
+            c.settlementId === creature.settlementId,
+        )
+      : [];
+    const parents = creature.parentIds
+      .map((pid) => world.getCreature(pid))
+      .filter(
+        (p): p is Creature =>
+          Boolean(p && p.alive && p.settlementId === creature.settlementId && p.activity !== 'emigrating'),
+      );
+
+    if (parents.length > 0 && (littermates.length === 0 || world.rng.chance(0.55))) {
+      const parent = world.rng.pick(parents);
+      const angle = world.rng.range(0, Math.PI * 2);
+      const dist = world.rng.range(0.9, 2.2);
+      creature.targetCreatureId = parent.id;
+      creature.targetX = parent.x + Math.cos(angle) * dist;
+      creature.targetZ = parent.z + Math.sin(angle) * dist;
+      creature.thought = `Following closely behind ${parent.name}`;
+      return;
+    }
+
+    if (littermates.length > 0) {
+      const sibling = world.rng.pick(littermates);
+      const angle = world.rng.range(0, Math.PI * 2);
+      const dist = world.rng.range(0.65, 1.85);
+      creature.targetCreatureId = sibling.id;
+      creature.targetX = sibling.x + Math.cos(angle) * dist;
+      creature.targetZ = sibling.z + Math.sin(angle) * dist;
+      creature.thought = `Tumbling & playing with littermate ${sibling.name.split(' ')[0]}`;
+      return;
+    }
+
+    const angle = world.rng.range(0, Math.PI * 2);
+    const dist = world.rng.range(2.2, Math.min(7.5, Math.max(3.4, home.radius * 0.65)));
+    creature.targetCreatureId = null;
+    creature.targetX = home.center.x + Math.cos(angle) * dist;
+    creature.targetZ = home.center.z + Math.sin(angle) * dist;
+    creature.thought = `Frolicking around ${home.name}`;
+  }
+
+  private handlePlaying(creature: Creature, world: WorldState, dt: number): void {
+    creature.mood = Math.min(100, creature.mood + dt * 3.4);
+    const home = world.getSettlement(creature.settlementId);
+
+    // Keep young gently fed from village stores or nearby parents so litters thrive
+    if (creature.hunger > 50 && home) {
+      if (home.stockpile.berries >= 0.5) {
+        home.stockpile.berries = Math.max(0, home.stockpile.berries - 0.5);
+        creature.hunger = Math.max(8, creature.hunger - 32);
+      } else if (home.stockpile.acorns >= 0.5) {
+        home.stockpile.acorns = Math.max(0, home.stockpile.acorns - 0.5);
+        creature.hunger = Math.max(8, creature.hunger - 30);
+      }
+    }
+
+    // Track a parent or littermate smoothly while playing together
+    if (creature.targetCreatureId) {
+      const buddy = world.getCreature(creature.targetCreatureId);
+      if (buddy && buddy.alive && buddy.settlementId === creature.settlementId) {
+        const dBuddy = Math.hypot(buddy.x - creature.x, buddy.z - creature.z);
+        if (dBuddy > 3.2) {
+          creature.targetX = buddy.x + Math.cos(creature.animPhase) * 1.1;
+          creature.targetZ = buddy.z + Math.sin(creature.animPhase) * 1.1;
+        }
+      }
+    }
+
+    // Gently keep tiny young inside their home village bounds
+    if (home && creature.lifeStage === 'young') {
+      const dHome = Math.hypot(creature.x - home.center.x, creature.z - home.center.z);
+      if (dHome > Math.max(10, home.radius + 3.5)) {
+        creature.targetX = home.center.x + world.rng.range(-3.0, 3.0);
+        creature.targetZ = home.center.z + world.rng.range(-3.0, 3.0);
+      }
+    }
+
+    if (creature.actionTimer <= 0) {
+      creature.activity = 'idle';
+      creature.targetCreatureId = null;
+    }
+  }
+
+  private handleCourting(creature: Creature, world: WorldState, dt: number): void {
+    const partner = creature.targetCreatureId
+      ? world.getCreature(creature.targetCreatureId)
+      : undefined;
+    if (
+      !partner ||
+      !partner.alive ||
+      partner.settlementId !== creature.settlementId ||
+      creature.actionTimer <= 0
+    ) {
+      creature.activity = 'idle';
+      creature.targetCreatureId = null;
+      return;
+    }
+
+    // Already paired? Transition smoothly to idle / family life
+    if (creature.mateId && world.getCreature(creature.mateId)?.alive) {
+      creature.activity = 'idle';
+      creature.targetCreatureId = null;
+      return;
+    }
+
+    const dist = Math.hypot(partner.x - creature.x, partner.z - creature.z);
+    if (dist > 2.2) {
+      creature.targetX = partner.x;
+      creature.targetZ = partner.z;
+    } else {
+      creature.targetX = creature.x;
+      creature.targetZ = creature.z;
+      creature.heading = Math.atan2(partner.x - creature.x, partner.z - creature.z);
+      creature.mood = Math.min(100, creature.mood + dt * 5.0);
+      const affinity = creature.adjustRelationship(partner.id, dt * 16);
+      partner.adjustRelationship(creature.id, dt * 16);
+      if (affinity >= 18) {
+        const home = world.getSettlement(creature.settlementId);
+        world.pairCreatures(creature, partner, home?.name);
+        creature.activity = 'idle';
+        creature.targetCreatureId = null;
+        if (partner.activity === 'courting' && partner.targetCreatureId === creature.id) {
+          partner.activity = 'idle';
+          partner.targetCreatureId = null;
+        }
+      }
+    }
+  }
+
+  private handleNesting(creature: Creature, world: WorldState, dt: number): void {
+    const mate = creature.mateId ? world.getCreature(creature.mateId) : undefined;
+    const home = world.getSettlement(creature.settlementId);
+    if (!mate || !mate.alive || !home || mate.settlementId !== home.id) {
+      creature.activity = 'idle';
+      creature.targetCreatureId = null;
+      return;
+    }
+
+    const distMate = Math.hypot(mate.x - creature.x, mate.z - creature.z);
+    if (distMate > 3.2) {
+      creature.targetX = (creature.targetX + mate.x) * 0.5;
+      creature.targetZ = (creature.targetZ + mate.z) * 0.5;
+    } else {
+      creature.mood = Math.min(100, creature.mood + dt * 4.5);
+      creature.energy = Math.min(100, creature.energy + dt * 3.0);
+    }
+
+    if (creature.actionTimer <= 0) {
+      // Only one of the two mates triggers the actual birth when both are ready
+      if (creature.canReproduce() && mate.canReproduce() && distMate < 8.5) {
+        const food = home.stockpile.berries + home.stockpile.acorns;
+        if (food >= 8) {
+          home.stockpile.berries = Math.max(0, home.stockpile.berries - 5);
+          home.stockpile.acorns = Math.max(0, home.stockpile.acorns - 3);
+          world.spawnLitter(creature, mate, home);
+        }
+      }
+      creature.activity = 'idle';
+      creature.targetCreatureId = null;
+      if (mate.activity === 'nesting') {
+        mate.activity = 'idle';
+        mate.targetCreatureId = null;
+      }
     }
   }
 

@@ -30,7 +30,7 @@ export class TopBar {
 
     const brand = document.createElement('div');
     brand.className = 'topbar-brand';
-    brand.innerHTML = `<span class="brand-title">Sylvan Sovereign</span><span class="brand-sub">Procedural Woodland Spectator</span>`;
+    brand.innerHTML = `<span class="brand-title">Sylvan Sovereign</span><span class="brand-sub">Procedural Living World Spectator</span>`;
 
     this.clockEl = document.createElement('div');
     this.clockEl.className = 'topbar-clock';
@@ -71,6 +71,7 @@ export class TopBar {
     const overviewBtn = document.createElement('button');
     overviewBtn.className = 'hud-btn';
     overviewBtn.textContent = 'Overview';
+    overviewBtn.title = 'Zoom out to view the entire country map';
     overviewBtn.addEventListener('click', () => this.callbacks.onResetOverview());
     controls.appendChild(overviewBtn);
 
@@ -108,7 +109,8 @@ export class TopBar {
 
     const seedBtn = document.createElement('button');
     seedBtn.className = 'hud-btn accent';
-    seedBtn.textContent = 'New Forest';
+    seedBtn.textContent = 'New World';
+    seedBtn.title = 'Generate a brand-new procedural world';
     seedBtn.addEventListener('click', () => this.callbacks.onNewWorld());
     controls.appendChild(seedBtn);
 
@@ -150,11 +152,15 @@ export class TopBar {
     `;
 
     const aliveCount = world.creatures.filter((c) => c.alive).length;
+    const youngCount = world.creatures.filter(
+      (c) => c.alive && (c.lifeStage === 'young' || c.lifeStage === 'juvenile'),
+    ).length;
     const totalBuildings = world.settlements.reduce((sum, s) => sum + s.getCompletedCount(), 0);
     const caravans = world.creatures.filter((c) => c.alive && c.activity === 'trading').length;
     const pioneerCount = world.creatures.filter((c) => c.alive && c.activity === 'emigrating').length;
     this.statsEl.innerHTML = `
       <span>🐾 ${aliveCount} Kin</span>
+      ${youngCount > 0 ? `<span>🐣 ${youngCount} Young</span>` : ''}
       <span>🏡 ${totalBuildings} Bldgs</span>
       <span>⚖️ ${caravans} Caravans</span>
       ${pioneerCount > 0 ? `<span>🧭 ${pioneerCount} Pioneers</span>` : ''}
