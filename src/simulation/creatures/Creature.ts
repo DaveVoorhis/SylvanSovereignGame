@@ -51,6 +51,13 @@ export class Creature {
   animPhase: number;
   alive = true;
 
+  /** Navigation progress & committed wall-following state to prevent tight loops. */
+  navBestGoalDist = Infinity;
+  navProgressTimer = 0;
+  navLoopCount = 0;
+  detourSign: -1 | 0 | 1 = 0;
+  detourTimer = 0;
+
   /** Optional target entity IDs for active behaviors. */
   targetResourceId: string | null = null;
   targetBuildingId: string | null = null;
@@ -91,6 +98,15 @@ export class Creature {
     this.animPhase = params.animPhase;
     this.maxHealth = this.def.maxHealth;
     this.health = this.def.maxHealth;
+  }
+
+  /** Resets loop-detection anchor and committed detour when starting a fresh route. */
+  resetNavigationState(): void {
+    this.navBestGoalDist = Infinity;
+    this.navProgressTimer = 0;
+    this.navLoopCount = 0;
+    this.detourSign = 0;
+    this.detourTimer = 0;
   }
 
   get position2D(): Vec2 {

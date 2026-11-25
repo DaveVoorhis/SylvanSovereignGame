@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EventBus } from '@core/EventBus';
+import { getCreaturePersonalRadius } from '@simulation/creatures/CreatureAI';
 import {
   HEARTH_FIRE_KEEP_OUT_RADIUS,
   getBuildingCollisionRadius,
@@ -250,5 +251,142 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
 
     expect(minTreeDist).toBeGreaterThanOrEqual(tRadius + creatureR - 0.05);
     expect(walker.x).toBeGreaterThan(treeObs.x + 1.5);
+  });
+
+  it('prevents creatures from walking through each other and resolves crowds cleanly', () => {
+    const world = new WorldState(new EventBus(), { seed: 654321 });
+    const grounded = world.creatures.filter((c) => !c.def.aerial);
+    expect(grounded.length).toBeGreaterThanOrEqual(2);
+    const a = grounded[0];
+    const b = grounded[1];
+
+    // Find an open walkable clearing away from obstacles so the two creatures walk head-on
+    let originX = 0;
+    let originZ = 0;
+    outer: for (let gx = -30; gx <= 30; gx += 3) {
+      for (let gz = -30; gz <= 30; gz += 3) {
+        let clear = true;
+        for (let sx = -4; sx <= 4; sx += 1) {
+          const px = gx + sx;
+          if (!world.terrain.isWalkable(px, gz, false)) {
+            clear = false;
+            break;
+          }
+          if (world.obstacles.resolveCollisions(px, gz, 0.9, 0, 0).collided) {
+            clear = false;
+            break;
+          }
+        }
+        if (clear) {
+          originX = gx;
+          originZ = gz;
+          break outer;
+        }
+      }
+    }
+
+    a.x = originX - 3.6;
+    a.z = originZ;
+    a.activity = 'socialising';
+    a.actionTimer = 25;
+    a.targetX = originX + 3.6;
+    a.targetZ = originZ;
+    a.resetNavigationState();
+
+    b.x = originX + 3.6;
+    b.z = originZ;
+    b.activity = 'socialising';
+    b.actionTimer = 25;
+    b.targetX = originX - 3.6;
+    b.targetZ = originZ;
+    b.resetNavigationState();
+
+    const pairMinDist = getCreaturePersonalRadius(a) + getCreaturePersonalRadius(b);
+    let minObservedPairDist = Infinity;
+
+    for (let i = 0; i < 160; i++) {
+      world.step(0.08);
+      const d = Math.hypot(a.x - b.x, a.z - b.z);
+      if (d < minObservedPairDist) minObservedPairDist = d;
+
+      // Verify no same-altitude pair across the whole world clips through one another
+      for (let m = 0; m < world.creatures.length; m++) {
+        const cm = world.creatures[m];
+        if (!cm.alive) continue;
+        const mAlt = cm.def.aerial ? cm.flightAltitude : 0;
+        const mR = getCreaturePersonalRadius(cm);
+        for (let n = m + 1; n < world.creatures.length; n++) {
+          const cn = world.creatures[n];
+          if (!cn.alive) continue;
+          const nAlt = cn.def.aerial ? cn.flightAltitude : 0;
+          if (Math.abs(mAlt - nAlt) >= 1.15) continue;
+          const req = mR + getCreaturePersonalRadius(cn);
+          const sep = Math.hypot(cm.x - cn.x, cm.z - cn.z);
+          expect(sep).toBeGreaterThanOrEqual(req - 0.12);
+        }
+      }
+    }
+
+    expect(minObservedPairDist).toBeGreaterThanOrEqual(pairMinDist - 0.06);
+    expect(a.x).toBeGreaterThan(originX + 1.5);
+    expect(b.x).toBeLessThan(originX - 1.5);
+  });
+
+  it('prevents creatures from getting trapped in tight nonproductive loops', () => {
+    const world = new WorldState(new EventBus(), { seed: 777888 });
+    // Give every settlement extra resources so cities grow denser while creatures navigate
+    for (const s of world.settlements) {
+      s.stockpile.timber = 180;
+      s.stockpile.stone = 120;
+      s.stockpile.berries = 90;
+      s.stockpile.acorns = 90;
+    }
+
+    const dt = 0.04;
+    const windowSteps = 200; // 8.0s sliding window at 25fps
+    const history = new Map<string, { x: number; z: number }[]>();
+    let tightLoopIncidents = 0;
+
+    for (let step = 0; step < 900; step++) {
+      world.step(dt);
+
+      for (const c of world.creatures) {
+        if (!c.alive) continue;
+        let pts = history.get(c.id);
+        if (!pts) {
+          pts = [];
+          history.set(c.id, pts);
+        }
+        pts.push({ x: c.x, z: c.z });
+        if (pts.length > windowSteps) {
+          pts.shift();
+        }
+
+        // Every 50 steps (2s), check whether a creature walked >14m inside a tight <2.8m box
+        if (pts.length === windowSteps && step % 50 === 0) {
+          let pathLen = 0;
+          let minX = Infinity;
+          let maxX = -Infinity;
+          let minZ = Infinity;
+          let maxZ = -Infinity;
+          for (let k = 0; k < pts.length; k++) {
+            const p = pts[k];
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+            if (p.z < minZ) minZ = p.z;
+            if (p.z > maxZ) maxZ = p.z;
+            if (k > 0) {
+              pathLen += Math.hypot(p.x - pts[k - 1].x, p.z - pts[k - 1].z);
+            }
+          }
+          const span = Math.max(maxX - minX, maxZ - minZ);
+          if (pathLen > 14.0 && span < 2.8) {
+            tightLoopIncidents++;
+          }
+        }
+      }
+    }
+
+    expect(tightLoopIncidents).toBe(0);
   });
 });

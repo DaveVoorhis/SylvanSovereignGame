@@ -12,7 +12,7 @@ import type {
 } from '@core/Types';
 import { Creature } from './creatures/Creature';
 import { CreatureAI } from './creatures/CreatureAI';
-import { generateCreatureName } from './creatures/SpeciesCatalog';
+import { SPECIES_CATALOG, generateCreatureName } from './creatures/SpeciesCatalog';
 import { ProceduralGod } from './deity/ProceduralGod';
 import type { Settlement } from './settlements/Settlement';
 import { SettlementManager } from './settlements/SettlementManager';
@@ -86,22 +86,50 @@ export class WorldState {
 
   spawnCreature(settlement: Settlement, species: SpeciesId, role: CreatureRole): Creature {
     this.obstacles.sync(this.terrain, this.settlements);
-    const angle = this.rng.range(0, Math.PI * 2);
-    const radius = this.rng.range(2.2, Math.min(6.8, Math.max(3.2, settlement.radius * 0.78)));
-    const rawX = settlement.center.x + Math.cos(angle) * radius;
-    const rawZ = settlement.center.z + Math.sin(angle) * radius;
-    const safe = this.obstacles.pushPointOutsideObstacles(
-      rawX,
-      rawZ,
-      settlement.center.x,
-      settlement.center.z,
-      0.42,
-      0,
-      0.15,
-      angle,
-    );
-    const x = safe.x;
-    const z = safe.z;
+    const def = SPECIES_CATALOG[species];
+    const obstacleR = Math.max(0.26, def.bodyScale * 0.36);
+    const personalR = Math.max(0.32, def.bodyScale * 0.42);
+    const maxSpawnR = Math.min(7.5, Math.max(3.6, settlement.radius * 0.82));
+
+    let x = settlement.center.x + 2.6;
+    let z = settlement.center.z;
+    let bestClearance = -Infinity;
+
+    for (let attempt = 0; attempt < 14; attempt++) {
+      const angle = this.rng.range(0, Math.PI * 2);
+      const radius = this.rng.range(2.2, maxSpawnR);
+      const rawX = settlement.center.x + Math.cos(angle) * radius;
+      const rawZ = settlement.center.z + Math.sin(angle) * radius;
+      const safe = this.obstacles.pushPointOutsideObstacles(
+        rawX,
+        rawZ,
+        settlement.center.x,
+        settlement.center.z,
+        obstacleR,
+        0,
+        0.18,
+        angle,
+      );
+      if (!def.aerial && !this.terrain.isWalkable(safe.x, safe.z, def.amphibious)) {
+        continue;
+      }
+
+      let minCreatureGap = Infinity;
+      for (const other of this.creatures) {
+        if (!other.alive || other.flightAltitude > 1.1) continue;
+        const otherR = Math.max(0.32, other.def.bodyScale * 0.42);
+        const gap = Math.hypot(safe.x - other.x, safe.z - other.z) - (personalR + otherR);
+        if (gap < minCreatureGap) minCreatureGap = gap;
+      }
+
+      if (minCreatureGap > bestClearance) {
+        bestClearance = minCreatureGap;
+        x = safe.x;
+        z = safe.z;
+      }
+      if (minCreatureGap >= 0.2) break;
+    }
+
     const y = Math.max(this.terrain.getHeightAt(x, z), this.terrain.waterLevel);
 
     const creature = new Creature({
@@ -213,11 +241,13 @@ export class WorldState {
     this.obstacles.sync(this.terrain, this.settlements);
     this.diplomacy.tick(this, dt);
 
+    this.creatureAI.prepareStep(this);
     for (const creature of this.creatures) {
       if (creature.alive) {
         this.creatureAI.updateCreature(creature, this, dt);
       }
     }
+    this.creatureAI.resolveCreatureCollisions(this);
 
     // Refresh visual trade routes periodically
     this.routeRefreshTimer -= dt;

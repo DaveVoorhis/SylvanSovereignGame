@@ -9,17 +9,107 @@ import type { Creature } from './Creature';
 
 export { HEARTH_FIRE_KEEP_OUT_RADIUS };
 
-/** Candidate relative steering offsets (radians) evaluated when obstacles block the forward path. */
-const STEER_OFFSETS = [0, 0.42, -0.42, 0.88, -0.88, 1.38, -1.38, 1.92, -1.92];
+/** Horizontal collision radius of a creature against static world obstacles. */
+export function getCreatureObstacleRadius(creature: Creature): number {
+  return Math.max(0.26, creature.def.bodyScale * 0.36);
+}
+
+/** Personal-space horizontal radius used for creature-to-creature avoidance and separation. */
+export function getCreaturePersonalRadius(creature: Creature): number {
+  return Math.max(0.32, creature.def.bodyScale * 0.42);
+}
+
+/**
+ * Candidate relative steering offsets (radians) evaluated when obstacles, other creatures,
+ * or unwalkable terrain block the forward path. Covers up to ±2.85 rad so creatures can
+ * cleanly back out of deep cul-de-sacs instead of getting pinned.
+ */
+const STEER_OFFSETS = [0, 0.38, -0.38, 0.78, -0.78, 1.22, -1.22, 1.72, -1.72, 2.28, -2.28, 2.85, -2.85];
+
+const CREATURE_CELL_SIZE = 4.0;
+const INV_CREATURE_CELL_SIZE = 1 / CREATURE_CELL_SIZE;
+const CREATURE_GRID_OFFSET = 512;
+const CREATURE_GRID_STRIDE = 1024;
+const VERTICAL_SEPARATION_BAND = 1.15;
+
+function creatureCellKey(cx: number, cz: number): number {
+  return (cx + CREATURE_GRID_OFFSET) * CREATURE_GRID_STRIDE + (cz + CREATURE_GRID_OFFSET);
+}
 
 /**
  * Autonomous utility-driven AI for anthropomorphic woodland creatures:
  * foraging, continuous city building, inter-settlement trading, tavern/square socialising,
- * shrine devotion, skirmish combat, night-time resting, and smooth obstacle avoidance
- * around buildings, trees, boulders, bushes, benches, and town hearth fires.
+ * shrine devotion, skirmish combat, night-time resting, stuck/loop recovery, creature-to-creature
+ * avoidance, and smooth obstacle avoidance around buildings, trees, boulders, bushes, benches,
+ * and town hearth fires.
  */
 export class CreatureAI {
   private readonly nearbyObstacles: SolidObstacle[] = [];
+  private readonly nearbyCreatures: Creature[] = [];
+  private readonly creatureCells = new Map<number, Creature[]>();
+  private creatureGridStep = -1;
+
+  /** Rebuilds the lightweight spatial hash of alive creatures once per simulation step. */
+  prepareStep(world: WorldState): void {
+    this.rebuildCreatureGrid(world);
+    this.creatureGridStep = world.elapsedSeconds;
+  }
+
+  private rebuildCreatureGrid(world: WorldState): void {
+    for (const bucket of this.creatureCells.values()) {
+      bucket.length = 0;
+    }
+    for (const c of world.creatures) {
+      if (!c.alive) continue;
+      const cx = Math.floor(c.x * INV_CREATURE_CELL_SIZE);
+      const cz = Math.floor(c.z * INV_CREATURE_CELL_SIZE);
+      const key = creatureCellKey(cx, cz);
+      let bucket = this.creatureCells.get(key);
+      if (!bucket) {
+        bucket = [];
+        this.creatureCells.set(key, bucket);
+      }
+      bucket.push(c);
+    }
+  }
+
+  private queryNearbyCreatures(
+    self: Creature,
+    x: number,
+    z: number,
+    searchRadius: number,
+    world: WorldState,
+    out: Creature[],
+  ): void {
+    if (this.creatureGridStep !== world.elapsedSeconds) {
+      this.prepareStep(world);
+    }
+    out.length = 0;
+    const selfAlt = self.def.aerial ? self.flightAltitude : 0;
+    const rSq = searchRadius * searchRadius;
+    const minCx = Math.floor((x - searchRadius) * INV_CREATURE_CELL_SIZE);
+    const maxCx = Math.floor((x + searchRadius) * INV_CREATURE_CELL_SIZE);
+    const minCz = Math.floor((z - searchRadius) * INV_CREATURE_CELL_SIZE);
+    const maxCz = Math.floor((z + searchRadius) * INV_CREATURE_CELL_SIZE);
+
+    for (let cx = minCx; cx <= maxCx; cx++) {
+      for (let cz = minCz; cz <= maxCz; cz++) {
+        const bucket = this.creatureCells.get(creatureCellKey(cx, cz));
+        if (!bucket) continue;
+        for (let i = 0; i < bucket.length; i++) {
+          const other = bucket[i];
+          if (!other.alive || other.id === self.id) continue;
+          const otherAlt = other.def.aerial ? other.flightAltitude : 0;
+          if (Math.abs(otherAlt - selfAlt) >= VERTICAL_SEPARATION_BAND) continue;
+          const dx = other.x - x;
+          const dz = other.z - z;
+          if (dx * dx + dz * dz <= rSq) {
+            out.push(other);
+          }
+        }
+      }
+    }
+  }
 
   updateCreature(creature: Creature, world: WorldState, dt: number): void {
     if (!creature.alive) return;
@@ -86,8 +176,23 @@ export class CreatureAI {
     } else if (creature.activity === 'resting') {
       this.handleResting(creature, world, dt);
     } else {
-      this.chooseNextActivity(creature, world);
-      this.pushTargetOutsideObstacles(creature, world);
+      // Deposit carried goods immediately upon arriving home while hauling in 'idle'
+      const home = world.getSettlement(creature.settlementId);
+      if (home && creature.getTotalInventory() >= 5) {
+        const distHome = Math.hypot(home.center.x - creature.x, home.center.z - creature.z);
+        if (distHome < home.radius + 3.5) {
+          this.depositInventory(creature, home);
+          creature.actionTimer = 0;
+        }
+      }
+
+      // Stay committed to an active idle/hauling/patrol destination until arrival or timer expiry
+      const distToTarget = Math.hypot(creature.targetX - creature.x, creature.targetZ - creature.z);
+      if (creature.actionTimer <= 0 || distToTarget <= 0.65) {
+        this.chooseNextActivity(creature, world);
+        this.ensureReachableTarget(creature, world);
+        creature.resetNavigationState();
+      }
     }
 
     // Move smoothly toward target
@@ -155,8 +260,11 @@ export class CreatureAI {
       if (distHome < home.radius + 3.5) {
         this.depositInventory(creature, home);
       } else {
-        creature.targetX = home.center.x + world.rng.range(-3, 3);
-        creature.targetZ = home.center.z + world.rng.range(-3, 3);
+        const haulAngle = world.rng.range(0, Math.PI * 2);
+        const haulR = world.rng.range(2.3, Math.min(5.2, Math.max(3.2, home.radius * 0.65)));
+        creature.targetX = home.center.x + Math.cos(haulAngle) * haulR;
+        creature.targetZ = home.center.z + Math.sin(haulAngle) * haulR;
+        creature.actionTimer = 14;
         creature.thought = 'Hauling goods to the storehouse';
         return;
       }
@@ -182,7 +290,11 @@ export class CreatureAI {
       }
       creature.activity = 'building';
       creature.targetBuildingId = chosenSite.id;
-      const standAngle = world.rng.range(0, Math.PI * 2);
+      const approachAng = Math.atan2(
+        creature.z - chosenSite.position.z,
+        creature.x - chosenSite.position.x,
+      );
+      const standAngle = approachAng + world.rng.range(-0.9, 0.9);
       const standR = getBuildingCollisionRadius(chosenSite.type) + this.getCreatureRadius(creature) + 0.55;
       creature.targetX = chosenSite.position.x + Math.cos(standAngle) * standR;
       creature.targetZ = chosenSite.position.z + Math.sin(standAngle) * standR;
@@ -224,7 +336,11 @@ export class CreatureAI {
     ) {
       creature.activity = 'praying';
       creature.targetBuildingId = sacredSite.id;
-      const prayAngle = world.rng.range(0, Math.PI * 2);
+      const prayApproach = Math.atan2(
+        creature.z - sacredSite.position.z,
+        creature.x - sacredSite.position.x,
+      );
+      const prayAngle = prayApproach + world.rng.range(-1.1, 1.1);
       const prayR = getBuildingCollisionRadius(sacredSite.type) + this.getCreatureRadius(creature) + 0.65;
       creature.targetX = sacredSite.position.x + Math.cos(prayAngle) * prayR;
       creature.targetZ = sacredSite.position.z + Math.sin(prayAngle) * prayR;
@@ -334,6 +450,7 @@ export class CreatureAI {
     const radius = world.rng.range(3, home.radius + 6);
     creature.targetX = home.center.x + Math.cos(angle) * radius;
     creature.targetZ = home.center.z + Math.sin(angle) * radius;
+    creature.actionTimer = world.rng.range(5, 9);
     creature.thought = 'Exploring the sunlit glade';
   }
 
@@ -371,6 +488,12 @@ export class CreatureAI {
     const buildReach =
       getBuildingCollisionRadius(bld.type) + this.getCreatureRadius(creature) + 1.5;
     if (dist < buildReach) {
+      // Once comfortably within hammering reach, settle and face the construction site
+      if (dist < buildReach - 0.35) {
+        creature.targetX = creature.x;
+        creature.targetZ = creature.z;
+        creature.heading = Math.atan2(bld.position.x - creature.x, bld.position.z - creature.z);
+      }
       const work = dt * (11.0 + creature.def.buildSkill * 11.0);
       bld.progress = Math.min(100, bld.progress + work);
       if (bld.progress >= 100 && !bld.completed) {
@@ -502,9 +625,18 @@ export class CreatureAI {
       return;
     }
 
-    creature.targetX = target.x;
-    creature.targetZ = target.z;
     const dist = Math.hypot(target.x - creature.x, target.z - creature.z);
+    const meleeStandoff =
+      getCreaturePersonalRadius(creature) + getCreaturePersonalRadius(target) + 0.32;
+    if (dist > meleeStandoff) {
+      creature.targetX = target.x;
+      creature.targetZ = target.z;
+    } else {
+      // Stand face-to-face at melee reach instead of pushing into each other's body radius
+      creature.targetX = creature.x;
+      creature.targetZ = creature.z;
+      creature.heading = Math.atan2(target.x - creature.x, target.z - creature.z);
+    }
 
     if (dist < 2.2 && creature.attackCooldown <= 0) {
       const dmg = Math.max(4, creature.def.strength * world.rng.range(0.65, 1.15));
@@ -567,10 +699,12 @@ export class CreatureAI {
       const rz = creature.z - home.center.z;
       const rd = Math.hypot(rx, rz);
       const safeR = HEARTH_FIRE_KEEP_OUT_RADIUS + 0.75;
-      const dirX = rd > 0.01 ? rx / rd : 1;
-      const dirZ = rd > 0.01 ? rz / rd : 0;
-      creature.targetX = home.center.x + dirX * safeR;
-      creature.targetZ = home.center.z + dirZ * safeR;
+      if (rd > safeR + 1.2) {
+        const dirX = rx / rd;
+        const dirZ = rz / rd;
+        creature.targetX = home.center.x + dirX * safeR;
+        creature.targetZ = home.center.z + dirZ * safeR;
+      }
     }
     if (creature.actionTimer <= 0) {
       creature.activity = 'resting';
@@ -592,7 +726,7 @@ export class CreatureAI {
 
   /** Physical horizontal body radius of a creature scaled to its species size. */
   private getCreatureRadius(creature: Creature): number {
-    return Math.max(0.26, creature.def.bodyScale * 0.36);
+    return getCreatureObstacleRadius(creature);
   }
 
   /** Ensures a creature's destination never lands inside any building, tree, boulder, bush, or firepit. */
@@ -613,14 +747,172 @@ export class CreatureAI {
     creature.targetZ = safe.z;
   }
 
+  /**
+   * Ensures a freshly chosen target lies outside all solid obstacles AND on walkable terrain
+   * (for non-aerial creatures), snapping toward the creature's side of any water/cliff edge.
+   */
+  private ensureReachableTarget(creature: Creature, world: WorldState): void {
+    this.pushTargetOutsideObstacles(creature, world);
+    if (
+      creature.def.aerial ||
+      world.terrain.isWalkable(creature.targetX, creature.targetZ, creature.def.amphibious)
+    ) {
+      return;
+    }
+
+    const creatureR = this.getCreatureRadius(creature);
+    const towardSelf = Math.atan2(creature.z - creature.targetZ, creature.x - creature.targetX);
+    const baseX = creature.targetX;
+    const baseZ = creature.targetZ;
+    const ringRadii = [1.4, 2.8, 4.4];
+    const angleOffsets = [0, 0.55, -0.55, 1.15, -1.15, 1.85, -1.85, Math.PI];
+
+    for (const r of ringRadii) {
+      for (const off of angleOffsets) {
+        const ang = towardSelf + off;
+        const cx = baseX + Math.cos(ang) * r;
+        const cz = baseZ + Math.sin(ang) * r;
+        const safe = world.obstacles.pushPointOutsideObstacles(
+          cx,
+          cz,
+          creature.x,
+          creature.z,
+          creatureR,
+          0,
+          0.2,
+          ang,
+        );
+        if (world.terrain.isWalkable(safe.x, safe.z, creature.def.amphibious)) {
+          creature.targetX = safe.x;
+          creature.targetZ = safe.z;
+          return;
+        }
+      }
+    }
+
+    // Pull target partway back toward the creature until it sits on walkable ground
+    for (let t = 0.25; t <= 1.0; t += 0.25) {
+      const px = baseX + (creature.x - baseX) * t;
+      const pz = baseZ + (creature.z - baseZ) * t;
+      if (world.terrain.isWalkable(px, pz, creature.def.amphibious)) {
+        creature.targetX = px;
+        creature.targetZ = pz;
+        return;
+      }
+    }
+  }
+
+  /**
+   * Recovers a creature caught in a tight nonproductive loop (e.g. wedged behind dense buildings
+   * or targeting an unreachable spot across a river) by canceling the blocked task and steering
+   * out into nearby open walkable ground.
+   */
+  private recoverFromStuck(creature: Creature, world: WorldState): void {
+    const home = world.getSettlement(creature.settlementId);
+    if (creature.activity === 'trading' && creature.tradeCarrying && creature.tradeCargoAmount > 0 && home) {
+      home.stockpile[creature.tradeCarrying] += creature.tradeCargoAmount;
+    }
+
+    creature.activity = 'idle';
+    creature.targetResourceId = null;
+    creature.targetBuildingId = null;
+    creature.targetCreatureId = null;
+    creature.tradeDestinationSettlementId = null;
+    creature.tradeCarrying = null;
+    creature.tradeCargoAmount = 0;
+    creature.resetNavigationState();
+
+    const creatureR = this.getCreatureRadius(creature);
+    const baseAng = home
+      ? Math.atan2(home.center.z - creature.z, home.center.x - creature.x)
+      : creature.heading;
+
+    let bestX = creature.x;
+    let bestZ = creature.z;
+    let bestScore = -Infinity;
+    const escapeDists = [4.8, 3.2];
+
+    for (let k = 0; k < 12; k++) {
+      const ang = baseAng + (k * Math.PI * 2) / 12;
+      const dx = Math.cos(ang);
+      const dz = Math.sin(ang);
+
+      for (const dist of escapeDists) {
+        const cx = creature.x + dx * dist;
+        const cz = creature.z + dz * dist;
+        if (Math.hypot(cx, cz) > world.terrain.playableRadius - 1.5) continue;
+        if (!creature.def.aerial && !world.terrain.isWalkable(cx, cz, creature.def.amphibious)) continue;
+
+        // Verify midpoint is also walkable so the escape vector doesn't cross water
+        const midX = creature.x + dx * (dist * 0.5);
+        const midZ = creature.z + dz * (dist * 0.5);
+        if (!creature.def.aerial && !world.terrain.isWalkable(midX, midZ, creature.def.amphibious)) continue;
+
+        const sep = world.obstacles.resolveCollisions(cx, cz, creatureR, 0, ang);
+        if (sep.collided) continue;
+
+        const midSep = world.obstacles.resolveCollisions(midX, midZ, creatureR, 0, ang);
+        const score = (midSep.collided ? -2.0 : 2.0) + dist * 0.35 + (k === 0 ? 0.5 : 0);
+        if (score > bestScore) {
+          bestScore = score;
+          bestX = cx;
+          bestZ = cz;
+        }
+      }
+    }
+
+    creature.targetX = bestX;
+    creature.targetZ = bestZ;
+    creature.actionTimer = bestScore > -Infinity ? 3.2 : 0.4;
+    creature.thought = 'Finding a clearer woodland path';
+  }
+
+  private updateCreatureElevation(creature: Creature, world: WorldState): void {
+    const groundY = world.terrain.getHeightAt(creature.x, creature.z);
+    const surfaceY = Math.max(groundY, world.terrain.waterLevel);
+    creature.y =
+      (creature.def.amphibious ? Math.max(groundY, world.terrain.waterLevel - 0.08) : surfaceY) +
+      creature.flightAltitude;
+  }
+
   private moveCreature(creature: Creature, world: WorldState, dt: number): void {
     this.pushTargetOutsideObstacles(creature, world);
 
     const creatureR = this.getCreatureRadius(creature);
+    const personalR = getCreaturePersonalRadius(creature);
     const altitude = creature.def.aerial ? creature.flightAltitude : 0;
+    creature.detourTimer = Math.max(0, creature.detourTimer - dt);
+    if (creature.detourTimer <= 0) {
+      creature.detourSign = 0;
+    }
+
+    // Query nearby creatures once for crowd courtesy & predictive passing
+    this.queryNearbyCreatures(creature, creature.x, creature.z, 4.2, world, this.nearbyCreatures);
+
     const dx = creature.targetX - creature.x;
     const dz = creature.targetZ - creature.z;
-    const dist = Math.hypot(dx, dz);
+    let dist = Math.hypot(dx, dz);
+
+    // Crowd courtesy: if our exact destination spot is already occupied by another creature nearby,
+    // settle comfortably beside them instead of orbiting each other over the same square inch.
+    if (
+      dist > 0.25 &&
+      dist < 1.55 &&
+      creature.activity !== 'fighting' &&
+      creature.activity !== 'fleeing'
+    ) {
+      for (let i = 0; i < this.nearbyCreatures.length; i++) {
+        const other = this.nearbyCreatures[i];
+        const pairR = personalR + getCreaturePersonalRadius(other);
+        const otherToTarget = Math.hypot(other.x - creature.targetX, other.z - creature.targetZ);
+        if (otherToTarget < pairR + 0.1) {
+          creature.targetX = creature.x;
+          creature.targetZ = creature.z;
+          dist = 0;
+          break;
+        }
+      }
+    }
 
     if (dist > 0.25) {
       const speedMult =
@@ -638,7 +930,7 @@ export class CreatureAI {
       const baseDirX = dirX;
       const baseDirZ = dirZ;
 
-      // Context-based local steering around buildings, trees, rocks, bushes, benches & hearth fires
+      // Context-based local steering around buildings, trees, rocks, bushes, benches, fires & creatures
       const lookahead = Math.min(dist, 3.0);
       world.obstacles.queryNearby(
         creature.x + baseDirX * (lookahead * 0.45),
@@ -647,38 +939,77 @@ export class CreatureAI {
         this.nearbyObstacles,
       );
 
-      let pathBlocked = false;
-      for (let i = 0; i < this.nearbyObstacles.length; i++) {
-        const obs = this.nearbyObstacles[i];
-        if (altitude > obs.height) continue;
+      let pathBlocked = creature.detourTimer > 0;
 
-        const minR = world.obstacles.getEffectiveRadius(obs, creatureR);
-        const toObsX = obs.x - creature.x;
-        const toObsZ = obs.z - creature.z;
-        const dSq = toObsX * toObsX + toObsZ * toObsZ;
-        if (dSq < (minR + 0.9) * (minR + 0.9)) {
+      // Check forward terrain walkability so creatures curve along riverbanks proactively
+      if (!pathBlocked && !creature.def.aerial) {
+        const terrainProbeX = creature.x + baseDirX * Math.min(lookahead, 1.25);
+        const terrainProbeZ = creature.z + baseDirZ * Math.min(lookahead, 1.25);
+        if (!world.terrain.isWalkable(terrainProbeX, terrainProbeZ, creature.def.amphibious)) {
           pathBlocked = true;
-          break;
         }
-        const proj = toObsX * baseDirX + toObsZ * baseDirZ;
-        if (proj > 0 && proj < lookahead + minR) {
-          const perpSq = Math.max(0, dSq - proj * proj);
-          if (perpSq < (minR + 0.45) * (minR + 0.45)) {
+      }
+
+      if (!pathBlocked) {
+        for (let i = 0; i < this.nearbyObstacles.length; i++) {
+          const obs = this.nearbyObstacles[i];
+          if (altitude > obs.height) continue;
+
+          const minR = world.obstacles.getEffectiveRadius(obs, creatureR);
+          const toObsX = obs.x - creature.x;
+          const toObsZ = obs.z - creature.z;
+          const dSq = toObsX * toObsX + toObsZ * toObsZ;
+          if (dSq < (minR + 0.9) * (minR + 0.9)) {
             pathBlocked = true;
             break;
           }
+          const proj = toObsX * baseDirX + toObsZ * baseDirZ;
+          if (proj > 0 && proj < lookahead + minR) {
+            const perpSq = Math.max(0, dSq - proj * proj);
+            if (perpSq < (minR + 0.45) * (minR + 0.45)) {
+              pathBlocked = true;
+              break;
+            }
+          }
         }
       }
+
+      if (!pathBlocked) {
+        const creatureLookahead = Math.min(lookahead, 2.4);
+        for (let i = 0; i < this.nearbyCreatures.length; i++) {
+          const other = this.nearbyCreatures[i];
+          if (creature.activity === 'fighting' && other.id === creature.targetCreatureId) continue;
+          const pairR = personalR + getCreaturePersonalRadius(other);
+          const toOtherX = other.x - creature.x;
+          const toOtherZ = other.z - creature.z;
+          const dSq = toOtherX * toOtherX + toOtherZ * toOtherZ;
+          if (dSq < (pairR + 0.5) * (pairR + 0.5)) {
+            pathBlocked = true;
+            break;
+          }
+          const proj = toOtherX * baseDirX + toOtherZ * baseDirZ;
+          if (proj > 0 && proj < creatureLookahead + pairR) {
+            const perpSq = Math.max(0, dSq - proj * proj);
+            if (perpSq < (pairR + 0.22) * (pairR + 0.22)) {
+              pathBlocked = true;
+              break;
+            }
+          }
+        }
+      }
+
+      const tieSign = (creature.id.charCodeAt(creature.id.length - 1) & 1) === 0 ? 1 : -1;
 
       if (pathBlocked) {
         const baseAngle = Math.atan2(baseDirZ, baseDirX);
         const prevDirX = Math.sin(creature.heading);
         const prevDirZ = Math.cos(creature.heading);
-        const tieSign = (creature.id.charCodeAt(creature.id.length - 1) & 1) === 0 ? 1 : -1;
 
         let bestScore = -Infinity;
         let bestX = baseDirX;
         let bestZ = baseDirZ;
+        let bestOffset = 0;
+        let straightHazard = 0;
 
         for (let k = 0; k < STEER_OFFSETS.length; k++) {
           const offset = STEER_OFFSETS[k];
@@ -689,18 +1020,34 @@ export class CreatureAI {
           const nearProbeX = creature.x + cx * probeStep;
           const nearProbeZ = creature.z + cz * probeStep;
 
-          // Goal progress + heading momentum (prevents oscillation around obstacle clusters)
+          // Goal progress + heading momentum + committed wall-following consistency
           let score =
             (cx * baseDirX + cz * baseDirZ) * 1.15 +
-            (cx * prevDirX + cz * prevDirZ) * 0.42 +
-            (offset * tieSign > 0 ? 0.03 : 0);
+            (cx * prevDirX + cz * prevDirZ) * 0.45 +
+            (offset > 0 ? 0.06 : 0);
+
+          if (creature.detourSign !== 0 && creature.detourTimer > 0) {
+            if (offset * creature.detourSign > 0) {
+              score += 0.85;
+            } else if (offset * creature.detourSign < 0) {
+              score -= 0.35;
+            }
+          } else if (offset * tieSign > 0) {
+            score += 0.03;
+          }
+
+          let hazard = 0;
 
           // Avoid steering into unwalkable water or cliffs
-          if (
-            !creature.def.aerial &&
-            !world.terrain.isWalkable(nearProbeX, nearProbeZ, creature.def.amphibious)
-          ) {
-            score -= 6.5;
+          if (!creature.def.aerial) {
+            if (!world.terrain.isWalkable(nearProbeX, nearProbeZ, creature.def.amphibious)) {
+              hazard += 7.0;
+            }
+            const midProbeX = creature.x + cx * Math.min(lookahead, 1.35);
+            const midProbeZ = creature.z + cz * Math.min(lookahead, 1.35);
+            if (!world.terrain.isWalkable(midProbeX, midProbeZ, creature.def.amphibious)) {
+              hazard += 2.6;
+            }
           }
 
           // Evaluate obstacle clearance along this candidate ray
@@ -717,7 +1064,7 @@ export class CreatureAI {
             // Penalize stepping deeper into an obstacle already touching us
             const probeDist = Math.hypot(nearProbeX - obs.x, nearProbeZ - obs.z);
             if (probeDist < minR + 0.12) {
-              score -= 5.0 * (1 + (minR + 0.12 - probeDist));
+              hazard += 5.0 * (1 + (minR + 0.12 - probeDist));
             }
 
             // Penalize rays that intersect an obstacle within lookahead distance
@@ -727,20 +1074,61 @@ export class CreatureAI {
               if (perpDist < clearMargin) {
                 const hitSeverity = (clearMargin - perpDist) / clearMargin;
                 const distFactor = 1 - Math.max(0, proj - minR) / (lookahead + 0.5);
-                score -= 3.2 * (0.35 + hitSeverity) * (0.4 + 0.6 * distFactor);
+                hazard += 3.2 * (0.35 + hitSeverity) * (0.4 + 0.6 * distFactor);
               }
             }
           }
+
+          // Evaluate passing clearance around other creatures in the same altitude band
+          const creatureLookahead = Math.min(lookahead, 2.4);
+          for (let i = 0; i < this.nearbyCreatures.length; i++) {
+            const other = this.nearbyCreatures[i];
+            if (creature.activity === 'fighting' && other.id === creature.targetCreatureId) continue;
+
+            const pairR = personalR + getCreaturePersonalRadius(other);
+            const toOtherX = other.x - creature.x;
+            const toOtherZ = other.z - creature.z;
+            const dSq = toOtherX * toOtherX + toOtherZ * toOtherZ;
+            const proj = toOtherX * cx + toOtherZ * cz;
+
+            const probeDist = Math.hypot(nearProbeX - other.x, nearProbeZ - other.z);
+            if (probeDist < pairR + 0.1) {
+              hazard += 4.2 * (1 + (pairR + 0.1 - probeDist));
+            }
+
+            if (proj > 0 && proj < creatureLookahead + pairR) {
+              const perpDist = Math.sqrt(Math.max(0, dSq - proj * proj));
+              const clearMargin = pairR + 0.2;
+              if (perpDist < clearMargin) {
+                const hitSeverity = (clearMargin - perpDist) / clearMargin;
+                const distFactor = 1 - Math.max(0, proj - pairR) / (creatureLookahead + 0.5);
+                hazard += 2.4 * (0.35 + hitSeverity) * (0.4 + 0.6 * distFactor);
+              }
+            }
+          }
+
+          if (k === 0) straightHazard = hazard;
+          score -= hazard;
 
           if (score > bestScore) {
             bestScore = score;
             bestX = cx;
             bestZ = cz;
+            bestOffset = offset;
           }
         }
 
         dirX = bestX;
         dirZ = bestZ;
+
+        if (straightHazard < 0.05 && Math.abs(bestOffset) < 0.01) {
+          // Direct path is clear again — release detour lock cleanly
+          creature.detourTimer = 0;
+          creature.detourSign = 0;
+        } else if (Math.abs(bestOffset) > 0.2 && creature.detourTimer <= 0) {
+          creature.detourSign = bestOffset > 0 ? 1 : -1;
+          creature.detourTimer = 1.6;
+        }
       }
 
       const prevX = creature.x;
@@ -774,13 +1162,14 @@ export class CreatureAI {
         creature.x = nx;
         creature.z = nz;
       } else {
-        // Gentle detour around steep slopes or deep water (try both sides)
-        const detours: [number, number][] = [
-          [creature.x - dirZ * step, creature.z + dirX * step],
-          [creature.x + dirZ * step, creature.z - dirX * step],
-        ];
+        // Detour around steep slopes or deep water (try perpendiculars, then wider back-out angles)
+        const baseDirAng = Math.atan2(dirZ, dirX);
+        const fallbackAngles = [Math.PI * 0.5, -Math.PI * 0.5, 2.2, -2.2, Math.PI];
         let moved = false;
-        for (const [detourX, detourZ] of detours) {
+        for (const off of fallbackAngles) {
+          const ang = baseDirAng + off;
+          const detourX = creature.x + Math.cos(ang) * step;
+          const detourZ = creature.z + Math.sin(ang) * step;
           if (!world.terrain.isWalkable(detourX, detourZ, creature.def.amphibious)) continue;
           const altSep = world.obstacles.resolveCollisions(
             detourX,
@@ -797,8 +1186,8 @@ export class CreatureAI {
           }
         }
         if (!moved) {
-          creature.targetX = creature.x;
-          creature.targetZ = creature.z;
+          // Accelerate stuck recovery rather than freezing silently in place
+          creature.navProgressTimer += 1.2;
         }
       }
 
@@ -815,8 +1204,65 @@ export class CreatureAI {
         const targetAlt = dist > 5 ? 2.4 + Math.sin(creature.animPhase * 0.4) * 0.5 : 0.2;
         creature.flightAltitude += (targetAlt - creature.flightAltitude) * Math.min(1, dt * 3.5);
       }
+
+      // Goal-distance progress & loop detection (catches both pinned stalls and orbiting loops of any radius)
+      if (dist > 1.0 && creature.activity !== 'fighting') {
+        const postDist = Math.hypot(creature.targetX - creature.x, creature.targetZ - creature.z);
+        if (creature.navBestGoalDist === Infinity) {
+          creature.navBestGoalDist = postDist;
+          creature.navProgressTimer = 0;
+        } else if (postDist < creature.navBestGoalDist - 0.85) {
+          creature.navBestGoalDist = postDist;
+          creature.navProgressTimer = 0;
+          creature.navLoopCount = 0;
+        } else {
+          creature.navProgressTimer += dt;
+          if (creature.navProgressTimer >= 3.2) {
+            creature.navBestGoalDist = postDist;
+            creature.navProgressTimer = 0;
+            creature.navLoopCount += 1;
+
+            if (creature.navLoopCount === 1) {
+              // First stall: commit firmly to the opposite side around the obstruction
+              creature.detourSign =
+                creature.detourSign === 0
+                  ? (tieSign as -1 | 1)
+                  : ((-creature.detourSign) as -1 | 1);
+              creature.detourTimer = 3.2;
+
+              // If heading to a specific building, retarget the side of that building facing us
+              if (creature.targetBuildingId) {
+                const home = world.getSettlement(creature.settlementId);
+                const bld = home?.buildings.find((b) => b.id === creature.targetBuildingId);
+                if (bld) {
+                  const faceAng = Math.atan2(creature.z - bld.position.z, creature.x - bld.position.x);
+                  const standR = getBuildingCollisionRadius(bld.type) + creatureR + 0.65;
+                  creature.targetX = bld.position.x + Math.cos(faceAng) * standR;
+                  creature.targetZ = bld.position.z + Math.sin(faceAng) * standR;
+                  this.ensureReachableTarget(creature, world);
+                  creature.navBestGoalDist = Math.hypot(
+                    creature.targetX - creature.x,
+                    creature.targetZ - creature.z,
+                  );
+                }
+              }
+            } else {
+              // Second consecutive stall: escape cleanly into open ground and pick a new task
+              this.recoverFromStuck(creature, world);
+            }
+          }
+        }
+      } else {
+        creature.navBestGoalDist = Infinity;
+        creature.navProgressTimer = 0;
+      }
     } else if (creature.def.aerial) {
       creature.flightAltitude += (0 - creature.flightAltitude) * Math.min(1, dt * 4.5);
+      creature.navBestGoalDist = Infinity;
+      creature.navProgressTimer = 0;
+    } else {
+      creature.navBestGoalDist = Infinity;
+      creature.navProgressTimer = 0;
     }
 
     // Also keep stationary/just-landed creatures safely outside newly placed buildings & obstacles
@@ -832,10 +1278,128 @@ export class CreatureAI {
       creature.z = finalSep.z;
     }
 
-    const groundY = world.terrain.getHeightAt(creature.x, creature.z);
-    const surfaceY = Math.max(groundY, world.terrain.waterLevel);
-    creature.y =
-      (creature.def.amphibious ? Math.max(groundY, world.terrain.waterLevel - 0.08) : surfaceY) +
-      creature.flightAltitude;
+    this.updateCreatureElevation(creature, world);
+  }
+
+  /**
+   * Multi-pass post-step creature-to-creature collision solver.
+   * Guarantees creatures in the same altitude band never walk through or stand inside one another,
+   * while strictly preserving static obstacle clearance and walkable terrain constraints.
+   */
+  resolveCreatureCollisions(world: WorldState): void {
+    const maxR = world.terrain.playableRadius;
+    const tryDisplace = (
+      c: Creature,
+      dx: number,
+      dz: number,
+    ): { applied: boolean; x: number; z: number } => {
+      let nx = c.x + dx;
+      let nz = c.z + dz;
+      const nr = Math.hypot(nx, nz);
+      if (nr > maxR && nr > 0.001) {
+        nx = (nx / nr) * maxR;
+        nz = (nz / nr) * maxR;
+      }
+      const alt = c.def.aerial ? c.flightAltitude : 0;
+      const sep = world.obstacles.resolveCollisions(
+        nx,
+        nz,
+        getCreatureObstacleRadius(c),
+        alt,
+        c.heading,
+      );
+      if (!c.def.aerial && !world.terrain.isWalkable(sep.x, sep.z, c.def.amphibious)) {
+        return { applied: false, x: c.x, z: c.z };
+      }
+      const movedSq = (sep.x - c.x) * (sep.x - c.x) + (sep.z - c.z) * (sep.z - c.z);
+      return { applied: movedSq > 1e-6, x: sep.x, z: sep.z };
+    };
+
+    const movedSet = new Set<Creature>();
+
+    for (let pass = 0; pass < 3; pass++) {
+      this.rebuildCreatureGrid(world);
+      let anySeparated = false;
+
+      for (let i = 0; i < world.creatures.length; i++) {
+        const a = world.creatures[i];
+        if (!a.alive) continue;
+        const aR = getCreaturePersonalRadius(a);
+        const aAlt = a.def.aerial ? a.flightAltitude : 0;
+        const cx = Math.floor(a.x * INV_CREATURE_CELL_SIZE);
+        const cz = Math.floor(a.z * INV_CREATURE_CELL_SIZE);
+
+        for (let gx = cx - 1; gx <= cx + 1; gx++) {
+          for (let gz = cz - 1; gz <= cz + 1; gz++) {
+            const bucket = this.creatureCells.get(creatureCellKey(gx, gz));
+            if (!bucket) continue;
+
+            for (let j = 0; j < bucket.length; j++) {
+              const b = bucket[j];
+              if (!b.alive || a.id >= b.id) continue;
+
+              const bAlt = b.def.aerial ? b.flightAltitude : 0;
+              if (Math.abs(aAlt - bAlt) >= VERTICAL_SEPARATION_BAND) continue;
+
+              const minDist = aR + getCreaturePersonalRadius(b);
+              const dx = b.x - a.x;
+              const dz = b.z - a.z;
+              const dSq = dx * dx + dz * dz;
+              if (dSq >= minDist * minDist) continue;
+
+              let ux: number;
+              let uz: number;
+              let dist: number;
+              if (dSq > 1e-6) {
+                dist = Math.sqrt(dSq);
+                ux = dx / dist;
+                uz = dz / dist;
+              } else {
+                dist = 0;
+                const seedAng =
+                  ((a.id.charCodeAt(a.id.length - 1) + b.id.charCodeAt(b.id.length - 1)) % 12) *
+                  (Math.PI / 6);
+                ux = Math.cos(seedAng);
+                uz = Math.sin(seedAng);
+              }
+
+              const pen = minDist - dist + 0.008;
+              const half = pen * 0.52;
+
+              const resA = tryDisplace(a, -ux * half, -uz * half);
+              const resB = tryDisplace(b, ux * half, uz * half);
+
+              if (resA.applied && resB.applied) {
+                a.x = resA.x;
+                a.z = resA.z;
+                b.x = resB.x;
+                b.z = resB.z;
+                movedSet.add(a);
+                movedSet.add(b);
+                anySeparated = true;
+              } else if (resA.applied && !resB.applied) {
+                const fullA = tryDisplace(a, -ux * pen, -uz * pen);
+                a.x = fullA.applied ? fullA.x : resA.x;
+                a.z = fullA.applied ? fullA.z : resA.z;
+                movedSet.add(a);
+                anySeparated = true;
+              } else if (!resA.applied && resB.applied) {
+                const fullB = tryDisplace(b, ux * pen, uz * pen);
+                b.x = fullB.applied ? fullB.x : resB.x;
+                b.z = fullB.applied ? fullB.z : resB.z;
+                movedSet.add(b);
+                anySeparated = true;
+              }
+            }
+          }
+        }
+      }
+
+      if (!anySeparated) break;
+    }
+
+    for (const c of movedSet) {
+      this.updateCreatureElevation(c, world);
+    }
   }
 }
