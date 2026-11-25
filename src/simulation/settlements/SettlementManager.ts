@@ -765,6 +765,7 @@ export class SettlementManager {
       if (
         world.terrain.isWithinPlayableArea(candX, candZ, 12) &&
         !world.terrain.isDeepSeaAt(candX, candZ) &&
+        !world.terrain.isImpassableMountainAt(candX, candZ) &&
         world.terrain.getSlopeAt(candX, candZ) < 0.3
       ) {
         waypoints.push({ x: candX, z: candZ });

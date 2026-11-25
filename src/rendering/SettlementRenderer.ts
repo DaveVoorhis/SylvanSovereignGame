@@ -34,8 +34,125 @@ interface RenderedBuilding {
   readonly wheelMesh?: THREE.Object3D;
   readonly rotorMesh?: THREE.Object3D;
   readonly fountainJet?: THREE.Object3D;
+  readonly fountainRipples?: THREE.Object3D[];
+  readonly fountainSpray?: THREE.Points;
   readonly swayPart?: THREE.Object3D;
   readonly chimneySmokes?: THREE.Points[];
+}
+
+/** Shared GPU shader for sparkling ballistic fountain water droplets & basin splash spray. */
+function createFountainSprayMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uDaylight: { value: 1 },
+    },
+    vertexShader: /* glsl */ `
+      attribute vec3 aVel;
+      attribute vec3 aSeed;
+      uniform float uTime;
+      varying float vAlpha;
+      varying float vSparkle;
+      void main() {
+        float life = aSeed.y;
+        float age = mod(uTime + aSeed.x * life, life);
+        float t = clamp(age / life, 0.0, 1.0);
+        vec3 p = position + aVel * age + vec3(0.0, -4.85 * age * age, 0.0);
+        p.y = max(0.45, p.y);
+        vAlpha = sin(t * 3.14159265) * 0.85;
+        vSparkle = 0.72 + 0.28 * sin(uTime * 11.5 + aSeed.x * 47.0);
+        vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
+        gl_PointSize = clamp(aSeed.z * (165.0 / max(1.0, -mvPosition.z)), 1.5, 9.0);
+        gl_Position = projectionMatrix * mvPosition;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform float uDaylight;
+      varying float vAlpha;
+      varying float vSparkle;
+      void main() {
+        vec2 d = gl_PointCoord - vec2(0.5);
+        float r2 = dot(d, d);
+        if (r2 > 0.25) discard;
+        float core = exp(-r2 * 14.0);
+        float halo = smoothstep(0.25, 0.04, r2);
+        vec3 aqua = mix(vec3(0.56, 0.84, 0.94), vec3(0.95, 0.99, 1.0), core * 0.85);
+        vec3 lit = aqua * (0.42 + 0.64 * uDaylight) * vSparkle;
+        gl_FragColor = vec4(lit, halo * vAlpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+  });
+}
+
+/** Builds per-fountain ballistic droplet trajectories (top finial jets, upper bowl overflow, and basin splashes). */
+function createFountainSprayGeometry(seed: number): THREE.BufferGeometry {
+  const count = 104;
+  const positions = new Float32Array(count * 3);
+  const velocities = new Float32Array(count * 3);
+  const seeds = new Float32Array(count * 3);
+
+  const hash = (n: number): number => {
+    const x = Math.sin(seed * 12.9898 + n * 78.233) * 43758.5453;
+    return x - Math.floor(x);
+  };
+
+  for (let i = 0; i < count; i++) {
+    const h1 = hash(i * 5 + 1);
+    const h2 = hash(i * 5 + 2);
+    const h3 = hash(i * 5 + 3);
+    const h4 = hash(i * 5 + 4);
+
+    if (i < 38) {
+      // Upper finial crown arcing jets -> landing into upper stone basin
+      const jetIdx = i % 6;
+      const ang = (jetIdx / 6) * Math.PI * 2 + (h1 - 0.5) * 0.16;
+      const speedR = 0.68 + h2 * 0.22;
+      positions[i * 3] = Math.cos(ang) * 0.04;
+      positions[i * 3 + 1] = 1.98;
+      positions[i * 3 + 2] = Math.sin(ang) * 0.04;
+      velocities[i * 3] = Math.cos(ang) * speedR;
+      velocities[i * 3 + 1] = 2.65 + h3 * 0.45;
+      velocities[i * 3 + 2] = Math.sin(ang) * speedR;
+      seeds[i * 3] = h4;
+      seeds[i * 3 + 1] = 0.68 + h1 * 0.14;
+      seeds[i * 3 + 2] = 0.18 + h2 * 0.1;
+    } else if (i < 82) {
+      // Cascading water spilling over the upper carved bowl lip into the lower basin
+      const spoutIdx = (i - 38) % 8;
+      const ang = (spoutIdx / 8) * Math.PI * 2 + (h1 - 0.5) * 0.14;
+      const speedR = 0.58 + h2 * 0.2;
+      positions[i * 3] = Math.cos(ang) * 0.77;
+      positions[i * 3 + 1] = 1.63;
+      positions[i * 3 + 2] = Math.sin(ang) * 0.77;
+      velocities[i * 3] = Math.cos(ang) * speedR;
+      velocities[i * 3 + 1] = 0.35 + h3 * 0.25;
+      velocities[i * 3 + 2] = Math.sin(ang) * speedR;
+      seeds[i * 3] = h4;
+      seeds[i * 3 + 1] = 0.56 + h1 * 0.12;
+      seeds[i * 3 + 2] = 0.2 + h2 * 0.12;
+    } else {
+      // Sparkling mist & splash bounce rising where the cascades strike the lower water pool
+      const ang = h1 * Math.PI * 2;
+      const r = 1.04 + h2 * 0.2;
+      positions[i * 3] = Math.cos(ang) * r;
+      positions[i * 3 + 1] = 0.46;
+      positions[i * 3 + 2] = Math.sin(ang) * r;
+      velocities[i * 3] = Math.cos(ang + (h3 - 0.5) * 0.8) * (0.18 + h4 * 0.24);
+      velocities[i * 3 + 1] = 0.95 + h3 * 0.55;
+      velocities[i * 3 + 2] = Math.sin(ang + (h3 - 0.5) * 0.8) * (0.18 + h4 * 0.24);
+      seeds[i * 3] = h4;
+      seeds[i * 3 + 1] = 0.36 + h2 * 0.14;
+      seeds[i * 3 + 2] = 0.14 + h1 * 0.08;
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('aVel', new THREE.BufferAttribute(velocities, 3));
+  geo.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 3));
+  return geo;
 }
 
 interface RenderedHearth {
@@ -71,6 +188,8 @@ export class SettlementRenderer {
   private readonly brickMat: THREE.MeshStandardMaterial;
   private readonly glassMat: THREE.MeshStandardMaterial;
   private readonly fountainWaterMat: THREE.MeshStandardMaterial;
+  private readonly fountainStreamMat: THREE.MeshStandardMaterial;
+  private readonly fountainSprayMat: THREE.ShaderMaterial;
   private readonly canvasSailMat: THREE.MeshStandardMaterial;
   private readonly stoneMat: THREE.MeshStandardMaterial;
   private readonly windowMat: THREE.MeshStandardMaterial;
@@ -100,6 +219,7 @@ export class SettlementRenderer {
   private readonly bellRoofGeo: THREE.BufferGeometry;
   private readonly acornSiloGeo: THREE.BufferGeometry;
   private readonly gableRoofGeo: THREE.BufferGeometry;
+  private readonly fountainBowlGeo: THREE.BufferGeometry;
   private readonly sharedFlameGeo: THREE.BufferGeometry;
 
   private readonly buildingMeshes = new Map<string, RenderedBuilding>();
@@ -178,14 +298,25 @@ export class SettlementRenderer {
       opacity: 0.44,
     });
     this.fountainWaterMat = new THREE.MeshStandardMaterial({
-      color: 0x62d9e8,
-      emissive: 0x1e6b7c,
-      emissiveIntensity: 0.45,
-      roughness: 0.14,
-      metalness: 0.15,
+      color: 0x3895ab,
+      emissive: 0x103b4a,
+      emissiveIntensity: 0.2,
+      roughness: 0.07,
+      metalness: 0.24,
       transparent: true,
-      opacity: 0.82,
+      opacity: 0.78,
     });
+    this.fountainStreamMat = new THREE.MeshStandardMaterial({
+      color: 0xd9f4ff,
+      emissive: 0x3b8ca5,
+      emissiveIntensity: 0.18,
+      roughness: 0.08,
+      metalness: 0.12,
+      transparent: true,
+      opacity: 0.6,
+      depthWrite: false,
+    });
+    this.fountainSprayMat = createFountainSprayMaterial();
     this.canvasSailMat = new THREE.MeshStandardMaterial({
       color: 0xf7efe0,
       roughness: 0.86,
@@ -251,6 +382,9 @@ export class SettlementRenderer {
       bumpMap: textures.stone.bumpMap,
       bumpScale: 0.14,
       roughness: 0.96,
+      polygonOffset: true,
+      polygonOffsetFactor: 2,
+      polygonOffsetUnits: 2,
     });
     this.ropeMat = new THREE.MeshStandardMaterial({
       color: 0xcab48c,
@@ -351,6 +485,21 @@ export class SettlementRenderer {
     });
     this.gableRoofGeo.translate(0, 0, -1.45);
 
+    // Classical carved overhanging stone upper basin for village fountains (LatheGeometry)
+    const bowlPts = [
+      new THREE.Vector2(0.0, 0.0),
+      new THREE.Vector2(0.28, 0.02),
+      new THREE.Vector2(0.46, 0.1),
+      new THREE.Vector2(0.72, 0.24),
+      new THREE.Vector2(0.84, 0.34),
+      new THREE.Vector2(0.82, 0.41),
+      new THREE.Vector2(0.72, 0.41),
+      new THREE.Vector2(0.68, 0.3),
+      new THREE.Vector2(0.32, 0.22),
+      new THREE.Vector2(0.0, 0.22),
+    ];
+    this.fountainBowlGeo = new THREE.LatheGeometry(bowlPts, 24);
+
     this.sharedFlameGeo = createSharedFlameGeometry();
 
     scene.add(this.rootGroup);
@@ -369,7 +518,10 @@ export class SettlementRenderer {
     const daylight = THREE.MathUtils.clamp((sunY + 0.16) / 0.55, 0, 1);
     const nightGlow = THREE.MathUtils.clamp(1 - (sunY + 0.1) * 2.2, 0.24, 2.35);
     this.windowMat.emissiveIntensity = nightGlow * 1.45;
-    this.fountainWaterMat.emissiveIntensity = 0.25 + nightGlow * 0.35;
+    this.fountainWaterMat.emissiveIntensity = 0.12 + nightGlow * 0.16;
+    this.fountainStreamMat.emissiveIntensity = 0.12 + daylight * 0.14 + nightGlow * 0.12;
+    this.fountainSprayMat.uniforms.uTime.value = t;
+    this.fountainSprayMat.uniforms.uDaylight.value = daylight;
     this.ovenFireMat.uniforms.uTime.value = t;
 
     const windStrength =
@@ -428,9 +580,21 @@ export class SettlementRenderer {
           entry.rotorMesh.rotation.z -= dt * 0.62;
         }
         if (entry.fountainJet && b.completed) {
-          const pulse = 1.0 + Math.sin(t * 4.2 + b.position.x) * 0.12;
-          entry.fountainJet.scale.set(pulse, 0.92 + Math.sin(t * 5.6) * 0.14, pulse);
-          entry.fountainJet.rotation.y += dt * 1.3;
+          // Gentle natural water pressure shimmer in the arcing streams (never spinning like a rigid cone)
+          const shimmerY = 0.98 + Math.sin(t * 6.4 + b.position.x) * 0.035;
+          const shimmerR = 0.99 + Math.cos(t * 5.1 + b.position.z) * 0.02;
+          entry.fountainJet.scale.set(shimmerR, shimmerY, shimmerR);
+        }
+        if (entry.fountainRipples && b.completed) {
+          for (let r = 0; r < entry.fountainRipples.length; r++) {
+            const ring = entry.fountainRipples[r];
+            const phase = (t * 0.85 + r * 0.5 + b.position.x * 0.13) % 1;
+            const sc = 0.72 + phase * 0.42;
+            ring.scale.set(sc, sc, 1);
+          }
+        }
+        if (entry.fountainSpray) {
+          entry.fountainSpray.visible = b.completed;
         }
         if (entry.swayPart) {
           entry.swayPart.rotation.z = Math.sin(t * 2.1 + b.position.x) * 0.11;
@@ -535,6 +699,7 @@ export class SettlementRenderer {
       this.bellRoofGeo,
       this.acornSiloGeo,
       this.gableRoofGeo,
+      this.fountainBowlGeo,
       this.sharedFlameGeo,
     ]);
     for (const [id, entry] of this.buildingMeshes) {
@@ -926,6 +1091,8 @@ export class SettlementRenderer {
     let wheelMesh: THREE.Object3D | undefined;
     let rotorMesh: THREE.Object3D | undefined;
     let fountainJet: THREE.Object3D | undefined;
+    let fountainRipples: THREE.Object3D[] | undefined;
+    let fountainSpray: THREE.Points | undefined;
     let swayPart: THREE.Object3D | undefined;
     const chimneySmokes: THREE.Points[] = [];
 
@@ -999,7 +1166,7 @@ export class SettlementRenderer {
 
     const type: BuildingType = b.type;
     if (type === 'burrow_cottage') {
-      const plinth = tag(new THREE.Mesh(new THREE.CylinderGeometry(1.62, 1.78, 0.4, 20), this.stoneMat));
+      const plinth = tag(new THREE.Mesh(new THREE.CylinderGeometry(1.59, 1.72, 0.4, 20), this.stoneMat));
       plinth.position.y = 0.2;
 
       const body = tag(new THREE.Mesh(new THREE.CylinderGeometry(1.48, 1.58, 1.45, 20), wallPlaster));
@@ -1024,15 +1191,16 @@ export class SettlementRenderer {
       pot.position.set(0.89, 3.38, -0.38);
       addChimneySmoke(0.9, 3.55, -0.38);
 
-      const doorFrame = tag(new THREE.Mesh(new THREE.TorusGeometry(0.54, 0.09, 10, 20), this.darkTimberMat));
-      doorFrame.position.set(0, 0.85, 1.54);
-      const door = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.1, 20), bannerMat));
+      const doorFrame = tag(new THREE.Mesh(new THREE.TorusGeometry(0.52, 0.085, 10, 20), this.darkTimberMat));
+      doorFrame.position.set(0, 0.94, 1.58);
+      const door = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.48, 0.1, 20), bannerMat));
       door.rotation.x = Math.PI / 2;
-      door.position.set(0, 0.85, 1.52);
+      door.position.set(0, 0.94, 1.56);
       const doorknob = tag(new THREE.Mesh(new THREE.SphereGeometry(0.065, 8, 8), this.brassMat));
-      doorknob.position.set(0.18, 0.85, 1.6);
-      const doorstep = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.68, 0.78, 0.16, 12), this.stoneMat));
-      doorstep.position.set(0, 0.08, 1.78);
+      doorknob.position.set(0.18, 0.94, 1.64);
+      // Front stone threshold step raised cleanly above the earthen leveling pad (y=0.10) to prevent z-fighting
+      const doorstep = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.66, 0.76, 0.22, 14), this.stoneMat));
+      doorstep.position.set(0, 0.12, 1.84);
 
       addMullionedWindow(1.36, 1.12, 0.72, Math.PI / 3, 0.44, 0.44);
       addMullionedWindow(-1.36, 1.12, 0.72, -Math.PI / 3, 0.44, 0.44);
@@ -1314,8 +1482,10 @@ export class SettlementRenderer {
       finial.position.y = 6.62;
 
       // Arched mill doorway & stacked flour sacks
-      const door = tag(new THREE.Mesh(new THREE.BoxGeometry(0.74, 1.12, 0.18), this.doorMat));
-      door.position.set(0, 0.62, 1.62);
+      const door = tag(new THREE.Mesh(new THREE.BoxGeometry(0.74, 1.12, 0.24), this.doorMat));
+      door.position.set(0, 0.68, 1.66);
+      const millStep = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.58, 0.68, 0.22, 12), this.stoneMat));
+      millStep.position.set(0, 0.12, 1.9);
       for (let i = 0; i < 3; i++) {
         const sack = tag(new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 8), this.canvasSailMat));
         sack.scale.set(1.1, 0.78, 0.9);
@@ -1460,40 +1630,123 @@ export class SettlementRenderer {
       addHangingLantern(-0.72, 1.85, 2.34);
       addHangingLantern(0.72, 1.85, 2.34);
     } else if (type === 'fountain_plaza') {
-      // Starlight Fountain — octagonal cobblestone patio, two-tier carved stone fountain with animated shimmering water jet & garden lamps!
-      const patio = tag(new THREE.Mesh(new THREE.CylinderGeometry(2.45, 2.62, 0.18, 8), this.stoneMat));
-      patio.position.y = 0.09;
+      // Carved Two-Tier Stone Plaza Fountain — recessed wet-stone basin, lathe-turned overhanging
+      // upper bowl, bronze finial nozzle, parabolic cascading water arcs, animated ripples & ballistic spray!
+      const patio = tag(new THREE.Mesh(new THREE.CylinderGeometry(2.45, 2.62, 0.2, 8), this.stoneMat));
+      patio.position.y = 0.14;
 
-      // Outer stone basin rim + luminous turquoise pool
-      const basinWall = tag(new THREE.Mesh(new THREE.TorusGeometry(1.42, 0.24, 10, 24), this.stoneMat));
-      basinWall.rotation.x = Math.PI / 2;
-      basinWall.position.y = 0.42;
-      const lowerWater = tag(new THREE.Mesh(new THREE.CylinderGeometry(1.36, 1.36, 0.24, 24), this.fountainWaterMat));
-      lowerWater.position.y = 0.4;
+      // Recessed lower stone basin wall, coping lip, wet granite floor & clear translucent pool
+      const basinOuter = tag(new THREE.Mesh(new THREE.CylinderGeometry(1.56, 1.65, 0.36, 24, 1, true), this.stoneMat));
+      basinOuter.position.y = 0.38;
+      const basinCoping = tag(new THREE.Mesh(new THREE.TorusGeometry(1.48, 0.13, 12, 28), this.stoneMat));
+      basinCoping.rotation.x = Math.PI / 2;
+      basinCoping.position.y = 0.54;
+      const basinFloor = tag(new THREE.Mesh(new THREE.CylinderGeometry(1.42, 1.42, 0.08, 24), this.graniteMat));
+      basinFloor.position.y = 0.26;
+      const lowerWater = tag(new THREE.Mesh(new THREE.CylinderGeometry(1.4, 1.4, 0.06, 24), this.fountainWaterMat));
+      lowerWater.position.y = 0.44;
       lowerWater.castShadow = false;
 
-      // Central tiered pedestal + upper bowl
-      const stem = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.46, 1.35, 12), this.stoneMat));
-      stem.position.y = 0.88;
-      const upperBowl = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.82, 0.34, 0.36, 16), this.stoneMat));
-      upperBowl.position.y = 1.56;
-      const upperWater = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.74, 0.74, 0.12, 16), this.fountainWaterMat));
-      upperWater.position.y = 1.72;
+      // Molded central stone pedestal, carved lathe-turned upper basin & bronze finial spout
+      const pedBase = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.56, 0.28, 16), this.stoneMat));
+      pedBase.position.y = 0.4;
+      const stem = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.38, 0.96, 14), this.stoneMat));
+      stem.position.y = 0.96;
+      const stemCollar = tag(new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.06, 8, 18), this.stoneMat));
+      stemCollar.rotation.x = Math.PI / 2;
+      stemCollar.position.y = 1.26;
+      const upperBowl = tag(new THREE.Mesh(this.fountainBowlGeo, this.stoneMat));
+      upperBowl.position.y = 1.32;
+      const upperWater = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.71, 0.71, 0.05, 20), this.fountainWaterMat));
+      upperWater.position.y = 1.64;
       upperWater.castShadow = false;
 
-      // Animated shimmering turquoise water spout & starlight splash crown!
-      const jetPivot = new THREE.Group();
-      jetPivot.position.y = 1.78;
-      const spireJet = tag(new THREE.Mesh(new THREE.ConeGeometry(0.24, 1.15, 12), this.fountainWaterMat), jetPivot);
-      spireJet.position.y = 0.56;
-      spireJet.castShadow = false;
-      const crownRing = tag(new THREE.Mesh(new THREE.TorusGeometry(0.55, 0.06, 8, 18), this.shrineCrystalMat), jetPivot);
-      crownRing.rotation.x = Math.PI / 2;
-      crownRing.position.y = 0.12;
-      crownRing.castShadow = false;
-      jetPivot.userData.buildPhase = 'exterior';
-      finishedGroup.add(jetPivot);
-      fountainJet = jetPivot;
+      // Sculpted bronze finial nozzle rising from the upper bowl
+      const nozzleBase = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.16, 0.36, 10), this.brassMat));
+      nozzleBase.position.y = 1.8;
+      const nozzleBulb = tag(new THREE.Mesh(new THREE.SphereGeometry(0.105, 10, 8), this.brassMat));
+      nozzleBulb.position.y = 1.98;
+
+      // Realistic parabolic arcing water streams (6 upper jets + 8 upper-rim cascades, zero solid cone!)
+      const waterArcsGroup = new THREE.Group();
+      waterArcsGroup.userData.buildPhase = 'exterior';
+
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        const ca = Math.cos(a);
+        const sa = Math.sin(a);
+        const curve = new THREE.QuadraticBezierCurve3(
+          new THREE.Vector3(ca * 0.04, 1.98, sa * 0.04),
+          new THREE.Vector3(ca * 0.28, 2.52, sa * 0.28),
+          new THREE.Vector3(ca * 0.55, 1.64, sa * 0.55),
+        );
+        const jetMesh = tag(
+          new THREE.Mesh(new THREE.TubeGeometry(curve, 12, 0.022, 6, false), this.fountainStreamMat),
+          waterArcsGroup,
+        );
+        jetMesh.castShadow = false;
+      }
+
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
+        const ca = Math.cos(a);
+        const sa = Math.sin(a);
+        const curve = new THREE.QuadraticBezierCurve3(
+          new THREE.Vector3(ca * 0.78, 1.66, sa * 0.78),
+          new THREE.Vector3(ca * 1.06, 1.38, sa * 1.06),
+          new THREE.Vector3(ca * 1.15, 0.45, sa * 1.15),
+        );
+        const cascadeMesh = tag(
+          new THREE.Mesh(new THREE.TubeGeometry(curve, 12, 0.027, 6, false), this.fountainStreamMat),
+          waterArcsGroup,
+        );
+        cascadeMesh.castShadow = false;
+      }
+
+      // Aerated foam collars where the streams impact the water surfaces
+      const upperFoam = tag(
+        new THREE.Mesh(new THREE.TorusGeometry(0.54, 0.024, 6, 22), this.fountainStreamMat),
+        waterArcsGroup,
+      );
+      upperFoam.rotation.x = Math.PI / 2;
+      upperFoam.position.y = 1.675;
+      upperFoam.castShadow = false;
+
+      const lowerFoam = tag(
+        new THREE.Mesh(new THREE.TorusGeometry(1.14, 0.032, 6, 28), this.fountainStreamMat),
+        waterArcsGroup,
+      );
+      lowerFoam.rotation.x = Math.PI / 2;
+      lowerFoam.position.y = 0.48;
+      lowerFoam.castShadow = false;
+
+      finishedGroup.add(waterArcsGroup);
+      fountainJet = waterArcsGroup;
+
+      // Animated expanding concentric surface ripples on the lower pool
+      fountainRipples = [];
+      for (let r = 0; r < 2; r++) {
+        const ripple = tag(
+          new THREE.Mesh(new THREE.RingGeometry(0.86, 0.91, 28), this.fountainStreamMat),
+        );
+        ripple.rotation.x = -Math.PI / 2;
+        ripple.position.y = 0.482 + r * 0.004;
+        ripple.castShadow = false;
+        ripple.userData.buildPhase = 'exterior';
+        fountainRipples.push(ripple);
+      }
+
+      // GPU-animated ballistic water droplet spray & splash mist
+      const spraySeed = b.position.x * 0.71 + b.position.z * 0.43;
+      const sprayPoints = new THREE.Points(
+        createFountainSprayGeometry(spraySeed),
+        this.fountainSprayMat,
+      );
+      sprayPoints.position.y = stiltLift;
+      sprayPoints.renderOrder = 3;
+      sprayPoints.visible = b.completed;
+      group.add(sprayPoints);
+      fountainSpray = sprayPoints;
 
       // Four warm corner garden lamp posts + cozy curved benches
       for (let i = 0; i < 4; i++) {
@@ -1682,8 +1935,9 @@ export class SettlementRenderer {
       }
     } else if (adaptation === 'mountain_stone') {
       // Deep buttressed granite retaining terrace so hillside stone-holds never float on mountain slopes
-      const retaining = tag(new THREE.Mesh(new THREE.CylinderGeometry(fpR * 1.04, fpR * 1.24, 1.38, 10), this.graniteMat));
-      retaining.position.y = -0.52;
+      // Positioned with top at y = 0.03 so it never z-fights with levelingPad (y = 0.10) or front steps (y = 0.23)
+      const retaining = tag(new THREE.Mesh(new THREE.CylinderGeometry(fpR * 1.15, fpR * 1.32, 1.38, 12), this.graniteMat));
+      retaining.position.y = -0.66;
       for (let i = 0; i < 4; i++) {
         const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
         const buttress = tag(new THREE.Mesh(new THREE.BoxGeometry(0.42, 1.15, 0.55), this.graniteMat));
@@ -1759,6 +2013,7 @@ export class SettlementRenderer {
       this.canvasSailMat,
       this.shrineCrystalMat,
       this.fountainWaterMat,
+      this.fountainStreamMat,
       this.ovenFireMat,
       this.ochreCanvasMat,
       this.tealTrimMat,
@@ -1821,6 +2076,8 @@ export class SettlementRenderer {
       wheelMesh,
       rotorMesh,
       fountainJet,
+      fountainRipples,
+      fountainSpray,
       swayPart,
       chimneySmokes: chimneySmokes.length > 0 ? chimneySmokes : undefined,
     };
@@ -1899,11 +2156,12 @@ export class SettlementRenderer {
     }
 
     // 2. Leveling Land (18-36%): graded earthen terrace pad + leveling pegs & soil mounds
+    //    Top rests at y = 0.10 so front stone steps (y = 0.23) and plinths never z-fight against it.
     const levelingPad = new THREE.Mesh(
       new THREE.CylinderGeometry(r * 1.12, r * 1.24, 0.24, 16),
       this.earthPadMat,
     );
-    levelingPad.position.y = 0.04;
+    levelingPad.position.y = -0.02;
     levelingPad.receiveShadow = true;
     levelingPad.userData.selectionTarget = { kind: 'building', id: b.id };
 
@@ -2256,6 +2514,7 @@ export class SettlementRenderer {
       this.bellRoofGeo,
       this.acornSiloGeo,
       this.gableRoofGeo,
+      this.fountainBowlGeo,
       this.sharedFlameGeo,
     ]);
     const fireGroups = new Set<THREE.Object3D>(this.hearths.map((h) => h.fire.group));
@@ -2293,6 +2552,8 @@ export class SettlementRenderer {
     this.brickMat.dispose();
     this.glassMat.dispose();
     this.fountainWaterMat.dispose();
+    this.fountainStreamMat.dispose();
+    this.fountainSprayMat.dispose();
     this.canvasSailMat.dispose();
     this.stoneMat.dispose();
     this.windowMat.dispose();

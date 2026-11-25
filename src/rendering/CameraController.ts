@@ -30,9 +30,9 @@ export class CameraController {
   readonly controls: OrbitControls;
   cinematicDrift = false;
 
-  private softBoundaryRadius = 140;
-  private maxBoundaryRadius = 158;
-  private worldSize = 640;
+  private softBoundaryRadius = 504;
+  private maxBoundaryRadius = 560;
+  private worldSize = 1120;
   private mode: CameraMode = 'world';
   private readonly keys = new Set<string>();
   private desiredTarget: THREE.Vector3 | null = null;
@@ -67,7 +67,7 @@ export class CameraController {
     this.controls.maxPolarAngle = Math.PI * 0.468;
     this.controls.minPolarAngle = 0.18;
     this.controls.minDistance = 2.6;
-    this.controls.maxDistance = 760;
+    this.controls.maxDistance = 1550;
     this.controls.panSpeed = 0.9;
     this.controls.rotateSpeed = 0.65;
     this.controls.zoomSpeed = 0.95;
@@ -128,9 +128,9 @@ export class CameraController {
   /** Scales soft circular exploration boundaries and zoom ceiling to match the current world size. */
   setWorldSize(worldSize: number): void {
     this.worldSize = worldSize;
-    this.softBoundaryRadius = worldSize * 0.44;
+    this.softBoundaryRadius = worldSize * 0.45;
     this.maxBoundaryRadius = worldSize * 0.5;
-    this.controls.maxDistance = Math.max(240, worldSize * 1.22);
+    this.controls.maxDistance = Math.max(320, worldSize * 1.38);
   }
 
   getMode(): CameraMode {
@@ -227,12 +227,12 @@ export class CameraController {
       this.exitCreaturePov(false);
     }
     this.followProvider = null;
-    // Zoom out to a sweeping high-altitude country-map vantage showing all regions at once
-    this.desiredTarget = new THREE.Vector3(0, 4, 0);
+    // Frame the sea in the foreground (+Z), amorphous heartland in the middle, and craggy alpine range in the back (-Z)
+    this.desiredTarget = new THREE.Vector3(0, 10, -25);
     this.desiredPosition = new THREE.Vector3(
-      this.worldSize * 0.42,
-      this.worldSize * 0.68,
-      this.worldSize * 0.62,
+      this.worldSize * 0.14,
+      this.worldSize * 0.58,
+      this.worldSize * 0.78,
     );
   }
 
@@ -272,7 +272,7 @@ export class CameraController {
 
     // 3. Keyboard WASD / Arrow panning relative to camera yaw (scales smoothly with zoom altitude)
     const camDist = this.camera.position.distanceTo(this.controls.target);
-    const panSpeed = (28 + camDist * 0.45) * dt;
+    const panSpeed = (32 + camDist * 0.52) * dt;
     const forward = new THREE.Vector3();
     this.camera.getWorldDirection(forward);
     forward.y = 0;

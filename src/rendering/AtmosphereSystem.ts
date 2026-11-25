@@ -3,7 +3,7 @@ import type { DivineEffectVisual } from '@core/Types';
 import type { WorldState } from '@simulation/WorldState';
 import type { SkyLightingState } from './WaterShader';
 
-export const DIVINE_BEAM_HEIGHT = 1600;
+export const DIVINE_BEAM_HEIGHT = 2200;
 
 export interface DivineBeamVisual {
   readonly group: THREE.Group;
@@ -230,7 +230,7 @@ export class AtmosphereSystem {
     shadowMapSize: number,
     softParticleTex?: THREE.Texture,
   ) {
-    this.fog = new THREE.FogExp2(0xc4dac9, 0.00125);
+    this.fog = new THREE.FogExp2(0xc4dac9, 0.00068);
     this.scene.fog = this.fog;
 
     // Infinite-horizon Procedural Sky Dome (tracks camera XZ each frame)
@@ -242,7 +242,7 @@ export class AtmosphereSystem {
       uStarIntensity: { value: 0 },
     };
 
-    const skyGeo = new THREE.SphereGeometry(3200, 32, 20);
+    const skyGeo = new THREE.SphereGeometry(5800, 32, 20);
     const skyMat = new THREE.ShaderMaterial({
       vertexShader: SKY_VERTEX_SHADER,
       fragmentShader: SKY_FRAGMENT_SHADER,
@@ -269,8 +269,8 @@ export class AtmosphereSystem {
     this.sunLight.castShadow = true;
     this.sunLight.shadow.mapSize.set(shadowMapSize, shadowMapSize);
     this.sunLight.shadow.camera.near = 10;
-    this.sunLight.shadow.camera.far = 520;
-    const d = 145;
+    this.sunLight.shadow.camera.far = 880;
+    const d = 175;
     this.shadowTexelStep = (d * 2) / Math.max(256, shadowMapSize);
     this.sunLight.shadow.camera.left = -d;
     this.sunLight.shadow.camera.right = d;
@@ -293,9 +293,9 @@ export class AtmosphereSystem {
     this.weatherPositions = new Float32Array(weatherCount * 3);
     for (let i = 0; i < weatherCount; i++) {
       const a = Math.random() * Math.PI * 2;
-      const r = Math.sqrt(Math.random()) * 98;
+      const r = Math.sqrt(Math.random()) * 128;
       this.weatherPositions[i * 3] = Math.cos(a) * r;
-      this.weatherPositions[i * 3 + 1] = Math.random() * 44;
+      this.weatherPositions[i * 3 + 1] = Math.random() * 68;
       this.weatherPositions[i * 3 + 2] = Math.sin(a) * r;
     }
     const weatherGeo = new THREE.BufferGeometry();
@@ -319,7 +319,7 @@ export class AtmosphereSystem {
     const fireflyPos = new Float32Array(fireflyCount * 3);
     for (let i = 0; i < fireflyCount; i++) {
       const a = Math.random() * Math.PI * 2;
-      const r = Math.sqrt(Math.random()) * 78;
+      const r = Math.sqrt(Math.random()) * 96;
       const fx = Math.cos(a) * r;
       const fy = 1.4 + Math.random() * 6.8;
       const fz = Math.sin(a) * r;
@@ -406,7 +406,7 @@ export class AtmosphereSystem {
     const shadowFocusX = Math.round(focusX / snap) * snap;
     const shadowFocusZ = Math.round(focusZ / snap) * snap;
     this.sunLight.target.position.set(shadowFocusX, 0, shadowFocusZ);
-    this.sunLight.position.set(shadowFocusX, 0, shadowFocusZ).addScaledVector(lightDir, 145);
+    this.sunLight.position.set(shadowFocusX, 0, shadowFocusZ).addScaledVector(lightDir, 280);
     this.lightDirState.copy(lightDir);
     this.currentDaylight = daylight;
     this.currentIsWinter = world.season === 'winter';
@@ -456,15 +456,15 @@ export class AtmosphereSystem {
     this.fog.color.copy(this.skyUniforms.uHorizonColor.value);
     const baseFog =
       world.weather === 'mist'
-        ? 0.0072
+        ? 0.0056
         : world.weather === 'storm'
-          ? 0.005
+          ? 0.0042
           : world.weather === 'rain'
-            ? 0.0038
-            : 0.00125;
+            ? 0.0028
+            : 0.00068;
     // Relax atmospheric haze smoothly when zoomed high out to the country-map Overview
     const camY = camera ? camera.position.y : 30;
-    const altitudeClear = 1 - THREE.MathUtils.smoothstep(camY, 85, 360) * 0.68;
+    const altitudeClear = 1 - THREE.MathUtils.smoothstep(camY, 120, 620) * 0.74;
     const targetFog = baseFog * altitudeClear;
     this.fog.density += (targetFog - this.fog.density) * Math.min(1, dt * 1.8);
 
@@ -557,13 +557,13 @@ export class AtmosphereSystem {
 
     this.weatherMat.opacity += (targetOpacity - this.weatherMat.opacity) * Math.min(1, dt * 2.5);
 
-    const wrapRadius = 98;
+    const wrapRadius = 128;
     for (let i = 0; i < posAttr.count; i++) {
       let x = this.weatherPositions[i * 3] + windX * dt;
       let y = this.weatherPositions[i * 3 + 1] - fallSpeed * dt;
       let z = this.weatherPositions[i * 3 + 2] + Math.sin(world.elapsedSeconds + i) * 0.28 * dt;
 
-      if (y < 0) y = 44;
+      if (y < 0) y = 68;
       const rSq = x * x + z * z;
       if (rSq > wrapRadius * wrapRadius) {
         const inv = wrapRadius / Math.sqrt(rSq);

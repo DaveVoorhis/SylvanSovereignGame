@@ -46,13 +46,13 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
       [140, 120],
       [-260, 180],
       [420, -390],
-      [-520, -520],
+      [-780, -780],
     ];
     for (const [x, z] of sampleCoords) {
       const h = world.terrain.getHeightAt(x, z);
       expect(Number.isFinite(h)).toBe(true);
       expect(h).toBeGreaterThan(-6);
-      expect(h).toBeLessThan(56);
+      expect(h).toBeLessThan(145);
     }
 
     // Expanded world has playableRadius ~151: (70, 70) is well inside, while a corner at 0.8*R (hypot ~1.13*R) is outside
@@ -206,23 +206,51 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     if (!walker) return;
 
     // 1. Direct the creature straight across a building and confirm it walks around without clipping
-    const bRadius = getBuildingCollisionRadius(building.type);
     const creatureR = Math.max(0.26, walker.def.bodyScale * 0.36);
-    walker.x = building.position.x - (bRadius + 3.2);
-    walker.z = building.position.z;
+    const allObs = world.obstacles.getObstacles();
+    const isSpotClear = (px: number, pz: number) =>
+      world.terrain.isWalkable(px, pz, false) &&
+      allObs.every((o) => Math.hypot(px - o.x, pz - o.z) > o.radius + creatureR + 0.8);
+    let testBuilding = building;
+    let dirX = 1;
+    let dirZ = 0;
+    outerBuilding: for (const cand of settlement.buildings) {
+      const r = getBuildingCollisionRadius(cand.type);
+      for (const [dx, dz] of [
+        [1, 0],
+        [0, 1],
+        [-1, 0],
+        [0, -1],
+      ] as const) {
+        if (
+          isSpotClear(cand.position.x - dx * (r + 3.2), cand.position.z - dz * (r + 3.2)) &&
+          isSpotClear(cand.position.x + dx * (r + 3.2), cand.position.z + dz * (r + 3.2))
+        ) {
+          testBuilding = cand;
+          dirX = dx;
+          dirZ = dz;
+          break outerBuilding;
+        }
+      }
+    }
+    const bRadius = getBuildingCollisionRadius(testBuilding.type);
+    walker.x = testBuilding.position.x - dirX * (bRadius + 3.2);
+    walker.z = testBuilding.position.z - dirZ * (bRadius + 3.2);
     walker.activity = 'socialising';
     walker.actionTimer = 30;
-    walker.targetX = building.position.x + (bRadius + 3.2);
-    walker.targetZ = building.position.z;
+    walker.targetX = testBuilding.position.x + dirX * (bRadius + 3.2);
+    walker.targetZ = testBuilding.position.z + dirZ * (bRadius + 3.2);
 
     let minBuildingDist = Infinity;
     for (let i = 0; i < 180; i++) {
       world.step(0.08);
-      const d = Math.hypot(walker.x - building.position.x, walker.z - building.position.z);
+      const d = Math.hypot(walker.x - testBuilding.position.x, walker.z - testBuilding.position.z);
       if (d < minBuildingDist) minBuildingDist = d;
     }
     expect(minBuildingDist).toBeGreaterThanOrEqual(bRadius + creatureR - 0.05);
-    expect(walker.x).toBeGreaterThan(building.position.x + bRadius);
+    const progressAlong =
+      (walker.x - testBuilding.position.x) * dirX + (walker.z - testBuilding.position.z) * dirZ;
+    expect(progressAlong).toBeGreaterThan(bRadius);
 
     // 2. Direct the creature straight across a standing forest tree trunk and confirm it curves around
     const treeObs = world.obstacles
@@ -494,11 +522,12 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
         [75, -40],
         [-280, 220],
         [480, -480],
+        [760, -720],
       ]) {
         const h = w.terrain.getHeightAt(x, z);
         expect(Number.isFinite(h)).toBe(true);
         expect(h).toBeGreaterThan(-6);
-        expect(h).toBeLessThan(56);
+        expect(h).toBeLessThan(145);
       }
     }
   });
@@ -668,26 +697,70 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
 
   it('generates an expanded world with varied landforms, waterways, and diverse biomes', () => {
     const world = new WorldState(new EventBus(), { seed: 20260501 });
-    expect(world.config.worldSize).toBeGreaterThanOrEqual(600);
-    expect(world.terrain.playableRadius).toBeGreaterThan(280);
-    expect(world.terrain.ponds.length).toBeGreaterThanOrEqual(2);
+    expect(world.config.worldSize).toBeGreaterThanOrEqual(1000);
+    expect(world.terrain.playableRadius).toBeGreaterThan(480);
+    expect(world.terrain.ponds.length).toBeGreaterThanOrEqual(3);
 
     const observedBiomes = new Set<string>();
     let minH = Infinity;
     let maxH = -Infinity;
+    let maxAlpineSlope = 0;
+    let prairieSlopeSum = 0;
+    let prairieSampleCount = 0;
     const r = world.terrain.playableRadius;
-    for (let x = -r; x <= r; x += 8) {
-      for (let z = -r; z <= r; z += 8) {
+    for (let x = -r; x <= r; x += 12) {
+      for (let z = -r; z <= r; z += 12) {
         if (!world.terrain.isWithinPlayableArea(x, z)) continue;
         const h = world.terrain.getHeightAt(x, z);
         if (h < minH) minH = h;
         if (h > maxH) maxH = h;
-        observedBiomes.add(world.terrain.getBiomeAt(x, z));
+        const biome = world.terrain.getBiomeAt(x, z);
+        observedBiomes.add(biome);
+        if (biome === 'alpine_crag') {
+          const slope = world.terrain.getSlopeAt(x, z);
+          if (slope > maxAlpineSlope) maxAlpineSlope = slope;
+        } else if (biome === 'prairie') {
+          prairieSlopeSum += world.terrain.getSlopeAt(x, z);
+          prairieSampleCount++;
+        }
       }
     }
 
-    // Dramatic country-scale topographic relief from deep ocean floor up to snowcapped alpine peaks
-    expect(maxH - minH).toBeGreaterThan(22);
+    // Soaring craggy alpine relief from deep ocean floor up to jagged snowcapped peaks
+    expect(maxH).toBeGreaterThanOrEqual(55);
+    expect(maxH - minH).toBeGreaterThan(58);
+    expect(maxAlpineSlope).toBeGreaterThanOrEqual(0.32);
+
+    // Flat, wide-open treeless grassy prairie
+    expect(prairieSampleCount).toBeGreaterThan(25);
+    expect(prairieSlopeSum / prairieSampleCount).toBeLessThan(0.08);
+    const prairieTrees = world.terrain.trees.filter(
+      (t) => world.terrain.getBiomeAt(t.x, t.z) === 'prairie',
+    );
+    expect(prairieTrees.length).toBe(0);
+
+    // Arid sandy desert free of trees and woodland undergrowth
+    const desertTrees = world.terrain.trees.filter(
+      (t) => world.terrain.getBiomeAt(t.x, t.z) === 'desert',
+    );
+    const desertUndergrowth = world.terrain.undergrowth.filter(
+      (u) => world.terrain.getBiomeAt(u.x, u.z) === 'desert',
+    );
+    expect(desertTrees.length).toBe(0);
+    expect(desertUndergrowth.length).toBe(0);
+
+    // Verdant lush forests packed with trees and woodland undergrowth
+    const forestTrees = world.terrain.trees.filter((t) => {
+      const b = world.terrain.getBiomeAt(t.x, t.z);
+      return b === 'deep_woods' || b === 'moss_hollow' || b === 'riverbank';
+    });
+    const forestUndergrowth = world.terrain.undergrowth.filter((u) => {
+      const b = world.terrain.getBiomeAt(u.x, u.z);
+      return b === 'deep_woods' || b === 'moss_hollow' || b === 'riverbank';
+    });
+    expect(forestTrees.length).toBeGreaterThanOrEqual(900);
+    expect(forestUndergrowth.length).toBeGreaterThanOrEqual(800);
+
     // Extensive biome diversity spanning seashore, desert, prairie, forest, mountains, and riverside
     expect(observedBiomes.size).toBeGreaterThanOrEqual(8);
     expect(observedBiomes.has('water')).toBe(true);
@@ -842,5 +915,180 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     expect(sampleYoung.lifeStage).toBe('young');
     expect(sampleAdult.lifeStage).toBe('adult');
     expect(sampleYoung.getSizeScale()).toBeLessThan(sampleAdult.getSizeScale() * 0.6);
+  });
+
+  it('frames the world with craggy impassable mountains in back, impassable sea in front, settleable slopes/shores, and amorphous interior biomes', () => {
+    const seeds = [20260501, 424242, 8675309];
+    for (const seed of seeds) {
+      const world = new WorldState(new EventBus(), { seed, initialSettlements: 6 });
+      const t = world.terrain;
+      const backZ = -t.halfSize * 0.76;
+      const frontZ = t.halfSize * 0.76;
+
+      // 1. Back (-Z) across the map is a continuous craggy alpine wall that is ultimately impassable
+      for (const x of [-200, 0, 200]) {
+        const h = t.getHeightAt(x, backZ);
+        expect(h).toBeGreaterThanOrEqual(29);
+        expect(t.getBiomeAt(x, backZ)).toBe('alpine_crag');
+        expect(t.isImpassableMountainAt(x, backZ)).toBe(true);
+        expect(t.isWalkable(x, backZ, false)).toBe(false);
+        expect(t.isWalkable(x, backZ, true)).toBe(false);
+        expect(t.canEmigrantTraverse(x, backZ)).toBe(false);
+      }
+
+      // 2. Front (+Z) across the map is open ocean sea that is ultimately impassable
+      for (const x of [-200, 0, 200]) {
+        const h = t.getHeightAt(x, frontZ);
+        expect(h).toBeLessThan(t.waterLevel);
+        expect(t.getBiomeAt(x, frontZ)).toBe('water');
+        expect(t.isDeepSeaAt(x, frontZ)).toBe(true);
+        expect(t.isWalkable(x, frontZ, false)).toBe(false);
+        expect(t.isWalkable(x, frontZ, true)).toBe(false);
+        expect(t.canEmigrantTraverse(x, frontZ)).toBe(false);
+      }
+
+      // 3. Populations can settle on mountain edges/slopes AND on the seashore, never in impassable bounds
+      const adaptations = new Set(world.settlements.map((s) => s.adaptation));
+      expect(adaptations.has('mountain_stone')).toBe(true);
+      expect(adaptations.has('coastal_harbor')).toBe(true);
+      for (const s of world.settlements) {
+        expect(t.isDeepSeaAt(s.center.x, s.center.z)).toBe(false);
+        expect(t.isImpassableMountainAt(s.center.x, s.center.z)).toBe(false);
+        expect(t.isWalkable(s.center.x, s.center.z, false)).toBe(true);
+      }
+
+      // 4. Between the mountains and sea lie amorphous forests, prairies, and deserts cut by rivers & lakes
+      const midBiomes = new Set<string>();
+      for (let x = -340; x <= 340; x += 18) {
+        for (let z = -200; z <= 200; z += 18) {
+          midBiomes.add(t.getBiomeAt(x, z));
+        }
+      }
+      expect(midBiomes.has('deep_woods')).toBe(true);
+      expect(midBiomes.has('prairie')).toBe(true);
+      expect(midBiomes.has('desert')).toBe(true);
+      expect(midBiomes.has('water')).toBe(true);
+      expect(t.ponds.length).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it('forms a dendritic tree-shaped river watershed with streams -> tributaries -> widening trunk -> single sea mouth', () => {
+    const seeds = [20260501, 424242, 8675309, 1337, 271828];
+    for (const seed of seeds) {
+      const terrain = new TerrainMap({ ...DEFAULT_WORLD_CONFIG, seed });
+      const primaries = terrain.riverBranches.filter((b) => b.order === 2);
+      const secondaries = terrain.riverBranches.filter((b) => b.order === 1);
+      const primaryIds = new Set(primaries.map((b) => b.id));
+
+      // Tree hierarchy: multiple Order-2 primary boughs feeding the trunk & Order-1 twigs feeding boughs
+      expect(primaries.length).toBeGreaterThanOrEqual(4);
+      expect(secondaries.length).toBeGreaterThanOrEqual(5);
+
+      // Primary tributaries fan out across BOTH sides of the main trunk
+      const upstreamAngle = terrain.riverAngle + Math.PI;
+      let leftBoughs = 0;
+      let rightBoughs = 0;
+      for (const b of primaries) {
+        expect(b.parentId).toBeNull();
+        let diff = b.angle - upstreamAngle;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        if (diff > 0) leftBoughs++;
+        else rightBoughs++;
+        // Acute upstream V-angle (never pointing backward toward the front sea)
+        expect(Math.abs(diff)).toBeGreaterThan(0.2);
+        expect(Math.abs(diff)).toBeLessThan(1.15);
+      }
+      expect(leftBoughs).toBeGreaterThanOrEqual(2);
+      expect(rightBoughs).toBeGreaterThanOrEqual(2);
+
+      // Every secondary stream links cleanly to an existing primary tributary and is narrower than it
+      const primaryById = new Map(primaries.map((b) => [b.id, b]));
+      for (const s of secondaries) {
+        expect(s.parentId).not.toBeNull();
+        expect(primaryIds.has(s.parentId!)).toBe(true);
+        const parent = primaryById.get(s.parentId!)!;
+        expect(s.startHalfWidth).toBeLessThan(parent.startHalfWidth);
+      }
+
+      // Every branch tapers narrower upstream, carves water along its course, flows downstream,
+      // and terminates inland (never leaking into the front sea)
+      let primarySinuositySum = 0;
+      for (const b of terrain.riverBranches) {
+        expect(b.startHalfWidth).toBeGreaterThan(b.endHalfWidth);
+        expect(terrain.getCoastSignedDistance(b.originX, b.originZ)).toBeGreaterThan(30);
+        expect(terrain.getCoastSignedDistance(b.endX, b.endZ)).toBeGreaterThan(30);
+
+        // Confluence & midpoint lie below waterLevel
+        expect(terrain.getHeightAt(b.originX, b.originZ)).toBeLessThan(terrain.waterLevel);
+        const mid = terrain.getRiverBranchPoint(b.id, b.length * 0.5)!;
+        expect(mid).not.toBeNull();
+        expect(terrain.getHeightAt(mid.x, mid.z)).toBeLessThan(terrain.waterLevel);
+
+        // Downstream flow along the meandering branch aligns with its local downstream tangent
+        const downPt = terrain.getRiverBranchPoint(b.id, b.length * 0.45)!;
+        const upPt = terrain.getRiverBranchPoint(b.id, b.length * 0.55)!;
+        const tdx = downPt.x - upPt.x;
+        const tdz = downPt.z - upPt.z;
+        const tLen = Math.hypot(tdx, tdz) || 1;
+        const flow = terrain.getWaterFlowAt(mid.x, mid.z);
+        const downstreamDot = (flow.x * tdx + flow.z * tdz) / tLen;
+        expect(downstreamDot).toBeGreaterThan(0.5);
+
+        if (b.order === 2) {
+          const chord = Math.hypot(b.endX - b.originX, b.endZ - b.originZ) || 1;
+          primarySinuositySum += b.length / chord;
+        }
+      }
+      // Meandering tortuosity: rivers wind organically rather than cutting straight canals
+      expect(primarySinuositySum / primaries.length).toBeGreaterThan(1.025);
+      const trunkStart = terrain.getRiverCenterPoint(-terrain.halfSize * 0.45);
+      const trunkEnd = terrain.getRiverCenterPoint(terrain.halfSize * 0.35);
+      const trunkChord = Math.hypot(trunkEnd.x - trunkStart.x, trunkEnd.z - trunkStart.z) || 1;
+      let trunkArcLen = 0;
+      let maxLateralBend = 0;
+      let prevTrunk = trunkStart;
+      const cUx = (trunkEnd.x - trunkStart.x) / trunkChord;
+      const cUz = (trunkEnd.z - trunkStart.z) / trunkChord;
+      for (let k = 1; k <= 32; k++) {
+        const s = -terrain.halfSize * 0.45 + (k / 32) * (terrain.halfSize * 0.8);
+        const pt = terrain.getRiverCenterPoint(s);
+        trunkArcLen += Math.hypot(pt.x - prevTrunk.x, pt.z - prevTrunk.z);
+        const lat = Math.abs((pt.x - trunkStart.x) * -cUz + (pt.z - trunkStart.z) * cUx);
+        if (lat > maxLateralBend) maxLateralBend = lat;
+        prevTrunk = pt;
+      }
+      expect(trunkArcLen / trunkChord).toBeGreaterThan(1.035);
+      expect(maxLateralBend).toBeGreaterThan(22);
+
+      // Single main trunk empties into the front sea: sweeping parallel to the front coastline
+      // just inland of the beach (coastDist ~ 18m) crosses exactly ONE freshwater river mouth
+      const coastCos = Math.cos(terrain.coastAngle);
+      const coastSin = Math.sin(terrain.coastAngle);
+      let mouthSegments = 0;
+      let inMouth = false;
+      for (let alongCoast = -terrain.halfSize * 0.72; alongCoast <= terrain.halfSize * 0.72; alongCoast += 4) {
+        // Find point along this coastal meridian where coastDist ≈ 18m inland
+        let lo = -terrain.halfSize * 0.2;
+        let hi = terrain.halfSize * 0.9;
+        for (let iter = 0; iter < 12; iter++) {
+          const mid = (lo + hi) * 0.5;
+          const px = mid * coastCos - alongCoast * coastSin;
+          const pz = mid * coastSin + alongCoast * coastCos;
+          if (terrain.getCoastSignedDistance(px, pz) > 18) lo = mid;
+          else hi = mid;
+        }
+        const px = lo * coastCos - alongCoast * coastSin;
+        const pz = lo * coastSin + alongCoast * coastCos;
+        const isWater = terrain.getHeightAt(px, pz) < terrain.waterLevel;
+        if (isWater && !inMouth) {
+          mouthSegments++;
+          inMouth = true;
+        } else if (!isWater && inMouth) {
+          inMouth = false;
+        }
+      }
+      expect(mouthSegments).toBe(1);
+    }
   });
 });

@@ -2,7 +2,7 @@ export type QualityPreset = 'balanced' | 'high' | 'ultra';
 
 export interface WorldConfig {
   readonly seed: number;
-  readonly worldSize: number; // playable valley diameter in meters (centered at 0,0)
+  readonly worldSize: number; // playable continent diameter in meters (centered at 0,0)
   readonly terrainSegments: number;
   readonly waterLevel: number;
   readonly initialSettlements: number;
@@ -58,19 +58,19 @@ export const QUALITY_PRESETS: Record<QualityPreset, QualityConfig> = {
 
 export const DEFAULT_WORLD_CONFIG: WorldConfig = {
   seed: 20261123,
-  worldSize: 640,
-  terrainSegments: 224,
+  worldSize: 1120,
+  terrainSegments: 288,
   waterLevel: -0.65,
   initialSettlements: 1,
-  maxSettlements: 12,
+  maxSettlements: 16,
   initialCreaturesPerSettlement: 12,
-  maxPopulation: 340,
+  maxPopulation: 420,
   dayLengthSeconds: 110,
   daysPerSeason: 6,
-  treeCount: 1150,
-  undergrowthCount: 1250,
-  rockCount: 460,
-  grassBladeCount: 16000,
+  treeCount: 2800,
+  undergrowthCount: 3200,
+  rockCount: 950,
+  grassBladeCount: 36000,
   deityDecisionIntervalSec: 16,
   tradeIntervalSec: 12,
   diplomacyIntervalSec: 18,

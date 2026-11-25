@@ -74,7 +74,7 @@ export class SceneManager {
       46,
       window.innerWidth / window.innerHeight,
       0.22,
-      3800,
+      7200,
     );
     this.cameraController = new CameraController(this.camera, canvas);
 
@@ -141,7 +141,7 @@ export class SceneManager {
     }
     if (immediate) {
       this.cameraController.controls.target.set(founding.center.x, founding.groundY + 1.6, founding.center.z);
-      this.camera.position.set(founding.center.x + 22, founding.groundY + 18, founding.center.z + 26);
+      this.camera.position.set(founding.center.x + 14, founding.groundY + 18, founding.center.z + 30);
       this.cameraController.controls.update();
     } else {
       this.cameraController.flyTo(founding.center, founding.groundY + 1.6, 34);
@@ -161,13 +161,13 @@ export class SceneManager {
       const isPov = this.cameraController.isInCreaturePov();
       const focusDistance = this.cameraController.getFocusDistance();
       // Keep high-altitude country-map Overview crisp while preserving dreamy DOF up close
-      const overviewFactor = isPov ? 0 : THREE.MathUtils.smoothstep(focusDistance, 140, 420);
+      const overviewFactor = isPov ? 0 : THREE.MathUtils.smoothstep(focusDistance, 200, 680);
       this.dofPass.updateParams({
         focusDistance,
         focusRange: isPov ? 28 : Math.max(32, focusDistance * (0.72 + overviewFactor * 0.85)),
         maxBlur: isPov ? 0.011 : 0.0125 * (1 - overviewFactor * 0.82),
-        horizonFadeStart: isPov ? 220 : Math.max(460, focusDistance * 1.55),
-        horizonFadeEnd: isPov ? 520 : Math.max(1100, focusDistance * 2.85),
+        horizonFadeStart: isPov ? 320 : Math.max(760, focusDistance * 1.65),
+        horizonFadeEnd: isPov ? 920 : Math.max(2100, focusDistance * 3.15),
         horizonColor: sky.fogColor,
         isPov,
       });

@@ -66,24 +66,26 @@ function createForestFloor(size: number): PbrTextureSet {
   const [cBump, ctxBump] = createCanvas(size);
   const [cRough, ctxRough] = createCanvas(size);
 
-  ctxMap.fillStyle = '#52683b';
+  // Hue-neutral light organic micro-grain albedo so terrain vertex colors faithfully express
+  // verdant emerald forests, sunlit grassy prairies, arid golden sand dunes, and snowy alpine crags.
+  ctxMap.fillStyle = '#dfdfda';
   ctxMap.fillRect(0, 0, size, size);
   ctxBump.fillStyle = '#7f7f7f';
   ctxBump.fillRect(0, 0, size, size);
   ctxRough.fillStyle = '#dcdcdc';
   ctxRough.fillRect(0, 0, size, size);
 
-  for (let i = 0; i < size * 2.4; i++) {
+  for (let i = 0; i < size * 2.6; i++) {
     const x = hash2(i, 1, 7) * size;
     const y = hash2(i, 2, 7) * size;
     const r = size * (0.025 + hash2(i, 3, 7) * 0.055);
     const v = hash2(i, 4, 7);
     ctxMap.fillStyle =
-      v < 0.4
-        ? 'rgba(62, 92, 38, 0.24)'
-        : v < 0.78
-          ? 'rgba(98, 128, 56, 0.2)'
-          : 'rgba(84, 68, 44, 0.22)';
+      v < 0.38
+        ? 'rgba(186, 188, 182, 0.22)'
+        : v < 0.76
+          ? 'rgba(244, 244, 238, 0.2)'
+          : 'rgba(202, 198, 188, 0.18)';
     ctxMap.beginPath();
     ctxMap.arc(x, y, r, 0, Math.PI * 2);
     ctxMap.fill();
@@ -96,16 +98,16 @@ function createForestFloor(size: number): PbrTextureSet {
     const tone = hash2(i, 4, 11);
 
     if (tone < 0.34) {
-      ctxMap.fillStyle = `rgba(48, 76, 32, ${0.24 + tone * 0.42})`;
+      ctxMap.fillStyle = `rgba(174, 176, 170, ${0.18 + tone * 0.28})`;
     } else if (tone < 0.7) {
-      ctxMap.fillStyle = `rgba(82, 112, 48, ${0.22 + tone * 0.3})`;
+      ctxMap.fillStyle = `rgba(222, 224, 218, ${0.18 + tone * 0.24})`;
     } else if (tone < 0.87) {
-      ctxMap.fillStyle = 'rgba(88, 66, 42, 0.3)';
+      ctxMap.fillStyle = 'rgba(196, 192, 184, 0.22)';
     } else if (tone < 0.96) {
-      ctxMap.fillStyle = 'rgba(134, 154, 74, 0.3)';
+      ctxMap.fillStyle = 'rgba(248, 248, 244, 0.26)';
     } else {
       ctxMap.fillStyle =
-        hash2(i, 5, 11) > 0.5 ? 'rgba(248, 240, 198, 0.35)' : 'rgba(246, 206, 94, 0.32)';
+        hash2(i, 5, 11) > 0.5 ? 'rgba(255, 255, 250, 0.28)' : 'rgba(164, 162, 156, 0.24)';
     }
 
     ctxMap.beginPath();
@@ -113,13 +115,13 @@ function createForestFloor(size: number): PbrTextureSet {
     ctxMap.fill();
 
     const lum = Math.floor(86 + tone * 128);
-    ctxBump.fillStyle = `rgba(${lum},${lum},${lum},0.36)`;
+    ctxBump.fillStyle = `rgba(${lum},${lum},${lum},0.42)`;
     ctxBump.beginPath();
     ctxBump.arc(x, y, r, 0, Math.PI * 2);
     ctxBump.fill();
 
     const rough = Math.floor(182 + (1 - tone) * 62);
-    ctxRough.fillStyle = `rgba(${rough},${rough},${rough},0.3)`;
+    ctxRough.fillStyle = `rgba(${rough},${rough},${rough},0.34)`;
     ctxRough.beginPath();
     ctxRough.arc(x, y, r, 0, Math.PI * 2);
     ctxRough.fill();

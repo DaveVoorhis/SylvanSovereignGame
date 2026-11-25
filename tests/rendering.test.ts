@@ -16,6 +16,7 @@ import {
 import {
   createBerryBushGeo,
   createBirchCanopyGeo,
+  createCragSpireGeo,
   createCurvedBirchTrunkGeo,
   createCurvedGrassTuftGeo,
   createFernRosetteGeo,
@@ -123,6 +124,10 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     const boulder = createMossyBoulderGeo();
     assertValidGeometry(boulder, true);
     boulder.dispose();
+
+    const crag = createCragSpireGeo();
+    assertValidGeometry(crag, true);
+    crag.dispose();
 
     const fern = createFernRosetteGeo();
     assertValidGeometry(fern, true);
@@ -690,6 +695,94 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     expect(youngBody.scale.y).toBeGreaterThan(adultBody.scale.y * 0.85);
 
     creatureRenderer.dispose();
+    textures.dispose();
+  });
+
+  it('renders realistic multi-tiered water fountains (parabolic jets + droplet spray) and z-fighting-free cylindrical cottage steps', () => {
+    const world = new WorldState(new EventBus(), { seed: 774411, initialSettlements: 1 });
+    const settlement = world.settlements[0];
+    settlement.buildings.length = 0;
+    settlement.buildings.push(
+      {
+        id: 'test_realistic_fountain',
+        settlementId: settlement.id,
+        type: 'fountain_plaza',
+        position: { x: settlement.center.x + 8, z: settlement.center.z },
+        groundY: settlement.groundY,
+        rotation: 0,
+        progress: 100,
+        completed: true,
+      },
+      {
+        id: 'test_cylindrical_cottage',
+        settlementId: settlement.id,
+        type: 'burrow_cottage',
+        position: { x: settlement.center.x - 8, z: settlement.center.z },
+        groundY: settlement.groundY,
+        rotation: 0,
+        progress: 100,
+        completed: true,
+      },
+    );
+
+    const scene = new THREE.Scene();
+    const textures = createStubTextureLibrary();
+    const settlementRenderer = new SettlementRenderer(scene, world, textures);
+    settlementRenderer.update(0.05);
+
+    const fountainGroup = settlementRenderer.rootGroup.children.find(
+      (c) => c.userData.selectionTarget?.id === 'test_realistic_fountain',
+    );
+    expect(fountainGroup).toBeDefined();
+
+    let parabolicStreams = 0;
+    let dropletSprayCount = 0;
+    let solidWaterConeCount = 0;
+    fountainGroup!.traverse((obj) => {
+      if (obj instanceof THREE.Points) {
+        dropletSprayCount += obj.geometry.getAttribute('position').count;
+      } else if (obj instanceof THREE.Mesh) {
+        if (obj.geometry instanceof THREE.TubeGeometry) {
+          parabolicStreams++;
+        } else if (obj.geometry instanceof THREE.ConeGeometry) {
+          // Only tiny brass lantern caps are cones; water jets must never be solid blue cones
+          const mat = obj.material as THREE.MeshStandardMaterial;
+          if (mat.transparent || (mat.color && mat.color.b > mat.color.r * 1.2)) {
+            solidWaterConeCount++;
+          }
+        }
+      }
+    });
+    expect(parabolicStreams).toBe(14);
+    expect(dropletSprayCount).toBeGreaterThanOrEqual(80);
+    expect(solidWaterConeCount).toBe(0);
+
+    // Verify cylindrical house front doorstep sits strictly above the earthen leveling pad (no coplanar z-fighting)
+    const cottageGroup = settlementRenderer.rootGroup.children.find(
+      (c) => c.userData.selectionTarget?.id === 'test_cylindrical_cottage',
+    );
+    expect(cottageGroup).toBeDefined();
+    cottageGroup!.updateMatrixWorld(true);
+    const box = new THREE.Box3();
+    let padTopY = -Infinity;
+    let doorstepTopY = -Infinity;
+    cottageGroup!.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh) || !obj.visible) return;
+      if (!(obj.geometry instanceof THREE.CylinderGeometry)) return;
+      const params = obj.geometry.parameters;
+      box.setFromObject(obj);
+      const localTop = box.max.y - cottageGroup!.position.y;
+      if (params.radiusTop > 1.7 && localTop < 0.2) {
+        padTopY = Math.max(padTopY, localTop);
+      } else if (obj.position.z > 1.5 && params.radiusTop < 1.0) {
+        doorstepTopY = Math.max(doorstepTopY, localTop);
+      }
+    });
+    expect(padTopY).toBeGreaterThan(-1);
+    expect(doorstepTopY).toBeGreaterThan(-1);
+    expect(doorstepTopY - padTopY).toBeGreaterThanOrEqual(0.08);
+
+    settlementRenderer.dispose();
     textures.dispose();
   });
 });

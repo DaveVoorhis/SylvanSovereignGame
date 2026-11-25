@@ -717,6 +717,48 @@ export function createMossyBoulderGeo(): THREE.BufferGeometry {
 }
 
 /**
+ * Sharp, faceted bare-rock crag spire / sandstone outcrop for towering alpine peaks
+ * and arid desert formations (zero green moss tinting).
+ */
+export function createCragSpireGeo(): THREE.BufferGeometry {
+  const geo = new THREE.IcosahedronGeometry(0.95, 2);
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  const v = new THREE.Vector3();
+
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const dir = v.clone().normalize();
+    // Angular ridged rock fractures & chiseled cliff facets
+    const ridge1 = 1 - Math.abs(Math.sin(dir.x * 4.2 + dir.z * 3.1 + 1.3));
+    const ridge2 = 1 - Math.abs(Math.cos(dir.y * 5.0 - dir.x * 3.7 + 2.6));
+    const taper = dir.y > 0 ? 1 - dir.y * 0.34 : 1 + Math.abs(dir.y) * 0.16;
+    const yStretch = dir.y > 0 ? 1.55 : 0.72;
+    const disp = 0.78 + ridge1 * 0.3 + ridge2 * 0.18;
+    v.x *= disp * taper;
+    v.z *= disp * taper;
+    v.y *= disp * yStretch;
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+
+  const nonIndexed = geo.index ? geo.toNonIndexed() : geo;
+  if (nonIndexed !== geo) geo.dispose();
+  nonIndexed.computeVertexNormals();
+
+  const creviceCol = new THREE.Color(0x6e7378);
+  const faceCol = new THREE.Color(0xc8cdd0);
+  const crestCol = new THREE.Color(0xf4f6f7);
+  paintVertexColors(nonIndexed, (_x, y, _z, _nx, ny, _nz, out) => {
+    const lift = THREE.MathUtils.clamp((y + 0.6) * 0.42 + (ny * 0.5 + 0.5) * 0.45, 0, 1);
+    if (lift < 0.55) {
+      out.copy(creviceCol).lerp(faceCol, lift / 0.55);
+    } else {
+      out.copy(faceCol).lerp(crestCol, (lift - 0.55) / 0.45);
+    }
+  });
+  return nonIndexed;
+}
+
+/**
  * Lush multi-frond arching fern rosette with base-to-tip sunlit emerald gradient.
  */
 export function createFernRosetteGeo(): THREE.BufferGeometry {
@@ -1012,9 +1054,11 @@ export function createLotusBloomGeo(): THREE.BufferGeometry {
 export function createCurvedGrassTuftGeo(): THREE.BufferGeometry {
   const blades: THREE.BufferGeometry[] = [];
   const specs: [number, number, number, number, number][] = [
-    [0, 0, 0.56, 0.22, 0.0],
-    [0.06, 0.04, 0.46, 0.18, 2.1],
-    [-0.05, 0.05, 0.5, 0.2, 4.2],
+    [0, 0, 0.64, 0.24, 0.0],
+    [0.07, 0.04, 0.54, 0.2, 1.25],
+    [-0.06, 0.06, 0.58, 0.22, 2.5],
+    [0.05, -0.07, 0.52, 0.19, 3.8],
+    [-0.07, -0.04, 0.6, 0.23, 5.05],
   ];
 
   for (const [ox, oz, h, curveAmt, rotY] of specs) {
@@ -1029,7 +1073,7 @@ export function createCurvedGrassTuftGeo(): THREE.BufferGeometry {
       const t = s / segs;
       const bend = t * t * curveAmt;
       const y = t * h * (1 - t * 0.12);
-      const halfW = (1 - t * 0.92) * 0.048;
+      const halfW = (1 - t * 0.92) * 0.056;
 
       const cx = ox + ca * bend;
       const cz = oz + sa * bend;

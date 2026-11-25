@@ -1231,10 +1231,11 @@ export class CreatureAI {
    */
   private ensureReachableTarget(creature: Creature, world: WorldState): void {
     this.pushTargetOutsideObstacles(creature, world);
-    if (
-      creature.def.aerial ||
-      world.terrain.isWalkable(creature.targetX, creature.targetZ, creature.def.amphibious)
-    ) {
+    const isTargetOk = (tx: number, tz: number): boolean =>
+      creature.def.aerial
+        ? !world.terrain.isNaturalBoundBlocked(tx, tz)
+        : world.terrain.isWalkable(tx, tz, creature.def.amphibious);
+    if (isTargetOk(creature.targetX, creature.targetZ)) {
       return;
     }
 
@@ -1260,7 +1261,7 @@ export class CreatureAI {
           0.2,
           ang,
         );
-        if (world.terrain.isWalkable(safe.x, safe.z, creature.def.amphibious)) {
+        if (isTargetOk(safe.x, safe.z)) {
           creature.targetX = safe.x;
           creature.targetZ = safe.z;
           return;
@@ -1272,7 +1273,7 @@ export class CreatureAI {
     for (let t = 0.25; t <= 1.0; t += 0.25) {
       const px = baseX + (creature.x - baseX) * t;
       const pz = baseZ + (creature.z - baseZ) * t;
-      if (world.terrain.isWalkable(px, pz, creature.def.amphibious)) {
+      if (isTargetOk(px, pz)) {
         creature.targetX = px;
         creature.targetZ = pz;
         return;
@@ -1335,7 +1336,7 @@ export class CreatureAI {
         const stepOk = keepEmigrating
           ? world.terrain.canEmigrantTraverse(cx, cz)
           : world.terrain.isWalkable(cx, cz, creature.def.amphibious);
-        if (!creature.def.aerial && !stepOk) continue;
+        if (creature.def.aerial ? world.terrain.isNaturalBoundBlocked(cx, cz) : !stepOk) continue;
 
         // Verify midpoint is also walkable so the escape vector doesn't cross water
         const midX = creature.x + dx * (dist * 0.5);
@@ -1343,7 +1344,7 @@ export class CreatureAI {
         const midOk = keepEmigrating
           ? world.terrain.canEmigrantTraverse(midX, midZ)
           : world.terrain.isWalkable(midX, midZ, creature.def.amphibious);
-        if (!creature.def.aerial && !midOk) continue;
+        if (creature.def.aerial ? world.terrain.isNaturalBoundBlocked(midX, midZ) : !midOk) continue;
 
         const sep = world.obstacles.resolveCollisions(cx, cz, creatureR, 0, ang);
         if (sep.collided) continue;
@@ -1457,7 +1458,7 @@ export class CreatureAI {
               : isEmigrating
                 ? isFordingWater
                   ? 0.82
-                  : 1.22
+                  : 1.42
                 : 1.0;
 
       const step = Math.min(dist, creature.def.baseSpeed * speedMult * dt);
@@ -1786,14 +1787,13 @@ export class CreatureAI {
       nx = sep.x;
       nz = sep.z;
 
-      if (
-        creature.def.aerial ||
-        canTraverse(nx, nz)
-      ) {
+      const stepAllowed = (tx: number, tz: number): boolean =>
+        creature.def.aerial ? !world.terrain.isNaturalBoundBlocked(tx, tz) : canTraverse(tx, tz);
+      if (stepAllowed(nx, nz)) {
         creature.x = nx;
         creature.z = nz;
       } else {
-        // Detour around steep slopes or deep water (try perpendiculars, then wider back-out angles)
+        // Detour around steep slopes, deep sea, or impassable alpine peaks
         const baseDirAng = Math.atan2(dirZ, dirX);
         const fallbackAngles = [Math.PI * 0.5, -Math.PI * 0.5, 2.2, -2.2, Math.PI];
         let moved = false;
@@ -1801,7 +1801,7 @@ export class CreatureAI {
           const ang = baseDirAng + off;
           const detourX = creature.x + Math.cos(ang) * step;
           const detourZ = creature.z + Math.sin(ang) * step;
-          if (!canTraverse(detourX, detourZ)) continue;
+          if (!stepAllowed(detourX, detourZ)) continue;
           const altSep = world.obstacles.resolveCollisions(
             detourX,
             detourZ,
@@ -1809,7 +1809,7 @@ export class CreatureAI {
             altitude,
             creature.heading,
           );
-          if (canTraverse(altSep.x, altSep.z)) {
+          if (stepAllowed(altSep.x, altSep.z)) {
             creature.x = altSep.x;
             creature.z = altSep.z;
             moved = true;
@@ -1944,7 +1944,11 @@ export class CreatureAI {
         alt,
         c.heading,
       );
-      if (!c.def.aerial && !world.terrain.isWalkable(sep.x, sep.z, c.def.amphibious)) {
+      if (
+        c.def.aerial
+          ? world.terrain.isNaturalBoundBlocked(sep.x, sep.z)
+          : !world.terrain.isWalkable(sep.x, sep.z, c.def.amphibious)
+      ) {
         return { applied: false, x: c.x, z: c.z };
       }
       const movedSq = (sep.x - c.x) * (sep.x - c.x) + (sep.z - c.z) * (sep.z - c.z);

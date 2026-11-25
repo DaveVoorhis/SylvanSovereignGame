@@ -7,6 +7,7 @@ import type { WorldState } from '@simulation/WorldState';
 import {
   createBerryBushGeo,
   createBirchCanopyGeo,
+  createCragSpireGeo,
   createCurvedBirchTrunkGeo,
   createCurvedGrassTuftGeo,
   createFernRosetteGeo,
@@ -113,6 +114,42 @@ function enhanceBotanicalFoliageMaterial(
 }
 
 /**
+ * Enhances instanced grass tufts with rolling GPU wind waves across prairies and woodland glades.
+ */
+function enhanceGrassWindMaterial(
+  mat: THREE.MeshStandardMaterial,
+  uniforms: FoliageUniforms,
+): void {
+  mat.customProgramCacheKey = () => 'forest-prairie-grass-wind-v1';
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = uniforms.uTime;
+    shader.uniforms.uWindStrength = uniforms.uWindStrength;
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        uniform float uTime;
+        uniform float uWindStrength;`,
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        vec3 gOrigin = vec3(0.0);
+        #ifdef USE_INSTANCING
+          gOrigin = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
+        #endif
+        float tipMask = smoothstep(0.06, 0.72, position.y);
+        float wavePhase = uTime * (1.85 + uWindStrength * 1.55) + gOrigin.x * 0.11 + gOrigin.z * 0.085;
+        float gust = sin(wavePhase) * 0.62 + cos(wavePhase * 1.7 + gOrigin.z * 0.17) * 0.38;
+        float sway = gust * (0.095 + uWindStrength * 0.145) * tipMask;
+        transformed.x += sway;
+        transformed.z += sway * 0.58;`,
+      );
+  };
+}
+
+/**
  * High-resolution instanced woodland flora renderer:
  * realistic multi-branch ancient oaks, towering conifers, and graceful silver birches
  * clothed in volumetric alpha-cutout 3D botanical leaf/needle canopies with dappled shadows,
@@ -192,45 +229,45 @@ export class FloraRenderer {
     // Botanical alpha-cutout PBR foliage materials with dappled shadow depth materials
     this.oakFoliageMat = new THREE.MeshStandardMaterial({
       map: textures.oakLeafCluster,
-      color: 0x5c8f42,
+      color: 0x459234,
       roughness: 0.78,
       metalness: 0.01,
       alphaTest: 0.42,
       side: THREE.DoubleSide,
       vertexColors: true,
     });
-    enhanceBotanicalFoliageMaterial(this.oakFoliageMat, this.foliageUniforms, 0.11, 0.34);
+    enhanceBotanicalFoliageMaterial(this.oakFoliageMat, this.foliageUniforms, 0.11, 0.38);
 
     this.pineFoliageMat = new THREE.MeshStandardMaterial({
       map: textures.pineNeedleSpray,
-      color: 0x356947,
+      color: 0x266e3e,
       roughness: 0.84,
       metalness: 0.01,
       alphaTest: 0.38,
       side: THREE.DoubleSide,
       vertexColors: true,
     });
-    enhanceBotanicalFoliageMaterial(this.pineFoliageMat, this.foliageUniforms, 0.08, 0.22);
+    enhanceBotanicalFoliageMaterial(this.pineFoliageMat, this.foliageUniforms, 0.08, 0.26);
 
     this.birchFoliageMat = new THREE.MeshStandardMaterial({
       map: textures.birchLeafCluster,
-      color: 0x8cc256,
+      color: 0x7ac948,
       roughness: 0.72,
       metalness: 0.01,
       alphaTest: 0.4,
       side: THREE.DoubleSide,
       vertexColors: true,
     });
-    enhanceBotanicalFoliageMaterial(this.birchFoliageMat, this.foliageUniforms, 0.15, 0.44);
+    enhanceBotanicalFoliageMaterial(this.birchFoliageMat, this.foliageUniforms, 0.15, 0.48);
 
     // Lightweight atmospheric materials for the endless distant horizon woodland
     this.distantPineMat = new THREE.MeshStandardMaterial({
-      color: 0x315b40,
+      color: 0x235f39,
       roughness: 0.92,
       metalness: 0.0,
     });
     this.distantBroadleafMat = new THREE.MeshStandardMaterial({
-      color: 0x4b743a,
+      color: 0x3c7d31,
       roughness: 0.9,
       metalness: 0.0,
     });
@@ -252,11 +289,12 @@ export class FloraRenderer {
     });
 
     this.grassMat = new THREE.MeshStandardMaterial({
-      color: 0x628c3e,
-      roughness: 0.88,
+      color: 0x6ca33f,
+      roughness: 0.84,
       side: THREE.DoubleSide,
       vertexColors: true,
     });
+    enhanceGrassWindMaterial(this.grassMat, this.foliageUniforms);
     this.fernMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       roughness: 0.82,
@@ -447,56 +485,123 @@ export class FloraRenderer {
     const rng = world.rng.fork();
     this.buildHorizonForestRing(rng, dummy, tint);
 
-    // 4. Sculpted Mossy Boulders + Companion Pebbles
+    // 4. Sculpted Mossy Woodland Boulders vs. Sharp Faceted Alpine Crags & Desert Sandstone Outcrops
     if (world.terrain.rocks.length > 0) {
-      const rockGeo = createMossyBoulderGeo();
-      const rockMat = new THREE.MeshStandardMaterial({
-        map: textures.stone.map,
-        bumpMap: textures.stone.bumpMap,
-        bumpScale: 0.16,
-        roughness: 0.88,
-        vertexColors: true,
-      });
-      this.disposables.push(rockGeo, rockMat);
+      const mossyRockSpots: Array<{ spot: (typeof world.terrain.rocks)[number]; biome: string }> = [];
+      const cragRockSpots: Array<{ spot: (typeof world.terrain.rocks)[number]; biome: string }> = [];
 
-      const rocks = new THREE.InstancedMesh(rockGeo, rockMat, world.terrain.rocks.length * 2);
-      rocks.castShadow = true;
-      rocks.receiveShadow = true;
-
-      world.terrain.rocks.forEach((r, i) => {
-        dummy.position.set(r.x, r.y + 0.14 * r.scale, r.z);
-        dummy.rotation.set(r.variant * 0.25, r.rotation, r.variant * 0.18);
-        dummy.scale.set(r.scale * 1.24, r.scale * 0.72, r.scale * 1.08);
-        dummy.updateMatrix();
-        rocks.setMatrixAt(i * 2, dummy.matrix);
-
+      for (const r of world.terrain.rocks) {
         const rockBiome = world.terrain.getBiomeAt(r.x, r.z);
-        if (rockBiome === 'desert') {
-          tint.setHex(0xd48e58);
-        } else if (rockBiome === 'seashore') {
-          tint.setHex(0xc9c4b6);
-        } else if (rockBiome === 'alpine_crag') {
-          tint.setHex(0xd6dfe3);
-        } else if (rockBiome === 'rocky_ridge') {
-          tint.setHex(0xb1b8b4);
-        } else if (rockBiome === 'moss_hollow' || rockBiome === 'deep_woods') {
-          tint.setHex(0x8fa387);
+        if (rockBiome === 'alpine_crag' || rockBiome === 'rocky_ridge' || rockBiome === 'desert') {
+          cragRockSpots.push({ spot: r, biome: rockBiome });
         } else {
-          tint.setHex(0xc4c7be);
+          mossyRockSpots.push({ spot: r, biome: rockBiome });
         }
-        rocks.setColorAt(i * 2, tint);
+      }
 
-        const px = r.x + Math.cos(r.rotation) * r.scale * 0.95;
-        const pz = r.z + Math.sin(r.rotation) * r.scale * 0.95;
-        const py = world.terrain.getHeightAt(px, pz);
-        dummy.position.set(px, py + 0.08 * r.scale, pz);
-        dummy.rotation.set(0.15, r.rotation + 1.4, 0.1);
-        dummy.scale.set(r.scale * 0.48, r.scale * 0.34, r.scale * 0.44);
-        dummy.updateMatrix();
-        rocks.setMatrixAt(i * 2 + 1, dummy.matrix);
-        rocks.setColorAt(i * 2 + 1, tint);
-      });
-      this.group.add(rocks);
+      if (mossyRockSpots.length > 0) {
+        const rockGeo = createMossyBoulderGeo();
+        const rockMat = new THREE.MeshStandardMaterial({
+          map: textures.stone.map,
+          bumpMap: textures.stone.bumpMap,
+          bumpScale: 0.16,
+          roughness: 0.88,
+          vertexColors: true,
+        });
+        this.disposables.push(rockGeo, rockMat);
+
+        const rocks = new THREE.InstancedMesh(rockGeo, rockMat, mossyRockSpots.length * 2);
+        rocks.castShadow = true;
+        rocks.receiveShadow = true;
+
+        mossyRockSpots.forEach(({ spot: r, biome }, i) => {
+          dummy.position.set(r.x, r.y + 0.14 * r.scale, r.z);
+          dummy.rotation.set(r.variant * 0.25, r.rotation, r.variant * 0.18);
+          dummy.scale.set(r.scale * 1.24, r.scale * 0.72, r.scale * 1.08);
+          dummy.updateMatrix();
+          rocks.setMatrixAt(i * 2, dummy.matrix);
+
+          if (biome === 'seashore') {
+            tint.setHex(0xc9c4b6);
+          } else if (biome === 'moss_hollow' || biome === 'deep_woods') {
+            tint.setHex(0x88a87c);
+          } else {
+            tint.setHex(0xbec4b8);
+          }
+          rocks.setColorAt(i * 2, tint);
+
+          const px = r.x + Math.cos(r.rotation) * r.scale * 0.95;
+          const pz = r.z + Math.sin(r.rotation) * r.scale * 0.95;
+          const py = world.terrain.getHeightAt(px, pz);
+          dummy.position.set(px, py + 0.08 * r.scale, pz);
+          dummy.rotation.set(0.15, r.rotation + 1.4, 0.1);
+          dummy.scale.set(r.scale * 0.48, r.scale * 0.34, r.scale * 0.44);
+          dummy.updateMatrix();
+          rocks.setMatrixAt(i * 2 + 1, dummy.matrix);
+          rocks.setColorAt(i * 2 + 1, tint);
+        });
+        this.group.add(rocks);
+      }
+
+      if (cragRockSpots.length > 0) {
+        const cragGeo = createCragSpireGeo();
+        const cragMat = new THREE.MeshStandardMaterial({
+          map: textures.stone.map,
+          bumpMap: textures.stone.bumpMap,
+          bumpScale: 0.26,
+          roughness: 0.92,
+          vertexColors: true,
+        });
+        this.disposables.push(cragGeo, cragMat);
+
+        const crags = new THREE.InstancedMesh(cragGeo, cragMat, cragRockSpots.length * 2);
+        crags.castShadow = true;
+        crags.receiveShadow = true;
+
+        cragRockSpots.forEach(({ spot: r, biome }, i) => {
+          if (biome === 'alpine_crag') {
+            // Tall jagged dark-granite & snow-dusted alpine crag spires
+            const hMult = 1.65 + (r.variant % 3) * 0.45;
+            dummy.position.set(r.x, r.y - 0.18 * r.scale, r.z);
+            dummy.rotation.set((r.variant - 1) * 0.14, r.rotation, ((i % 3) - 1) * 0.12);
+            dummy.scale.set(r.scale * 1.18, r.scale * hMult, r.scale * 1.05);
+            tint.setHex(r.y > 42 ? 0xc8d2da : 0x6f7982);
+          } else if (biome === 'desert') {
+            // Wind-carved terracotta sandstone outcrops & hoodoos — zero green moss
+            const hMult = 0.82 + (r.variant % 3) * 0.26;
+            dummy.position.set(r.x, r.y - 0.12 * r.scale, r.z);
+            dummy.rotation.set(0.06, r.rotation, -0.05);
+            dummy.scale.set(r.scale * 1.42, r.scale * hMult, r.scale * 1.24);
+            tint.setHex(i % 2 === 0 ? 0xd99b62 : 0xc67c47);
+          } else {
+            // Angular granite ridge outcrops
+            const hMult = 1.15 + (r.variant % 3) * 0.3;
+            dummy.position.set(r.x, r.y - 0.14 * r.scale, r.z);
+            dummy.rotation.set(r.variant * 0.18, r.rotation, r.variant * 0.12);
+            dummy.scale.set(r.scale * 1.22, r.scale * hMult, r.scale * 1.08);
+            tint.setHex(0x889196);
+          }
+          dummy.updateMatrix();
+          crags.setMatrixAt(i * 2, dummy.matrix);
+          crags.setColorAt(i * 2, tint);
+
+          // Companion fractured talus shard
+          const px = r.x + Math.cos(r.rotation + 0.9) * r.scale * 1.15;
+          const pz = r.z + Math.sin(r.rotation + 0.9) * r.scale * 1.15;
+          const py = world.terrain.getHeightAt(px, pz);
+          dummy.position.set(px, py - 0.08 * r.scale, pz);
+          dummy.rotation.set(0.22, r.rotation + 1.6, -0.18);
+          dummy.scale.set(
+            r.scale * 0.62,
+            r.scale * (biome === 'alpine_crag' ? 0.92 : 0.46),
+            r.scale * 0.56,
+          );
+          dummy.updateMatrix();
+          crags.setMatrixAt(i * 2 + 1, dummy.matrix);
+          crags.setColorAt(i * 2 + 1, tint);
+        });
+        this.group.add(crags);
+      }
     }
 
     // 5. Arching Ferns (variant 0), Plump Berry Bushes (variant 1), Polka-Dot Toadstool Clusters (variant 2)
@@ -513,7 +618,7 @@ export class FloraRenderer {
       ferns.forEach((f, i) => {
         dummy.position.set(f.x, f.y - 0.02, f.z);
         dummy.rotation.set(0, f.rotation, 0);
-        dummy.scale.setScalar(f.scale * 1.15);
+        dummy.scale.setScalar(f.scale * 1.34);
         dummy.updateMatrix();
         fernMesh.setMatrixAt(i, dummy.matrix);
       });
@@ -538,7 +643,7 @@ export class FloraRenderer {
       bushes.forEach((b, i) => {
         dummy.position.set(b.x, b.y - 0.04, b.z);
         dummy.rotation.set(0, b.rotation, 0);
-        dummy.scale.setScalar(b.scale * 1.12);
+        dummy.scale.setScalar(b.scale * 1.22);
         dummy.updateMatrix();
         bushMesh.setMatrixAt(i, dummy.matrix);
         berryMesh.setMatrixAt(i, dummy.matrix);
@@ -565,7 +670,7 @@ export class FloraRenderer {
       shrooms.forEach((m, i) => {
         dummy.position.set(m.x, m.y - 0.02, m.z);
         dummy.rotation.set(0, m.rotation, 0);
-        dummy.scale.setScalar(m.scale * 1.15);
+        dummy.scale.setScalar(m.scale * 1.18);
         dummy.updateMatrix();
         stemMesh.setMatrixAt(i, dummy.matrix);
         capMesh.setMatrixAt(i, dummy.matrix);
@@ -574,9 +679,9 @@ export class FloraRenderer {
     }
 
     // 6. Whimsical Meadow Wildflower Clusters (circular valley spread)
-    const circularRadius = world.terrain.halfSize + 4;
+    const circularRadius = world.terrain.halfSize + 8;
     {
-      const flowerCount = 560;
+      const flowerCount = 1350;
       const { stems, petals, centers } = createWildflowerClusterGeo();
       const fStemMat = new THREE.MeshStandardMaterial({ color: 0x4b7d34, roughness: 0.85 });
       const fPetalMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 });
@@ -593,13 +698,13 @@ export class FloraRenderer {
 
       const petalColors = [0xfff8eb, 0xffe066, 0xff9ec4, 0x9ec5ff, 0xd8a8ff, 0xffb385];
       let placed = 0;
-      for (let tries = 0; tries < flowerCount * 5 && placed < flowerCount; tries++) {
+      for (let tries = 0; tries < flowerCount * 6 && placed < flowerCount; tries++) {
         const a = rng.range(0, Math.PI * 2);
         const r = Math.sqrt(rng.next()) * circularRadius;
         const fx = Math.cos(a) * r;
         const fz = Math.sin(a) * r;
         const fy = world.terrain.getHeightAt(fx, fz);
-        if (fy < world.terrain.waterLevel + 0.35 || fy > 5.4) continue;
+        if (fy < world.terrain.waterLevel + 0.35 || fy > 7.2) continue;
         const biome = world.terrain.getBiomeAt(fx, fz);
         if (
           biome === 'water' ||
@@ -643,14 +748,14 @@ export class FloraRenderer {
       });
       this.disposables.push(padGeo, lotusGeo, padMat, lotusMat);
 
-      const maxPads = 110;
+      const maxPads = 240;
       const padInst = new THREE.InstancedMesh(padGeo, padMat, maxPads);
       const lotusInst = new THREE.InstancedMesh(lotusGeo, lotusMat, maxPads);
       padInst.receiveShadow = true;
 
       let padsPlaced = 0;
       let lotusesPlaced = 0;
-      for (let tries = 0; tries < 1800 && padsPlaced < maxPads; tries++) {
+      for (let tries = 0; tries < 4200 && padsPlaced < maxPads; tries++) {
         const a = rng.range(0, Math.PI * 2);
         const r = Math.sqrt(rng.next()) * (circularRadius * 0.85);
         const lx = Math.cos(a) * r;
@@ -705,11 +810,11 @@ export class FloraRenderer {
       const cattailMat = new THREE.MeshStandardMaterial({ color: 0x5c361e, roughness: 0.92 });
       this.disposables.push(reedGeo, headGeo, reedMat, cattailMat);
 
-      const maxReeds = 175;
+      const maxReeds = 360;
       const reedInst = new THREE.InstancedMesh(reedGeo, reedMat, maxReeds);
       const cattailInst = new THREE.InstancedMesh(headGeo, cattailMat, maxReeds);
       let reedsPlaced = 0;
-      for (let tries = 0; tries < 2600 && reedsPlaced < maxReeds; tries++) {
+      for (let tries = 0; tries < 5200 && reedsPlaced < maxReeds; tries++) {
         const a = rng.range(0, Math.PI * 2);
         const r = Math.sqrt(rng.next()) * circularRadius;
         const rx = Math.cos(a) * r;
@@ -731,8 +836,8 @@ export class FloraRenderer {
       this.group.add(reedInst, cattailInst);
     }
 
-    // 8. Dense Curved Multi-Blade Woodland Grass Tufts (circular spread)
-    const grassCount = Math.floor(world.config.grassBladeCount * grassMultiplier * 0.65);
+    // 8. Dense Curved Multi-Blade Prairie & Lush Woodland Grass Tufts
+    const grassCount = Math.floor(world.config.grassBladeCount * grassMultiplier * 0.85);
     if (grassCount > 0) {
       const tuftGeo = createCurvedGrassTuftGeo();
       this.disposables.push(tuftGeo);
@@ -741,36 +846,73 @@ export class FloraRenderer {
       grass.receiveShadow = true;
 
       let placed = 0;
-      for (let i = 0; i < grassCount * 2 && placed < grassCount; i++) {
+      const prairieTarget = Math.floor(grassCount * 0.48);
+
+      // Pass A: Carpet the flat open prairies and meadows with tall waving wind-swept grass
+      for (let i = 0; i < prairieTarget * 9 && placed < prairieTarget; i++) {
         const a = rng.range(0, Math.PI * 2);
         const r = Math.sqrt(rng.next()) * circularRadius;
         const gx = Math.cos(a) * r;
         const gz = Math.sin(a) * r;
         const gy = world.terrain.getHeightAt(gx, gz);
-        if (gy < world.terrain.waterLevel + 0.25 || gy > 8.4) continue;
+        if (gy < world.terrain.waterLevel + 0.28 || gy > 9.5) continue;
         const gBiome = world.terrain.getBiomeAt(gx, gz);
-        if (gBiome === 'alpine_crag' || gBiome === 'water') continue;
-        if (gBiome === 'desert' && rng.chance(0.95)) continue;
-        if (gBiome === 'seashore' && rng.chance(0.84)) continue;
+        if (gBiome !== 'prairie' && gBiome !== 'meadow') continue;
+
         dummy.position.set(gx, gy - 0.04, gz);
         dummy.rotation.set(rng.range(-0.12, 0.12), rng.range(0, Math.PI * 2), rng.range(-0.12, 0.12));
-        const s = rng.range(0.72, 1.5);
-        dummy.scale.set(s, s * rng.range(0.85, 1.35), s);
+        const s = rng.range(0.88, 1.52);
+        const tallY = gBiome === 'prairie' ? rng.range(1.28, 1.98) : rng.range(1.0, 1.45);
+        dummy.scale.set(s, s * tallY, s);
         dummy.updateMatrix();
         grass.setMatrixAt(placed, dummy.matrix);
 
         if (gBiome === 'prairie') {
-          tint.setHex(0xdcc86b);
-        } else if (gBiome === 'desert' || gBiome === 'seashore') {
-          tint.setHex(0xd9bf7c);
-        } else if (gBiome === 'moss_hollow') {
-          tint.setHex(0x74b56a);
-        } else if (gBiome === 'meadow') {
-          tint.setHex(0xc2de7c);
-        } else if (gBiome === 'rocky_ridge') {
-          tint.setHex(0x9eab88);
+          tint.setHex(placed % 3 === 0 ? 0xd9ca5c : 0xc0d95a);
         } else {
-          tint.setHex(0x9bc27c);
+          tint.setHex(0xa8db64);
+        }
+        grass.setColorAt(placed, tint);
+        placed++;
+      }
+
+      // Pass B: Lush verdant forest floor, mossy hollows, and grassy riverbanks (zero desert grass!)
+      for (let i = 0; i < grassCount * 4 && placed < grassCount; i++) {
+        const a = rng.range(0, Math.PI * 2);
+        const r = Math.sqrt(rng.next()) * circularRadius;
+        const gx = Math.cos(a) * r;
+        const gz = Math.sin(a) * r;
+        const gy = world.terrain.getHeightAt(gx, gz);
+        if (gy < world.terrain.waterLevel + 0.25 || gy > 11.5) continue;
+        const gBiome = world.terrain.getBiomeAt(gx, gz);
+        if (gBiome === 'alpine_crag' || gBiome === 'water' || gBiome === 'desert') continue;
+        if (gBiome === 'seashore' && rng.chance(0.92)) continue;
+        if (gBiome === 'rocky_ridge' && rng.chance(0.75)) continue;
+
+        dummy.position.set(gx, gy - 0.04, gz);
+        dummy.rotation.set(rng.range(-0.12, 0.12), rng.range(0, Math.PI * 2), rng.range(-0.12, 0.12));
+        const s = rng.range(0.78, 1.54);
+        const tallY = gBiome === 'prairie' ? rng.range(1.25, 1.92) : rng.range(0.92, 1.48);
+        dummy.scale.set(s, s * tallY, s);
+        dummy.updateMatrix();
+        grass.setMatrixAt(placed, dummy.matrix);
+
+        if (gBiome === 'prairie') {
+          tint.setHex(0xcbd65c);
+        } else if (gBiome === 'seashore') {
+          tint.setHex(0xd4c27c);
+        } else if (gBiome === 'moss_hollow') {
+          tint.setHex(0x4cb562);
+        } else if (gBiome === 'deep_woods') {
+          tint.setHex(0x5eb84c);
+        } else if (gBiome === 'riverbank') {
+          tint.setHex(0x72c458);
+        } else if (gBiome === 'meadow') {
+          tint.setHex(0xa8db64);
+        } else if (gBiome === 'rocky_ridge') {
+          tint.setHex(0x88a378);
+        } else {
+          tint.setHex(0x7ec25c);
         }
         grass.setColorAt(placed, tint);
         placed++;
@@ -817,10 +959,10 @@ export class FloraRenderer {
 
     this.disposables.push(distantPineGeo, distantOakGeo, trunkGeo, trunkMat);
 
-    const innerR = this.world.terrain.halfSize + 4;
-    const outerR = this.world.terrain.halfSize * 3.3; // ~528m
-    const pineTarget = 680;
-    const oakTarget = 460;
+    const innerR = this.world.terrain.halfSize + 6;
+    const outerR = this.world.terrain.halfSize * 3.0;
+    const pineTarget = 1400;
+    const oakTarget = 1000;
 
     const pineMesh = new THREE.InstancedMesh(distantPineGeo, this.distantPineMat, pineTarget);
     const oakMesh = new THREE.InstancedMesh(distantOakGeo, this.distantBroadleafMat, oakTarget);
@@ -833,7 +975,7 @@ export class FloraRenderer {
     let oakCount = 0;
     let trunkCount = 0;
 
-    for (let tries = 0; tries < 3600 && (pineCount < pineTarget || oakCount < oakTarget); tries++) {
+    for (let tries = 0; tries < 9600 && (pineCount < pineTarget || oakCount < oakTarget); tries++) {
       const a = rng.range(0, Math.PI * 2);
       // Area-weighted distribution with extra density in the mid-distance transition band
       const u = Math.pow(rng.next(), 0.78);
@@ -841,10 +983,24 @@ export class FloraRenderer {
       const x = Math.cos(a) * r;
       const z = Math.sin(a) * r;
       const y = this.world.terrain.getHeightAt(x, z);
-      if (y < this.world.terrain.waterLevel + 0.45 || y > 18.5) continue;
-      // Keep open ocean sea and distant desert dunes free of horizon forests
+      if (y < this.world.terrain.waterLevel + 0.45 || y > 24.0) continue;
+      // Keep open ocean sea, distant desert dunes, and treeless open prairies free of horizon trees
       if (this.world.terrain.getCoastSignedDistance(x, z) < 18) continue;
-      if (this.world.terrain.getBiomeAt(x, z) === 'desert') continue;
+      const hBiome = this.world.terrain.getBiomeAt(x, z);
+      if (
+        hBiome === 'desert' ||
+        hBiome === 'prairie' ||
+        hBiome === 'alpine_crag' ||
+        hBiome === 'water'
+      ) {
+        continue;
+      }
+      if (
+        this.world.terrain.getAridityAt(x, z) > 0.44 ||
+        this.world.terrain.getPrairieWeightAt(x, z) > 0.44
+      ) {
+        continue;
+      }
 
       const isPine = pineCount < pineTarget && (oakCount >= oakTarget || rng.chance(0.6));
       const distScale = 1.0 + u * 0.85;
@@ -961,21 +1117,21 @@ export class FloraRenderer {
     this.wildflowerGroup.visible = season !== 'winter';
 
     if (season === 'spring') {
-      this.oakFoliageMat.color.setHex(0x639945);
-      this.pineFoliageMat.color.setHex(0x3a6e4c);
-      this.birchFoliageMat.color.setHex(0x95cc5c);
-      this.distantPineMat.color.setHex(0x2f5e42);
-      this.distantBroadleafMat.color.setHex(0x52823d);
-      this.grassMat.color.setHex(0x6c9c42);
+      this.oakFoliageMat.color.setHex(0x4b9e38);
+      this.pineFoliageMat.color.setHex(0x267542);
+      this.birchFoliageMat.color.setHex(0x82d44c);
+      this.distantPineMat.color.setHex(0x22633b);
+      this.distantBroadleafMat.color.setHex(0x408a34);
+      this.grassMat.color.setHex(0x74b342);
       this.fernMat.color.setHex(0xffffff);
       this.bushMat.color.setHex(0xffffff);
     } else if (season === 'summer') {
-      this.oakFoliageMat.color.setHex(0x4b7d39);
-      this.pineFoliageMat.color.setHex(0x2e5c3e);
-      this.birchFoliageMat.color.setHex(0x73ab4b);
-      this.distantPineMat.color.setHex(0x274e36);
-      this.distantBroadleafMat.color.setHex(0x416c32);
-      this.grassMat.color.setHex(0x598539);
+      this.oakFoliageMat.color.setHex(0x39852e);
+      this.pineFoliageMat.color.setHex(0x1f6338);
+      this.birchFoliageMat.color.setHex(0x66ba42);
+      this.distantPineMat.color.setHex(0x1b5431);
+      this.distantBroadleafMat.color.setHex(0x32732a);
+      this.grassMat.color.setHex(0x629e38);
       this.fernMat.color.setHex(0xebfae6);
       this.bushMat.color.setHex(0xe8f5e1);
     } else if (season === 'autumn') {
