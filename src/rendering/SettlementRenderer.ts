@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { BuildingType } from '@core/Types';
 import type { BuildingInstance, Settlement } from '@simulation/settlements/Settlement';
+import { sampleBridgeDeckY, type BridgeInstance } from '@simulation/terrain/Bridge';
 import type { WorldState } from '@simulation/WorldState';
 import type { TextureLibrary } from './ProceduralTextures';
 import {
@@ -27,6 +28,12 @@ interface RenderedHearth {
   readonly fire: HearthFire;
   readonly banner: THREE.Mesh;
   readonly seed: number;
+}
+
+interface RenderedBridge {
+  readonly group: THREE.Group;
+  readonly stages: { readonly t: number; readonly obj: THREE.Object3D }[];
+  readonly lanterns: THREE.Object3D[];
 }
 
 /**
@@ -72,6 +79,7 @@ export class SettlementRenderer {
   private readonly sharedFlameGeo: THREE.BufferGeometry;
 
   private readonly buildingMeshes = new Map<string, RenderedBuilding>();
+  private readonly bridgeMeshes = new Map<string, RenderedBridge>();
   private readonly hearths: RenderedHearth[] = [];
   private readonly settlementFlags = new Set<string>();
   private readonly extraDisposables: (THREE.BufferGeometry | THREE.Material)[] = [];
@@ -346,6 +354,19 @@ export class SettlementRenderer {
         }
       }
     }
+
+    // Reveal creature-constructed bridges progressively from home bank across the stream
+    for (const bridge of this.world.bridges) {
+      const entry = this.bridgeMeshes.get(bridge.id);
+      if (!entry) continue;
+      const frac = bridge.completed ? 1.05 : Math.max(0.08, bridge.progress / 100);
+      for (const stage of entry.stages) {
+        stage.obj.visible = stage.t <= frac;
+      }
+      for (const lantern of entry.lanterns) {
+        lantern.visible = bridge.completed;
+      }
+    }
   }
 
   private syncAll(): void {
@@ -361,6 +382,14 @@ export class SettlementRenderer {
           this.buildingMeshes.set(b.id, built);
           this.rootGroup.add(built.group);
         }
+      }
+    }
+
+    for (const bridge of this.world.bridges) {
+      if (!this.bridgeMeshes.has(bridge.id)) {
+        const built = this.createBridgeMesh(bridge);
+        this.bridgeMeshes.set(bridge.id, built);
+        this.rootGroup.add(built.group);
       }
     }
   }
@@ -562,7 +591,7 @@ export class SettlementRenderer {
 
     const addChimneySmoke = (x: number, y: number, z: number) => {
       const seed = b.position.x * 0.37 + b.position.z * 0.53 + chimneySmokes.length * 3.17;
-      const smokeGeo = createChimneySmokeGeometry(seed, 26);
+      const smokeGeo = createChimneySmokeGeometry(seed, 16);
       const plume = new THREE.Points(smokeGeo, this.chimneySmokeMat);
       plume.position.set(x, y - 0.06, z);
       // Counter-rotate so local XZ matches world wind direction across all buildings
@@ -1237,6 +1266,180 @@ export class SettlementRenderer {
       swayPart,
       chimneySmokes: chimneySmokes.length > 0 ? chimneySmokes : undefined,
     };
+  }
+
+  /**
+   * Builds a handcrafted arched woodland bridge (either warm timber or mossy dressed stone)
+   * whose deck planks match `sampleBridgeDeckY` exactly and animate plank-by-plank while under construction.
+   */
+  private createBridgeMesh(bridge: BridgeInstance): RenderedBridge {
+    const group = new THREE.Group();
+    group.position.set(bridge.centerX, 0, bridge.centerZ);
+    group.rotation.y = bridge.yaw;
+
+    const stages: { t: number; obj: THREE.Object3D }[] = [];
+    const lanterns: THREE.Object3D[] = [];
+
+    const addStage = <T extends THREE.Object3D>(obj: T, t: number): T => {
+      if (obj instanceof THREE.Mesh) {
+        obj.castShadow = true;
+        obj.receiveShadow = true;
+      }
+      group.add(obj);
+      stages.push({ t, obj });
+      return obj;
+    };
+
+    const halfLen = bridge.length * 0.5;
+    const halfW = bridge.width * 0.5;
+    const isStone = bridge.style === 'stone_arch';
+
+    // 1. Sturdy riverbank stone abutments anchored deep into each shore
+    for (const endIdx of [0, 1] as const) {
+      const tEnd = endIdx === 0 ? 0.0 : 1.0;
+      const zPos = endIdx === 0 ? -halfLen : halfLen;
+      const deckY = sampleBridgeDeckY(bridge, tEnd);
+      const pierH = 2.4;
+      const pier = addStage(
+        new THREE.Mesh(
+          new THREE.BoxGeometry(bridge.width + 0.55, pierH, 1.35),
+          this.stoneMat,
+        ),
+        endIdx === 0 ? 0.02 : 0.88,
+      );
+      pier.position.set(0, deckY - pierH * 0.5 - 0.06, zPos);
+    }
+
+    // 2. Arched deck planks / dressed stone roadway following sampleBridgeDeckY exactly
+    const plankCount = Math.max(12, Math.round(bridge.length * 1.9));
+    const segLen = bridge.length / plankCount;
+    const plankDepth = isStone ? segLen * 1.04 : segLen * 0.84;
+    const plankThick = isStone ? 0.24 : 0.14;
+
+    for (let i = 0; i < plankCount; i++) {
+      const t = (i + 0.5) / plankCount;
+      const tPrev = Math.max(0, t - 0.5 / plankCount);
+      const tNext = Math.min(1, t + 0.5 / plankCount);
+      const y = sampleBridgeDeckY(bridge, t);
+      const dy = sampleBridgeDeckY(bridge, tNext) - sampleBridgeDeckY(bridge, tPrev);
+      const dz = (tNext - tPrev) * bridge.length;
+      const pitch = -Math.atan2(dy, dz);
+      const z = (t - 0.5) * bridge.length;
+
+      const mat = isStone
+        ? this.stoneMat
+        : i % 3 === 0
+          ? this.darkTimberMat
+          : this.timberMat;
+      const plank = addStage(
+        new THREE.Mesh(
+          new THREE.BoxGeometry(bridge.width + (isStone ? 0.12 : 0.04), plankThick, plankDepth),
+          mat,
+        ),
+        t * 0.92,
+      );
+      plank.position.set(0, y - plankThick * 0.5, z);
+      plank.rotation.x = pitch;
+    }
+
+    // 3. Structural arch ribs / stone vault segments + bank pilings
+    const ribSegs = Math.max(8, Math.round(bridge.length * 0.9));
+    for (let i = 0; i < ribSegs; i++) {
+      const t0 = i / ribSegs;
+      const t1 = (i + 1) / ribSegs;
+      const tm = (t0 + t1) * 0.5;
+      const z0 = (t0 - 0.5) * bridge.length;
+      const z1 = (t1 - 0.5) * bridge.length;
+      const y0 = sampleBridgeDeckY(bridge, t0) - (isStone ? 0.34 : 0.24);
+      const y1 = sampleBridgeDeckY(bridge, t1) - (isStone ? 0.34 : 0.24);
+      const span = Math.hypot(z1 - z0, y1 - y0) + 0.08;
+      const pitch = -Math.atan2(y1 - y0, z1 - z0);
+      const ym = (y0 + y1) * 0.5;
+      const zm = (z0 + z1) * 0.5;
+
+      for (const side of [-1, 1] as const) {
+        const rib = addStage(
+          new THREE.Mesh(
+            new THREE.BoxGeometry(isStone ? 0.34 : 0.2, isStone ? 0.48 : 0.26, span),
+            isStone ? this.stoneMat : this.darkTimberMat,
+          ),
+          tm * 0.9,
+        );
+        rib.position.set(side * (halfW - 0.14), ym, zm);
+        rib.rotation.x = pitch;
+      }
+
+      // Stone bridge mossy accents near the lower haunches
+      if (isStone && (i === 1 || i === ribSegs - 2)) {
+        for (const side of [-1, 1] as const) {
+          const moss = addStage(
+            new THREE.Mesh(new THREE.DodecahedronGeometry(0.22, 0), this.mossLeafMat),
+            tm * 0.94,
+          );
+          moss.position.set(side * (halfW + 0.04), ym - 0.1, zm);
+          moss.scale.set(0.7, 0.55, 1.35);
+        }
+      }
+    }
+
+    // 4. Balustrade posts, curved handrails / low stone parapets, and entrance lanterns
+    const postCount = Math.max(4, Math.round(bridge.length * 0.45)) + 1;
+    const postHeight = isStone ? 0.72 : 0.92;
+    for (let i = 0; i < postCount; i++) {
+      const t = i / (postCount - 1);
+      const z = (t - 0.5) * bridge.length;
+      const y = sampleBridgeDeckY(bridge, t);
+      const isEntrance = i === 0 || i === postCount - 1;
+
+      for (const side of [-1, 1] as const) {
+        const x = side * (halfW + 0.04);
+        const h = isEntrance ? postHeight + 0.24 : postHeight;
+        const post = addStage(
+          new THREE.Mesh(
+            new THREE.BoxGeometry(isStone ? 0.26 : 0.16, h, isStone ? 0.26 : 0.16),
+            isStone ? this.stoneMat : this.darkTimberMat,
+          ),
+          t * 0.94,
+        );
+        post.position.set(x, y + h * 0.5 - 0.08, z);
+
+        if (isEntrance) {
+          const lanternGroup = new THREE.Group();
+          lanternGroup.position.set(x, y + h + 0.06, z);
+          const glass = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.08, 0.2, 8), this.windowMat);
+          const cap = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.1, 8), this.brassMat);
+          cap.position.y = 0.14;
+          lanternGroup.add(glass, cap);
+          group.add(lanternGroup);
+          lanterns.push(lanternGroup);
+        }
+      }
+
+      // Connect consecutive posts with curved timber handrail or stone parapet wall
+      if (i < postCount - 1) {
+        const tNext = (i + 1) / (postCount - 1);
+        const zNext = (tNext - 0.5) * bridge.length;
+        const yNext = sampleBridgeDeckY(bridge, tNext);
+        const railSpan = Math.hypot(zNext - z, yNext - y) + 0.06;
+        const railPitch = -Math.atan2(yNext - y, zNext - z);
+        const railY = (y + yNext) * 0.5 + (isStone ? 0.34 : 0.8);
+        const railZ = (z + zNext) * 0.5;
+
+        for (const side of [-1, 1] as const) {
+          const rail = addStage(
+            new THREE.Mesh(
+              new THREE.BoxGeometry(isStone ? 0.22 : 0.11, isStone ? 0.56 : 0.1, railSpan),
+              isStone ? this.stoneMat : this.timberMat,
+            ),
+            ((t + tNext) * 0.5) * 0.95,
+          );
+          rail.position.set(side * (halfW + 0.04), railY, railZ);
+          rail.rotation.x = railPitch;
+        }
+      }
+    }
+
+    return { group, stages, lanterns };
   }
 
   dispose(): void {

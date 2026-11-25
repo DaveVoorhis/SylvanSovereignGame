@@ -281,17 +281,65 @@ describe('High-Resolution Whimsical Procedural Models', () => {
       });
     });
 
+    // Also verify both timber & stone arched bridges render progressively and complete cleanly
+    world.bridges.push(
+      {
+        id: 'test_bridge_timber',
+        settlementId: settlement.id,
+        style: 'timber_arch',
+        startX: -6,
+        startZ: 0,
+        startY: 0.4,
+        endX: 6,
+        endZ: 0,
+        endY: 0.5,
+        centerX: 0,
+        centerZ: 0,
+        archHeight: 1.4,
+        length: 12,
+        width: 2.6,
+        dirX: 1,
+        dirZ: 0,
+        yaw: Math.PI / 2,
+        progress: 45,
+        completed: false,
+      },
+      {
+        id: 'test_bridge_stone',
+        settlementId: settlement.id,
+        style: 'stone_arch',
+        startX: -7,
+        startZ: 14,
+        startY: 0.5,
+        endX: 7,
+        endZ: 14,
+        endY: 0.6,
+        centerX: 0,
+        centerZ: 14,
+        archHeight: 1.5,
+        length: 14,
+        width: 2.6,
+        dirX: 1,
+        dirZ: 0,
+        yaw: Math.PI / 2,
+        progress: 100,
+        completed: true,
+      },
+    );
+
     const scene = new THREE.Scene();
     const textures = createStubTextureLibrary();
     const renderer = new SettlementRenderer(scene, world, textures);
     renderer.update(0.05);
+    world.bridges[0].progress = 100;
+    world.bridges[0].completed = true;
     renderer.update(0.05);
 
     let meshCount = 0;
     renderer.rootGroup.traverse((obj) => {
       if (obj instanceof THREE.Mesh) meshCount++;
     });
-    expect(meshCount).toBeGreaterThan(ALL_BUILDING_TYPES.length * 10);
+    expect(meshCount).toBeGreaterThan(ALL_BUILDING_TYPES.length * 10 + 40);
 
     renderer.dispose();
     textures.dispose();

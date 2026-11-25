@@ -425,11 +425,11 @@ const CHIMNEY_SMOKE_VERT = /* glsl */ `
 
     // Gentle vortex curl & ambient turbulence widening smoothly with altitude
     float swirlAngle = aSeed * 6.28318 + life * 4.4 + uTime * 0.45;
-    float spread = aRadius * (0.28 + pow(life, 1.15) * 3.85);
-    float gust = sin(uTime * 0.65 + life * 3.1 + aSeed * 11.3) * 0.14 * life;
+    float spread = aRadius * (0.24 + pow(life, 1.18) * 4.25);
+    float gust = sin(uTime * 0.65 + life * 3.4 + aSeed * 11.3) * 0.17 * life;
 
     // Progressive quadratic wind bend: rises vertically from flue, then leans gracefully downwind
-    float windCurve = pow(life, 1.82) * 3.2;
+    float windCurve = pow(life, 1.7) * 3.6;
     vec3 pos = vec3(
       cos(swirlAngle) * spread + uWind.x * windCurve + gust,
       y,
@@ -437,8 +437,8 @@ const CHIMNEY_SMOKE_VERT = /* glsl */ `
     );
 
     vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
-    float grow = 0.36 + pow(life, 0.78) * 2.75;
-    gl_PointSize = clamp(aSize * uPixelRatio * grow * (195.0 / max(1.4, -mvPos.z)), 4.0, 108.0);
+    float grow = 0.28 + pow(life, 0.86) * 2.25;
+    gl_PointSize = clamp(aSize * uPixelRatio * grow * (175.0 / max(1.4, -mvPos.z)), 3.0, 74.0);
     gl_Position = projectionMatrix * mvPos;
   }
 `;
@@ -468,22 +468,23 @@ const CHIMNEY_SMOKE_FRAG = /* glsl */ `
     vec2 flow = vec2(vSeed * 17.3, -uTime * 0.22 - vLife * 0.85);
     float warpX = fbm4(rotUv * 3.2 + flow) - 0.5;
     float warpY = fbm4(rotUv * 3.2 + flow + vec2(4.7, 2.3)) - 0.5;
-    vec2 warpedUv = rotUv + vec2(warpX, warpY) * (0.24 + vLife * 0.16);
+    vec2 warpedUv = rotUv + vec2(warpX, warpY) * (0.28 + vLife * 0.2);
 
-    float density = fbm4(warpedUv * 4.4 + flow * 1.15);
-    float densityShift = fbm4((warpedUv + vec2(0.06, -0.06)) * 4.4 + flow * 1.15);
+    float density = fbm4(warpedUv * 4.8 + flow * 1.15);
+    float densityShift = fbm4((warpedUv + vec2(0.06, -0.06)) * 4.8 + flow * 1.15);
 
-    // Soft feathery radial envelope that loosens and breaks apart aloft
-    float radial = smoothstep(0.5, 0.05, r);
-    float cutLow = mix(0.18, 0.34, vLife);
-    float wisp = smoothstep(cutLow, 0.84, density + radial * 0.46);
+    // Delicate, airy gossamer filaments that curl and dissolve smoothly aloft
+    float radial = smoothstep(0.5, 0.08, r);
+    float cutLow = mix(0.36, 0.56, vLife);
+    float wisp = smoothstep(cutLow, 0.90, density + radial * 0.28);
+    wisp = pow(wisp, 1.25);
     float shape = radial * radial * wisp;
 
     // Smooth emergence at the chimney lip and delicate dissipation into the sky
     float fadeIn = smoothstep(0.0, 0.09, vLife);
-    float fadeOut = 1.0 - smoothstep(0.24, 1.0, vLife);
-    float alpha = shape * fadeIn * fadeOut * 0.34;
-    if (alpha <= 0.004) discard;
+    float fadeOut = 1.0 - smoothstep(0.18, 0.96, vLife);
+    float alpha = shape * fadeIn * fadeOut * 0.145;
+    if (alpha <= 0.003) discard;
 
     // Volumetric directional lighting: warm sunlit crests & soft cool shadowed undersides
     vec2 lobeGrad = vec2(densityShift - density, density - densityShift) * 2.4;
@@ -491,8 +492,8 @@ const CHIMNEY_SMOKE_FRAG = /* glsl */ `
     float sunWrap = clamp(dot(pseudoNormal, normalize(uSunDir)) * 0.5 + 0.55, 0.0, 1.0);
     float rimSoft = smoothstep(0.45, 0.12, r) * 0.15;
 
-    vec3 dayShadow = vec3(0.57, 0.61, 0.67);
-    vec3 dayLit = vec3(0.95, 0.93, 0.90);
+    vec3 dayShadow = vec3(0.69, 0.73, 0.79);
+    vec3 dayLit = vec3(0.96, 0.95, 0.93);
     vec3 dayCol = mix(dayShadow, dayLit, clamp(sunWrap + rimSoft, 0.0, 1.0));
 
     vec3 nightShadow = vec3(0.16, 0.20, 0.27);
@@ -887,9 +888,9 @@ export function createOvenFireMaterial(): THREE.ShaderMaterial {
 
 /**
  * Builds deterministic GPU-animated volumetric cottage chimney woodsmoke geometry
- * (26 staggered rising turbulent wisps per flue).
+ * (16 staggered rising wispy tendrils per flue).
  */
-export function createChimneySmokeGeometry(seed: number, puffCount = 26): THREE.BufferGeometry {
+export function createChimneySmokeGeometry(seed: number, puffCount = 16): THREE.BufferGeometry {
   const positions = new Float32Array(puffCount * 3);
   const seeds = new Float32Array(puffCount);
   const speeds = new Float32Array(puffCount);
@@ -904,10 +905,10 @@ export function createChimneySmokeGeometry(seed: number, puffCount = 26): THREE.
 
   for (let i = 0; i < puffCount; i++) {
     seeds[i] = (i + rand(i * 5 + 1) * 0.55) / puffCount;
-    speeds[i] = 0.14 + rand(i * 5 + 2) * 0.065;
-    radii[i] = 0.1 + rand(i * 5 + 3) * 0.14;
-    heights[i] = 3.1 + rand(i * 5 + 4) * 1.45;
-    sizes[i] = 8.5 + rand(i * 5 + 5) * 6.5;
+    speeds[i] = 0.15 + rand(i * 5 + 2) * 0.065;
+    radii[i] = 0.12 + rand(i * 5 + 3) * 0.16;
+    heights[i] = 3.3 + rand(i * 5 + 4) * 1.65;
+    sizes[i] = 5.4 + rand(i * 5 + 5) * 4.2;
   }
 
   const geo = new THREE.BufferGeometry();

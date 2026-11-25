@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Season } from '@core/Types';
 import { BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
+import { isPointNearBridge } from '@simulation/terrain/Bridge';
 import type { TreeSpot } from '@simulation/terrain/TerrainMap';
 import type { WorldState } from '@simulation/WorldState';
 import {
@@ -830,13 +831,13 @@ export class FloraRenderer {
       this.updateSeasonPalette(this.world.season);
     }
 
-    // Dynamically clear trees wherever growing cities raise new buildings
-    let totalBuildings = 0;
+    // Dynamically clear trees wherever growing cities raise new buildings or waterway bridges
+    let totalStructures = this.world.bridges.length;
     for (const s of this.world.settlements) {
-      totalBuildings += s.buildings.length;
+      totalStructures += s.buildings.length;
     }
-    if (totalBuildings !== this.lastBuildingCount) {
-      this.lastBuildingCount = totalBuildings;
+    if (totalStructures !== this.lastBuildingCount) {
+      this.lastBuildingCount = totalStructures;
       this.clearTreesNearBuildings();
     }
 
@@ -878,6 +879,14 @@ export class FloraRenderer {
             }
           }
           if (blocked) break;
+        }
+        if (!blocked) {
+          for (const br of this.world.bridges) {
+            if (isPointNearBridge(br, tree.x, tree.z, 1.8)) {
+              blocked = true;
+              break;
+            }
+          }
         }
 
         if (blocked) {

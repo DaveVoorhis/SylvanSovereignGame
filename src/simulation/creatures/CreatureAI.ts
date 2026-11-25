@@ -1,4 +1,5 @@
 import type { ResourceType } from '@core/Types';
+import { getBridgeApproach, getBridgeDeckHeightAt } from '@simulation/terrain/Bridge';
 import {
   HEARTH_FIRE_KEEP_OUT_RADIUS,
   getBuildingCollisionRadius,
@@ -276,7 +277,27 @@ export class CreatureAI {
       }
     }
 
-    // 3. Unfinished buildings need builders (builders & artisans eagerly pitch in across expanding districts!)
+    // 3a. Unfinished waterway bridges need builders on the riverbank
+    const unfinishedBridge = world.bridges.find(
+      (b) => b.settlementId === home.id && !b.completed,
+    );
+    if (
+      unfinishedBridge &&
+      (creature.role === 'builder' ||
+        (creature.role === 'artisan' && world.rng.chance(0.5)) ||
+        world.rng.chance(0.32 * creature.def.buildSkill))
+    ) {
+      creature.activity = 'building';
+      creature.targetBridgeId = unfinishedBridge.id;
+      creature.targetBuildingId = null;
+      creature.targetX = unfinishedBridge.startX - unfinishedBridge.dirX * 0.55;
+      creature.targetZ = unfinishedBridge.startZ - unfinishedBridge.dirZ * 0.55;
+      creature.actionTimer = 32;
+      creature.thought = `Building a ${unfinishedBridge.style === 'stone_arch' ? 'stone' : 'timber'} bridge across the stream`;
+      return;
+    }
+
+    // 3b. Unfinished buildings need builders (builders & artisans eagerly pitch in across expanding districts!)
     const unfinishedList = home.buildings.filter((b) => !b.completed);
     if (
       unfinishedList.length > 0 &&
@@ -296,6 +317,7 @@ export class CreatureAI {
       }
       creature.activity = 'building';
       creature.targetBuildingId = chosenSite.id;
+      creature.targetBridgeId = null;
       const approachAng = Math.atan2(
         creature.z - chosenSite.position.z,
         creature.x - chosenSite.position.x,
@@ -483,6 +505,40 @@ export class CreatureAI {
 
   private handleBuilding(creature: Creature, world: WorldState, dt: number): void {
     const home = world.getSettlement(creature.settlementId);
+    if (creature.targetBridgeId) {
+      const bridge = world.getBridge(creature.targetBridgeId);
+      if (!home || !bridge || bridge.completed || creature.actionTimer <= 0) {
+        creature.activity = 'idle';
+        creature.targetBridgeId = null;
+        return;
+      }
+
+      const distStart = Math.hypot(bridge.startX - creature.x, bridge.startZ - creature.z);
+      const distEnd = Math.hypot(bridge.endX - creature.x, bridge.endZ - creature.z);
+      const nearDist = Math.min(distStart, distEnd);
+      if (nearDist < 3.4) {
+        if (nearDist < 2.5) {
+          creature.targetX = creature.x;
+          creature.targetZ = creature.z;
+          creature.heading = Math.atan2(
+            bridge.centerX - creature.x,
+            bridge.centerZ - creature.z,
+          );
+        }
+        const work = dt * (9.0 + creature.def.buildSkill * 10.0);
+        bridge.progress = Math.min(100, bridge.progress + work);
+        if (bridge.progress >= 100 && !bridge.completed) {
+          bridge.completed = true;
+          creature.mood = Math.min(100, creature.mood + 16);
+          creature.wealth += 5;
+          world.settlementManager.onBridgeCompleted(home, bridge, creature, world);
+          creature.activity = 'idle';
+          creature.targetBridgeId = null;
+        }
+      }
+      return;
+    }
+
     const bld = home?.buildings.find((b) => b.id === creature.targetBuildingId);
     if (!home || !bld || bld.completed || creature.actionTimer <= 0) {
       creature.activity = 'idle';
@@ -822,6 +878,7 @@ export class CreatureAI {
     creature.activity = 'idle';
     creature.targetResourceId = null;
     creature.targetBuildingId = null;
+    creature.targetBridgeId = null;
     creature.targetCreatureId = null;
     creature.tradeDestinationSettlementId = null;
     creature.tradeCarrying = null;
@@ -875,9 +932,10 @@ export class CreatureAI {
 
   private updateCreatureElevation(creature: Creature, world: WorldState): void {
     const groundY = world.terrain.getHeightAt(creature.x, creature.z);
-    const surfaceY = Math.max(groundY, world.terrain.waterLevel);
+    const bridgeY = world.terrain.getBridgeDeckY(creature.x, creature.z);
+    const waterFloor = creature.def.amphibious ? world.terrain.waterLevel - 0.08 : world.terrain.waterLevel;
     creature.y =
-      (creature.def.amphibious ? Math.max(groundY, world.terrain.waterLevel - 0.08) : surfaceY) +
+      Math.max(groundY, bridgeY ?? -Infinity, waterFloor) +
       creature.flightAltitude;
   }
 
@@ -946,6 +1004,78 @@ export class CreatureAI {
       const step = Math.min(dist, creature.def.baseSpeed * speedMult * dt);
       let dirX = dx / dist;
       let dirZ = dz / dist;
+
+      // Smart waterway bridge guidance: route grounded travelers onto nearby completed bridges
+      // when a stream blocks their direct path, and keep them aligned down the arched deck.
+      if (!creature.def.aerial && world.bridges.length > 0 && dist > 2.2) {
+        let guidedX: number | null = null;
+        let guidedZ: number | null = null;
+
+        // If currently standing on a completed bridge, guide cleanly toward the exit bank closer to target
+        for (let i = 0; i < world.bridges.length; i++) {
+          const br = world.bridges[i];
+          if (!br.completed) continue;
+          if (getBridgeDeckHeightAt(br, creature.x, creature.z, 0.2, 0.7) !== null) {
+            const dStartTgt = Math.hypot(br.startX - creature.targetX, br.startZ - creature.targetZ);
+            const dEndTgt = Math.hypot(br.endX - creature.targetX, br.endZ - creature.targetZ);
+            const exitX = dEndTgt <= dStartTgt ? br.endX + br.dirX * 1.1 : br.startX - br.dirX * 1.1;
+            const exitZ = dEndTgt <= dStartTgt ? br.endZ + br.dirZ * 1.1 : br.startZ - br.dirZ * 1.1;
+            if (Math.hypot(exitX - creature.x, exitZ - creature.z) > 0.6) {
+              guidedX = exitX;
+              guidedZ = exitZ;
+            }
+            break;
+          }
+        }
+
+        // Otherwise, if a waterway lies ahead on our direct line, head to a nearby completed bridge crossing
+        if (guidedX === null) {
+          const p1x = creature.x + dirX * Math.min(dist * 0.5, 2.4);
+          const p1z = creature.z + dirZ * Math.min(dist * 0.5, 2.4);
+          const p2x = creature.x + dirX * Math.min(dist * 0.8, 5.4);
+          const p2z = creature.z + dirZ * Math.min(dist * 0.8, 5.4);
+          const waterAhead =
+            (!world.terrain.isWalkable(p1x, p1z, creature.def.amphibious) &&
+              world.terrain.getHeightAt(p1x, p1z) < world.terrain.waterLevel + 0.12) ||
+            (!world.terrain.isWalkable(p2x, p2z, creature.def.amphibious) &&
+              world.terrain.getHeightAt(p2x, p2z) < world.terrain.waterLevel + 0.12);
+
+          if (waterAhead) {
+            let bestCost = Infinity;
+            for (let i = 0; i < world.bridges.length; i++) {
+              const br = world.bridges[i];
+              if (!br.completed) continue;
+              const approach = getBridgeApproach(br, creature.x, creature.z);
+              if (approach.nearDist > 34) continue;
+              const nearToTarget = Math.hypot(approach.nearX - creature.targetX, approach.nearZ - creature.targetZ);
+              const farToTarget = Math.hypot(approach.farX - creature.targetX, approach.farZ - creature.targetZ);
+              if (farToTarget + 1.2 >= nearToTarget) continue;
+              const totalCost = approach.nearDist + farToTarget;
+              if (totalCost < bestCost) {
+                bestCost = totalCost;
+                if (approach.nearDist < 2.2) {
+                  guidedX = approach.farX;
+                  guidedZ = approach.farZ;
+                } else {
+                  guidedX = approach.nearX;
+                  guidedZ = approach.nearZ;
+                }
+              }
+            }
+          }
+        }
+
+        if (guidedX !== null && guidedZ !== null) {
+          const gx = guidedX - creature.x;
+          const gz = guidedZ - creature.z;
+          const gLen = Math.hypot(gx, gz);
+          if (gLen > 0.2) {
+            dirX = gx / gLen;
+            dirZ = gz / gLen;
+          }
+        }
+      }
+
       const baseDirX = dirX;
       const baseDirZ = dirZ;
 
@@ -1246,18 +1376,19 @@ export class CreatureAI {
       }
 
       // Goal-distance progress & loop detection (catches both pinned stalls and orbiting loops of any radius)
-      if (dist > 1.0 && creature.activity !== 'fighting') {
+      if (dist > 0.3 && creature.activity !== 'fighting') {
         const postDist = Math.hypot(creature.targetX - creature.x, creature.targetZ - creature.z);
+        const progressReq = dist > 1.5 ? 0.85 : 0.35;
         if (creature.navBestGoalDist === Infinity) {
           creature.navBestGoalDist = postDist;
           creature.navProgressTimer = 0;
-        } else if (postDist < creature.navBestGoalDist - 0.85) {
+        } else if (postDist < creature.navBestGoalDist - progressReq) {
           creature.navBestGoalDist = postDist;
           creature.navProgressTimer = 0;
           creature.navLoopCount = 0;
         } else {
           creature.navProgressTimer += dt;
-          if (creature.navProgressTimer >= 2.2) {
+          if (creature.navProgressTimer >= 1.6) {
             creature.navBestGoalDist = postDist;
             creature.navProgressTimer = 0;
             creature.navLoopCount += 1;

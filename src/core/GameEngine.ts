@@ -1,11 +1,28 @@
 import type { QualityPreset } from './Config';
 import { EventBus } from './EventBus';
+import { generateRandomSeed } from './SeededRandom';
 import type { SelectionTarget } from './Types';
 import type { CreaturePovPose } from '@rendering/CameraController';
 import { SceneManager } from '@rendering/SceneManager';
 import type { Creature } from '@simulation/creatures/Creature';
 import { WorldState } from '@simulation/WorldState';
 import { HudManager } from '@ui/HudManager';
+
+/**
+ * Picks the starting world seed on page load: respects an explicit `?seed=<int>`
+ * URL query parameter for reproducible sharing, otherwise generates a fresh
+ * random seed so every load creates a brand-new procedural terrain layout.
+ */
+function resolveInitialSeed(): number {
+  if (typeof window !== 'undefined' && window.location?.search) {
+    const raw = new URLSearchParams(window.location.search).get('seed');
+    if (raw !== null && /^\d+$/.test(raw.trim())) {
+      const parsed = Number.parseInt(raw.trim(), 10);
+      if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+    }
+  }
+  return generateRandomSeed();
+}
 
 /**
  * Top-level application coordinator linking the headless woodland simulation,
@@ -30,7 +47,7 @@ export class GameEngine {
   private readonly onFullscreenChangeBound: () => void;
 
   constructor(canvas: HTMLCanvasElement, hudRoot: HTMLElement) {
-    this.world = new WorldState(this.bus);
+    this.world = new WorldState(this.bus, { seed: resolveInitialSeed() });
     this.sceneManager = new SceneManager(canvas, this.world, 'high');
 
     this.hud = new HudManager(hudRoot, {
@@ -72,8 +89,7 @@ export class GameEngine {
         this.sceneManager.cameraController.resetOverview();
       },
       onNewWorld: () => {
-        const nextSeed = Math.floor(Math.random() * 900_000_000) + 1000;
-        this.resetWorld(nextSeed);
+        this.resetWorld(generateRandomSeed(this.world.config.seed));
       },
       onChangeQuality: (preset: QualityPreset) => {
         this.sceneManager.setQuality(preset);

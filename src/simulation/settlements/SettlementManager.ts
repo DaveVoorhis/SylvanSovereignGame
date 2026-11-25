@@ -1,5 +1,7 @@
 import type { BuildingType, CreatureRole, ResourceType, SpeciesId, Vec2 } from '@core/Types';
+import { SeededRandom } from '@core/SeededRandom';
 import type { Creature } from '@simulation/creatures/Creature';
+import type { BridgeInstance, BridgeStyle } from '@simulation/terrain/Bridge';
 import type { WorldState } from '@simulation/WorldState';
 import {
   ALL_BUILDING_TYPES,
@@ -10,14 +12,19 @@ import {
 import { Settlement, type BuildingInstance } from './Settlement';
 
 const MAX_BUILDINGS_PER_SETTLEMENT = 34;
+const MAX_BRIDGES_PER_WORLD = 6;
+const MAX_BRIDGES_PER_SETTLEMENT = 2;
 
 /**
  * Manages woodland settlement creation, organic multi-ring city expansion,
- * variety-seeking building queues, civic production, and population growth.
+ * variety-seeking building queues, waterway bridge spans, civic production, and population growth.
  */
 export class SettlementManager {
   private buildingSeq = 1;
+  private bridgeSeq = 1;
   private expansionCooldown = 2.5;
+  private bridgeCooldown = 5.5;
+  private bridgeRng: SeededRandom | null = null;
 
   createInitialSettlements(world: WorldState): void {
     const sites = world.terrain.findSettlementSites(
@@ -159,6 +166,17 @@ export class SettlementManager {
       }
     }
 
+    this.bridgeCooldown -= dt;
+    if (this.bridgeCooldown <= 0) {
+      this.bridgeCooldown = 6.0;
+      if (!this.bridgeRng) {
+        this.bridgeRng = new SeededRandom(world.config.seed ^ 0x42524944);
+      }
+      for (const settlement of world.settlements) {
+        this.considerNewBridge(settlement, world, this.bridgeRng);
+      }
+    }
+
     if (this.expansionCooldown > 0) return;
     this.expansionCooldown = 3.0;
 
@@ -199,6 +217,27 @@ export class SettlementManager {
       );
       world.deity.observeCivilizationMilestone(settlement);
     }
+  }
+
+  onBridgeCompleted(
+    settlement: Settlement,
+    bridge: BridgeInstance,
+    builder: Creature,
+    world: WorldState,
+  ): void {
+    world.terrain.registerCompletedBridge(bridge);
+    settlement.devotionTotal += 6;
+    settlement.recalculateTierAndRadius();
+
+    const styleLabel = bridge.style === 'stone_arch' ? 'stone arch bridge' : 'timber arch bridge';
+    world.chronicle.record(
+      world.day,
+      world.season,
+      'settlement',
+      'Woodland Bridge Completed',
+      `${builder.name} completed a ${styleLabel} across the waterway for ${settlement.name}.`,
+      { x: bridge.centerX, z: bridge.centerZ },
+    );
   }
 
   /** Returns the primary scarce resource holding back a settlement's next desired building. */
@@ -252,6 +291,77 @@ export class SettlementManager {
       settlement.recalculateTierAndRadius();
       return;
     }
+  }
+
+  /**
+   * Lets settlements autonomously decide to span nearby waterways with curved timber
+   * or mossy stone bridges whenever materials and riverbank crossings allow.
+   */
+  private considerNewBridge(settlement: Settlement, world: WorldState, rng: SeededRandom): void {
+    if (world.bridges.length >= MAX_BRIDGES_PER_WORLD) return;
+
+    let ownedCount = 0;
+    for (const b of world.bridges) {
+      if (b.settlementId === settlement.id) {
+        ownedCount++;
+        if (!b.completed) return;
+      }
+    }
+    if (ownedCount >= MAX_BRIDGES_PER_SETTLEMENT) return;
+
+    // Organic pacing so settlements raise bridges when inspired rather than all at once
+    if (!rng.chance(0.35)) return;
+
+    const preferStone =
+      (settlement.tier === 'town' || settlement.tier === 'city' || settlement.tier === 'metropolis') &&
+      settlement.stockpile.stone >= 10 &&
+      settlement.stockpile.timber >= 6;
+    const style: BridgeStyle = preferStone ? 'stone_arch' : 'timber_arch';
+    const cost = style === 'stone_arch' ? { timber: 6, stone: 10 } : { timber: 11, stone: 3 };
+    if (!this.canAfford(settlement, cost)) return;
+
+    const avoidPoints: { x: number; z: number; radius: number }[] = [];
+    for (const s of world.settlements) {
+      avoidPoints.push({ x: s.center.x, z: s.center.z, radius: 4.5 });
+      for (const b of s.buildings) {
+        avoidPoints.push({
+          x: b.position.x,
+          z: b.position.z,
+          radius: BUILDING_CATALOG[b.type].footprintRadius + 0.8,
+        });
+      }
+    }
+
+    const crossing = world.terrain.findRiverCrossingNear(
+      settlement.center.x,
+      settlement.center.z,
+      rng,
+      world.bridges,
+      avoidPoints,
+      54,
+    );
+    if (!crossing) return;
+
+    this.spendResources(settlement, cost);
+    const bridge: BridgeInstance = {
+      id: `bridge_${this.bridgeSeq++}`,
+      settlementId: settlement.id,
+      style,
+      ...crossing,
+      progress: 0,
+      completed: false,
+    };
+    world.bridges.push(bridge);
+
+    const styleLabel = style === 'stone_arch' ? 'stone arch bridge' : 'timber footbridge';
+    world.chronicle.record(
+      world.day,
+      world.season,
+      'settlement',
+      'Bridge Span Begun',
+      `Builders from ${settlement.name} began raising a ${styleLabel} across the stream.`,
+      { x: bridge.centerX, z: bridge.centerZ },
+    );
   }
 
   private rankBuildingCandidates(settlement: Settlement, world: WorldState): BuildingType[] {

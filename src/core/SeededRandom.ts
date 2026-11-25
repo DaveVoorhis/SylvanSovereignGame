@@ -1,4 +1,26 @@
 /**
+ * Generates a fresh non-deterministic 31-bit positive integer seed for a new
+ * procedural woodland world, preferring Web Crypto entropy when available.
+ */
+export function generateRandomSeed(exclude?: number): number {
+  const maxSpan = 2_000_000_000;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    let raw: number;
+    if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.getRandomValues === 'function') {
+      const buf = new Uint32Array(1);
+      globalThis.crypto.getRandomValues(buf);
+      raw = (buf[0] % maxSpan) + 1000;
+    } else {
+      raw = Math.floor(Math.random() * maxSpan) + 1000;
+    }
+    if (raw !== exclude) {
+      return raw;
+    }
+  }
+  return ((exclude ?? 1000) + 7919) % maxSpan + 1000;
+}
+
+/**
  * Deterministic Mulberry32 PRNG for reproducible forest worlds,
  * procedural god personalities, and testable simulation runs.
  */

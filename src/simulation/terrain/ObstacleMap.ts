@@ -1,6 +1,7 @@
 import type { BuildingType } from '@core/Types';
 import { BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
 import type { Settlement } from '@simulation/settlements/Settlement';
+import { isPointNearBridge, type BridgeInstance } from './Bridge';
 import type { PropSpot, TerrainMap, TreeSpot } from './TerrainMap';
 
 /** Minimum horizontal clearance from every settlement's central hearth firepit (stone ring outer edge ≈ 0.90m). */
@@ -68,6 +69,7 @@ export class ObstacleMap {
 
   private lastSettlementCount = -1;
   private lastBuildingCount = -1;
+  private lastBridgeCount = -1;
   private queryStamp = 0;
   private _version = 0;
 
@@ -76,21 +78,27 @@ export class ObstacleMap {
     return this._version;
   }
 
-  /** Rebuilds the spatial grid whenever settlements or buildings change. */
-  sync(terrain: TerrainMap, settlements: readonly Settlement[]): void {
+  /** Rebuilds the spatial grid whenever settlements, buildings, or bridges change. */
+  sync(
+    terrain: TerrainMap,
+    settlements: readonly Settlement[],
+    bridges: readonly BridgeInstance[] = [],
+  ): void {
     let totalBuildings = 0;
     for (const s of settlements) {
       totalBuildings += s.buildings.length;
     }
     if (
       settlements.length === this.lastSettlementCount &&
-      totalBuildings === this.lastBuildingCount
+      totalBuildings === this.lastBuildingCount &&
+      bridges.length === this.lastBridgeCount
     ) {
       return;
     }
 
     this.lastSettlementCount = settlements.length;
     this.lastBuildingCount = totalBuildings;
+    this.lastBridgeCount = bridges.length;
     this._version++;
     this.cells.clear();
     this.allObstacles.length = 0;
@@ -152,7 +160,14 @@ export class ObstacleMap {
       }
     }
 
-    // 3. Standing forest trees (skip trees cleared from settlement clearings & building footprints)
+    const overlapsBridge = (x: number, z: number, margin: number): boolean => {
+      for (let i = 0; i < bridges.length; i++) {
+        if (isPointNearBridge(bridges[i], x, z, margin)) return true;
+      }
+      return false;
+    };
+
+    // 3. Standing forest trees (skip trees cleared from settlement clearings, building footprints & bridges)
     for (const tree of terrain.trees) {
       let cleared = false;
       for (const s of settlements) {
@@ -173,19 +188,21 @@ export class ObstacleMap {
         }
         if (cleared) break;
       }
-      if (cleared) continue;
+      if (cleared || overlapsBridge(tree.x, tree.z, 1.8)) continue;
 
       addObstacle(tree.x, tree.z, getTreeTrunkRadius(tree), 6.5 * tree.scale, 'tree');
     }
 
     // 4. Mossy boulders & forest rocks
     for (const rock of terrain.rocks) {
+      if (overlapsBridge(rock.x, rock.z, 1.3)) continue;
       addObstacle(rock.x, rock.z, getRockCollisionRadius(rock), 0.95 * rock.scale, 'rock');
     }
 
     // 5. Plump berry bushes (undergrowth variant === 1; low ferns & toadstools remain walkable)
     for (const prop of terrain.undergrowth) {
       if (prop.variant !== 1) continue;
+      if (overlapsBridge(prop.x, prop.z, 1.2)) continue;
       addObstacle(prop.x, prop.z, getBushCollisionRadius(prop), 0.9 * prop.scale, 'bush');
     }
   }

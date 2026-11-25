@@ -19,6 +19,7 @@ import { SettlementManager } from './settlements/SettlementManager';
 import { Chronicle } from './society/Chronicle';
 import { DiplomacySystem } from './society/DiplomacySystem';
 import { EconomySystem } from './society/EconomySystem';
+import type { BridgeInstance } from './terrain/Bridge';
 import { ObstacleMap } from './terrain/ObstacleMap';
 import { TerrainMap } from './terrain/TerrainMap';
 
@@ -53,6 +54,7 @@ export class WorldState {
   readonly diplomacy: DiplomacySystem;
 
   readonly settlements: Settlement[] = [];
+  readonly bridges: BridgeInstance[] = [];
   readonly creatures: Creature[] = [];
   readonly activeDivineEffects: DivineEffectVisual[] = [];
   readonly activeCombatSparks: CombatSparkVisual[] = [];
@@ -84,7 +86,7 @@ export class WorldState {
     this.diplomacy = new DiplomacySystem();
 
     this.settlementManager.createInitialSettlements(this);
-    this.obstacles.sync(this.terrain, this.settlements);
+    this.obstacles.sync(this.terrain, this.settlements, this.bridges);
     this.diplomacy.initialize(this.settlements, this);
 
     this.chronicle.record(
@@ -97,7 +99,7 @@ export class WorldState {
   }
 
   spawnCreature(settlement: Settlement, species: SpeciesId, role: CreatureRole): Creature {
-    this.obstacles.sync(this.terrain, this.settlements);
+    this.obstacles.sync(this.terrain, this.settlements, this.bridges);
     const def = SPECIES_CATALOG[species];
     const obstacleR = Math.max(0.26, def.bodyScale * 0.36);
     const personalR = Math.max(0.32, def.bodyScale * 0.42);
@@ -168,6 +170,10 @@ export class WorldState {
 
   getSettlement(id: string): Settlement | undefined {
     return this.settlements.find((s) => s.id === id);
+  }
+
+  getBridge(id: string): BridgeInstance | undefined {
+    return this.bridges.find((b) => b.id === id);
   }
 
   getCreature(id: string): Creature | undefined {
@@ -250,7 +256,7 @@ export class WorldState {
     // Step subsystems
     this.deity.tick(this, dt);
     this.settlementManager.tick(this, dt);
-    this.obstacles.sync(this.terrain, this.settlements);
+    this.obstacles.sync(this.terrain, this.settlements, this.bridges);
     this.diplomacy.tick(this, dt);
 
     this.creatureAI.prepareStep(this);

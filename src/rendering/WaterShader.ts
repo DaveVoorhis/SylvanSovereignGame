@@ -242,24 +242,13 @@ export function createRealisticWaterSurface(
     const h = heights[key];
     const depth = waterLevel - h;
 
-    // Compute downstream tangent along the winding river centerline
-    const cxPrev = terrain.getRiverCenterX(z - 0.6);
-    const cxNext = terrain.getRiverCenterX(z + 0.6);
-    let fx = (cxNext - cxPrev) / 1.2;
-    let fz = 1.0;
-    const len = Math.hypot(fx, fz) || 1;
-    fx /= len;
-    fz /= len;
-
-    // Calm the flow gracefully inside the wide central pond
-    const pondDist = Math.hypot(x - 4, z + 6);
-    const pondCalm = THREE.MathUtils.smoothstep(pondDist, 7.5, 16.0);
-    const speed = 0.25 + 0.75 * pondCalm;
+    // Downstream river flow vector, gracefully calmed inside procedural glade pond(s)
+    const flow = terrain.getWaterFlowAt(x, z);
 
     const idx = positions.length / 3;
     positions.push(x, waterLevel, z);
     depths.push(depth);
-    flows.push(fx * speed, fz * speed);
+    flows.push(flow.x, flow.z);
     vertIndexMap[key] = idx;
     return idx;
   };

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EventBus } from '@core/EventBus';
+import { generateRandomSeed } from '@core/SeededRandom';
 import { getCreaturePersonalRadius } from '@simulation/creatures/CreatureAI';
 import {
   HEARTH_FIRE_KEEP_OUT_RADIUS,
@@ -419,5 +420,116 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     expect(nightRatio).toBeLessThan(0.28);
     // Mist should remain rare across both natural weather and divine acts
     expect(mistRatio).toBeLessThan(0.1);
+  });
+
+  it('procedurally varies river course, ponds, relief, and settlements across random seeds', () => {
+    // Verify random seed generator yields varied valid positive integers and respects exclusion
+    const generated = new Set<number>();
+    let prev: number | undefined;
+    for (let i = 0; i < 12; i++) {
+      const seed = generateRandomSeed(prev);
+      expect(Number.isSafeInteger(seed)).toBe(true);
+      expect(seed).toBeGreaterThanOrEqual(1000);
+      if (prev !== undefined) expect(seed).not.toBe(prev);
+      generated.add(seed);
+      prev = seed;
+    }
+    expect(generated.size).toBeGreaterThanOrEqual(10);
+
+    // Compare two distinct seeds for genuinely distinct terrain layouts
+    const worldA = new WorldState(new EventBus(), { seed: 101010 });
+    const worldB = new WorldState(new EventBus(), { seed: 987654 });
+
+    expect(worldA.terrain.riverAngle).not.toBeCloseTo(worldB.terrain.riverAngle, 2);
+    const pondA = worldA.terrain.ponds[0];
+    const pondB = worldB.terrain.ponds[0];
+    expect(Math.hypot(pondA.x - pondB.x, pondA.z - pondB.z)).toBeGreaterThan(2.0);
+
+    let heightDiffSum = 0;
+    let sampleCount = 0;
+    for (let x = -60; x <= 60; x += 20) {
+      for (let z = -60; z <= 60; z += 20) {
+        heightDiffSum += Math.abs(
+          worldA.terrain.getHeightAt(x, z) - worldB.terrain.getHeightAt(x, z),
+        );
+        sampleCount++;
+      }
+    }
+    expect(heightDiffSum / sampleCount).toBeGreaterThan(0.8);
+
+    // Confirm settlement placement & bounded terrain hold reliably across many seeds
+    const probeSeeds = [1111, 22222, 333333, 4444444, 55555555, 8675309];
+    for (const seed of probeSeeds) {
+      const w = new WorldState(new EventBus(), { seed });
+      expect(w.settlements.length).toBe(w.config.initialSettlements);
+      expect(w.terrain.ponds.length).toBeGreaterThanOrEqual(1);
+      const flow = w.terrain.getWaterFlowAt(0, 0);
+      expect(Number.isFinite(flow.x)).toBe(true);
+      expect(Number.isFinite(flow.z)).toBe(true);
+      for (const [x, z] of [
+        [0, 0],
+        [75, -40],
+        [-280, 220],
+        [480, -480],
+      ]) {
+        const h = w.terrain.getHeightAt(x, z);
+        expect(Number.isFinite(h)).toBe(true);
+        expect(h).toBeGreaterThan(-4);
+        expect(h).toBeLessThan(36);
+      }
+    }
+  });
+
+  it('allows creatures to autonomously plan, build, and cross arched bridges over waterways', () => {
+    const world = new WorldState(new EventBus(), { seed: 246810 });
+    for (const s of world.settlements) {
+      s.stockpile.timber = 120;
+      s.stockpile.stone = 80;
+    }
+
+    // Advance simulation until creatures autonomously stake out and finish at least one bridge
+    for (let i = 0; i < 1600; i++) {
+      world.step(0.1);
+      if (world.bridges.some((b) => b.completed)) break;
+    }
+
+    const bridge = world.bridges.find((b) => b.completed);
+    expect(bridge).toBeDefined();
+    if (!bridge) return;
+
+    // Bridge spans over actual waterway yet provides dry elevated walkability right across the midpoint
+    expect(world.terrain.getHeightAt(bridge.centerX, bridge.centerZ)).toBeLessThan(
+      world.terrain.waterLevel,
+    );
+    expect(world.terrain.isWalkable(bridge.centerX, bridge.centerZ, false)).toBe(true);
+    const midDeckY = world.terrain.getBridgeDeckY(bridge.centerX, bridge.centerZ);
+    expect(midDeckY).not.toBeNull();
+    expect(midDeckY!).toBeGreaterThan(world.terrain.waterLevel + 0.5);
+
+    // Direct a ground creature from the start abutment to the opposite bank across the completed bridge
+    const walker = world.creatures.find((c) => c.alive && !c.def.aerial);
+    expect(walker).toBeDefined();
+    if (!walker) return;
+
+    walker.x = bridge.startX;
+    walker.z = bridge.startZ;
+    walker.activity = 'socialising';
+    walker.actionTimer = 30;
+    walker.targetX = bridge.endX + bridge.dirX * 1.2;
+    walker.targetZ = bridge.endZ + bridge.dirZ * 1.2;
+    walker.resetNavigationState();
+
+    let maxObservedY = -Infinity;
+    let reachedFarSide = false;
+    for (let i = 0; i < 240; i++) {
+      world.step(0.08);
+      if (walker.y > maxObservedY) maxObservedY = walker.y;
+      if (Math.hypot(walker.x - bridge.endX, walker.z - bridge.endZ) < 2.2) {
+        reachedFarSide = true;
+        break;
+      }
+    }
+    expect(reachedFarSide).toBe(true);
+    expect(maxObservedY).toBeGreaterThan(world.terrain.waterLevel + 0.5);
   });
 });

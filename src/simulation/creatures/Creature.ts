@@ -65,6 +65,7 @@ export class Creature {
   /** Optional target entity IDs for active behaviors. */
   targetResourceId: string | null = null;
   targetBuildingId: string | null = null;
+  targetBridgeId: string | null = null;
   targetCreatureId: string | null = null;
   tradeDestinationSettlementId: string | null = null;
   tradeCarrying: ResourceType | null = null;
