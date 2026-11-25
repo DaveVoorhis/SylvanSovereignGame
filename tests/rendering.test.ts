@@ -132,6 +132,16 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     const toadstools = createToadstoolClusterGeo();
     assertValidGeometry(toadstools.stems);
     assertValidGeometry(toadstools.caps);
+    // Verify toadstool caps have upward/outward normals (not inverted inside-out)
+    const capNorms = toadstools.caps.attributes.normal as THREE.BufferAttribute;
+    const capPos = toadstools.caps.attributes.position as THREE.BufferAttribute;
+    let capUpSum = 0;
+    for (let i = 0; i < capPos.count; i++) {
+      if (capPos.getY(i) > 0.35) {
+        capUpSum += capNorms.getY(i);
+      }
+    }
+    expect(capUpSum).toBeGreaterThan(0);
     toadstools.stems.dispose();
     toadstools.caps.dispose();
 
@@ -336,9 +346,26 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     renderer.update(0.05);
 
     let meshCount = 0;
+    let bellRoofChecked = false;
     renderer.rootGroup.traverse((obj) => {
-      if (obj instanceof THREE.Mesh) meshCount++;
+      if (obj instanceof THREE.Mesh) {
+        meshCount++;
+        if (obj.geometry instanceof THREE.LatheGeometry && obj.position.y > 1.7 && obj.position.y < 1.8) {
+          // Burrow cottage bell roof: outer slope vertices must face outward & upward, never inside-out
+          const pos = obj.geometry.attributes.position as THREE.BufferAttribute;
+          const norm = obj.geometry.attributes.normal as THREE.BufferAttribute;
+          let outwardDotSum = 0;
+          for (let i = 0; i < pos.count; i++) {
+            if (pos.getY(i) > 0.3 && pos.getY(i) < 1.5) {
+              outwardDotSum += pos.getX(i) * norm.getX(i) + pos.getZ(i) * norm.getZ(i);
+            }
+          }
+          expect(outwardDotSum).toBeGreaterThan(0);
+          bellRoofChecked = true;
+        }
+      }
     });
+    expect(bellRoofChecked).toBe(true);
     expect(meshCount).toBeGreaterThan(ALL_BUILDING_TYPES.length * 10 + 40);
 
     renderer.dispose();

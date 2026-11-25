@@ -853,16 +853,16 @@ export function createToadstoolClusterGeo(): {
     new THREE.Vector2(0.06, 1.0),
   ];
 
-  // Lathe profile for a rounded fairytale toadstool dome cap
+  // Lathe profile for a rounded fairytale toadstool dome cap (wound bottom-to-top for outward normals)
   const capPts = [
-    new THREE.Vector2(0.0, 0.52),
-    new THREE.Vector2(0.32, 0.48),
-    new THREE.Vector2(0.68, 0.36),
-    new THREE.Vector2(0.95, 0.16),
-    new THREE.Vector2(1.02, 0.03),
-    new THREE.Vector2(0.86, -0.03),
-    new THREE.Vector2(0.28, 0.02),
     new THREE.Vector2(0.0, 0.04),
+    new THREE.Vector2(0.28, 0.02),
+    new THREE.Vector2(0.86, -0.03),
+    new THREE.Vector2(1.02, 0.03),
+    new THREE.Vector2(0.95, 0.16),
+    new THREE.Vector2(0.68, 0.36),
+    new THREE.Vector2(0.32, 0.48),
+    new THREE.Vector2(0.0, 0.52),
   ];
 
   for (const s of specs) {

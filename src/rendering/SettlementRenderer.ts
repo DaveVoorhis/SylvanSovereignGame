@@ -249,16 +249,16 @@ export class SettlementRenderer {
       roughness: 0.92,
     });
 
-    // Bell-curved fairytale thatch cottage roof (LatheGeometry)
+    // Bell-curved fairytale thatch cottage roof (LatheGeometry wound bottom-to-top for outward normals)
     const bellPts = [
-      new THREE.Vector2(0.0, 1.82),
-      new THREE.Vector2(0.32, 1.68),
-      new THREE.Vector2(0.82, 1.25),
-      new THREE.Vector2(1.42, 0.65),
-      new THREE.Vector2(1.96, 0.14),
-      new THREE.Vector2(2.14, -0.02),
-      new THREE.Vector2(1.92, -0.08),
       new THREE.Vector2(1.42, 0.04),
+      new THREE.Vector2(1.92, -0.08),
+      new THREE.Vector2(2.14, -0.02),
+      new THREE.Vector2(1.96, 0.14),
+      new THREE.Vector2(1.42, 0.65),
+      new THREE.Vector2(0.82, 1.25),
+      new THREE.Vector2(0.32, 1.68),
+      new THREE.Vector2(0.0, 1.82),
     ];
     this.bellRoofGeo = new THREE.LatheGeometry(bellPts, 24);
 
