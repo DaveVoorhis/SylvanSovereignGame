@@ -3,6 +3,7 @@ import type { BuildingType } from '@core/Types';
 import type { BuildingInstance, Settlement } from '@simulation/settlements/Settlement';
 import type { WorldState } from '@simulation/WorldState';
 import type { TextureLibrary } from './ProceduralTextures';
+import { HearthFire, createOvenFireMaterial, createSharedFlameGeometry } from './FireEffect';
 
 interface SmokePuff {
   readonly mesh: THREE.Mesh;
@@ -23,10 +24,8 @@ interface RenderedBuilding {
 }
 
 interface RenderedHearth {
-  readonly flameOuter: THREE.Mesh;
-  readonly flameInner: THREE.Mesh;
+  readonly fire: HearthFire;
   readonly banner: THREE.Mesh;
-  readonly light: THREE.PointLight;
   readonly seed: number;
 }
 
@@ -61,8 +60,8 @@ export class SettlementRenderer {
   private readonly flowerPinkMat: THREE.MeshStandardMaterial;
   private readonly flowerGoldMat: THREE.MeshStandardMaterial;
   private readonly flowerBlueMat: THREE.MeshStandardMaterial;
-  private readonly flameOuterMat: THREE.MeshStandardMaterial;
-  private readonly flameInnerMat: THREE.MeshStandardMaterial;
+  private readonly charredLogMat: THREE.MeshStandardMaterial;
+  private readonly ovenFireMat: THREE.ShaderMaterial;
   private readonly smokeMat: THREE.MeshStandardMaterial;
   private readonly potteryMat: THREE.MeshStandardMaterial;
 
@@ -71,6 +70,7 @@ export class SettlementRenderer {
   private readonly acornSiloGeo: THREE.BufferGeometry;
   private readonly gableRoofGeo: THREE.BufferGeometry;
   private readonly smokeGeo: THREE.BufferGeometry;
+  private readonly sharedFlameGeo: THREE.BufferGeometry;
 
   private readonly buildingMeshes = new Map<string, RenderedBuilding>();
   private readonly hearths: RenderedHearth[] = [];
@@ -199,18 +199,16 @@ export class SettlementRenderer {
     this.flowerPinkMat = new THREE.MeshStandardMaterial({ color: 0xf48fb1, roughness: 0.55 });
     this.flowerGoldMat = new THREE.MeshStandardMaterial({ color: 0xffd54f, roughness: 0.55 });
     this.flowerBlueMat = new THREE.MeshStandardMaterial({ color: 0x82b1ff, roughness: 0.55 });
-    this.flameOuterMat = new THREE.MeshStandardMaterial({
-      color: 0xff7b29,
-      emissive: 0xff5a14,
-      emissiveIntensity: 1.9,
-      roughness: 0.4,
+    this.charredLogMat = new THREE.MeshStandardMaterial({
+      color: 0x261a14,
+      map: textures.timber.map,
+      bumpMap: textures.timber.bumpMap,
+      bumpScale: 0.18,
+      emissive: 0x3b0e02,
+      emissiveIntensity: 0.35,
+      roughness: 0.94,
     });
-    this.flameInnerMat = new THREE.MeshStandardMaterial({
-      color: 0xfff099,
-      emissive: 0xffd24d,
-      emissiveIntensity: 2.2,
-      roughness: 0.3,
-    });
+    this.ovenFireMat = createOvenFireMaterial();
     this.smokeMat = new THREE.MeshStandardMaterial({
       color: 0xeae6df,
       transparent: true,
@@ -264,6 +262,7 @@ export class SettlementRenderer {
     this.gableRoofGeo.translate(0, 0, -1.45);
 
     this.smokeGeo = new THREE.SphereGeometry(0.18, 10, 8);
+    this.sharedFlameGeo = createSharedFlameGeometry();
 
     scene.add(this.rootGroup);
     this.syncAll();
@@ -279,15 +278,22 @@ export class SettlementRenderer {
     const nightGlow = THREE.MathUtils.clamp(1 - (sunY + 0.1) * 2.2, 0.24, 2.35);
     this.windowMat.emissiveIntensity = nightGlow * 1.45;
     this.fountainWaterMat.emissiveIntensity = 0.25 + nightGlow * 0.35;
+    this.ovenFireMat.uniforms.uTime.value = t;
+
+    const windStrength =
+      this.world.weather === 'storm'
+        ? 0.92
+        : this.world.weather === 'blossom'
+          ? 0.56
+          : this.world.weather === 'rain'
+            ? 0.48
+            : this.world.weather === 'snow'
+              ? 0.42
+            : 0.24;
 
     for (const hearth of this.hearths) {
-      const flicker =
-        Math.sin(t * 7.5 + hearth.seed) * 0.14 + Math.sin(t * 13.2 + hearth.seed * 2) * 0.08;
-      hearth.light.intensity = nightGlow * 6.8 + flicker * 3.2;
-      hearth.flameOuter.scale.set(1 - flicker * 0.35, 1 + flicker * 0.85, 1 - flicker * 0.35);
-      hearth.flameOuter.rotation.y = t * 1.4 + hearth.seed;
-      hearth.flameInner.scale.set(1 + flicker * 0.3, 1 + flicker * 1.0, 1 + flicker * 0.3);
-      hearth.banner.rotation.y = Math.sin(t * 2.4 + hearth.seed) * 0.16;
+      hearth.fire.update(t, nightGlow, windStrength);
+      hearth.banner.rotation.y = Math.sin(t * (2.2 + windStrength * 1.4) + hearth.seed) * (0.14 + windStrength * 0.12);
     }
 
     // Animate shrine crystals, rune rings, workshop wheels, windmill rotors, fountain jets, swaying signs & smoke
@@ -385,29 +391,33 @@ export class SettlementRenderer {
       curb.rotation.y = -a + Math.PI / 2;
     }
 
-    // Chunky cobblestone firepit ring + crossed firewood logs
+    // Chunky cobblestone firepit ring cradling the glowing ember bed
     for (let i = 0; i < 10; i++) {
       const a = (i / 10) * Math.PI * 2;
       const rock = add(new THREE.Mesh(new THREE.DodecahedronGeometry(0.24, 1), this.stoneMat));
-      rock.scale.set(1.15, 0.72, 1.0);
-      rock.position.set(Math.cos(a) * 0.68, 0.24, Math.sin(a) * 0.68);
+      rock.scale.set(1.16, 0.72, 1.02);
+      rock.position.set(Math.cos(a) * 0.66, 0.24, Math.sin(a) * 0.66);
     }
 
-    for (let i = 0; i < 3; i++) {
-      const log = add(new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.09, 0.85, 8), this.darkTimberMat));
-      log.rotation.z = Math.PI / 2 - 0.22;
-      log.rotation.y = (i / 3) * Math.PI;
-      log.position.y = 0.26;
+    // Naturally stacked charred split-timber firewood arranged in a teepee/star campfire lay
+    for (let i = 0; i < 5; i++) {
+      const angle = (i / 5) * Math.PI * 2 + 0.25;
+      const radiusTop = 0.055 + (i % 2) * 0.014;
+      const radiusBot = 0.082 + (i % 3) * 0.01;
+      const length = 0.76 + (i % 2) * 0.12;
+      const log = add(new THREE.Mesh(new THREE.CylinderGeometry(radiusTop, radiusBot, length, 8), this.charredLogMat));
+      log.position.set(Math.cos(angle) * 0.24, 0.29 + (i % 2) * 0.025, Math.sin(angle) * 0.24);
+      log.rotation.order = 'YXZ';
+      log.rotation.y = -angle + Math.PI / 2 + (i % 2 === 0 ? 0.15 : -0.13);
+      log.rotation.x = -(0.98 + (i % 3) * 0.09);
     }
 
-    // Layered dancing hearth flames
-    const flameOuter = new THREE.Mesh(new THREE.ConeGeometry(0.36, 0.82, 10), this.flameOuterMat);
-    flameOuter.position.y = 0.58;
-    group.add(flameOuter);
-
-    const flameInner = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.56, 8), this.flameInnerMat);
-    flameInner.position.y = 0.48;
-    group.add(flameInner);
+    // Volumetric procedural campfire: glowing coal bed, multi-layered turbulent blackbody flames,
+    // spiraling rising sparks, wispy smoke plume, and dynamic dancing firelight
+    const seed = settlement.center.x * 0.3 + settlement.center.z * 0.7;
+    const fire = new HearthFire(seed, this.sharedFlameGeo);
+    fire.group.userData.selectionTarget = { kind: 'settlement', id: settlement.id };
+    group.add(fire.group);
 
     // Carved woodland banner post with arm, dangling glowing fairy lantern & swallowtail banner
     const pole = add(new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.13, 4.6, 10), this.timberMat));
@@ -459,16 +469,10 @@ export class SettlementRenderer {
       leg.rotation.y = 0.65;
     }
 
-    const light = new THREE.PointLight(0xffa74f, 4.8, 20, 1.55);
-    light.position.set(0, 1.9, 0);
-    group.add(light);
-
     this.hearths.push({
-      flameOuter,
-      flameInner,
+      fire,
       banner,
-      light,
-      seed: settlement.center.x * 0.3 + settlement.center.z * 0.7,
+      seed,
     });
 
     this.rootGroup.add(group);
@@ -754,8 +758,11 @@ export class SettlementRenderer {
       ovenBase.position.set(1.55, 0.42, -0.08);
       const ovenDome = tag(new THREE.Mesh(new THREE.SphereGeometry(0.86, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.56), this.brickMat));
       ovenDome.position.set(1.55, 0.76, -0.08);
-      const ovenGlow = tag(new THREE.Mesh(new THREE.CircleGeometry(0.28, 12), this.flameOuterMat));
+      const ovenArch = tag(new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.06, 8, 16, Math.PI), this.stoneMat));
+      ovenArch.position.set(1.55, 0.96, 0.78);
+      const ovenGlow = tag(new THREE.Mesh(new THREE.CircleGeometry(0.28, 16), this.ovenFireMat));
       ovenGlow.position.set(1.55, 0.98, 0.79);
+      ovenGlow.castShadow = false;
       const ovenChimney = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.3, 1.9, 10), this.brickMat));
       ovenChimney.position.set(1.55, 2.35, -0.08);
       addChimneySmoke(1.55, 3.38, -0.08);
@@ -1238,8 +1245,11 @@ export class SettlementRenderer {
       this.acornSiloGeo,
       this.gableRoofGeo,
       this.smokeGeo,
+      this.sharedFlameGeo,
     ]);
+    const fireGroups = new Set<THREE.Object3D>(this.hearths.map((h) => h.fire.group));
     this.rootGroup.traverse((obj) => {
+      if (obj.parent && fireGroups.has(obj.parent)) return;
       if (obj instanceof THREE.Mesh && obj.geometry && !sharedGeos.has(obj.geometry)) {
         obj.geometry.dispose();
       }
@@ -1247,6 +1257,10 @@ export class SettlementRenderer {
     for (const g of sharedGeos) g.dispose();
     for (const d of this.extraDisposables) d.dispose();
     this.extraDisposables.length = 0;
+    for (const h of this.hearths) {
+      h.fire.dispose();
+    }
+    this.hearths.length = 0;
 
     this.timberMat.dispose();
     this.darkTimberMat.dispose();
@@ -1268,8 +1282,8 @@ export class SettlementRenderer {
     this.flowerPinkMat.dispose();
     this.flowerGoldMat.dispose();
     this.flowerBlueMat.dispose();
-    this.flameOuterMat.dispose();
-    this.flameInnerMat.dispose();
+    this.charredLogMat.dispose();
+    this.ovenFireMat.dispose();
     this.smokeMat.dispose();
     this.potteryMat.dispose();
   }

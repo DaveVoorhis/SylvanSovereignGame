@@ -4,6 +4,7 @@ import { EventBus } from '@core/EventBus';
 import type { CreatureRole } from '@core/Types';
 import { CreatureRenderer } from '@rendering/CreatureRenderer';
 import { DistanceFocusBlurPass } from '@rendering/DistanceFocusBlurPass';
+import { HearthFire, createOvenFireMaterial, createSharedFlameGeometry } from '@rendering/FireEffect';
 import {
   createBerryBushGeo,
   createBirchCanopyGeo,
@@ -200,6 +201,43 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     expect(pass.material.uniforms.uAspect.value).toBeCloseTo(16 / 9, 4);
 
     pass.dispose();
+  });
+
+  it('builds volumetric HearthFire with ember bed, shader flames, sparks, smoke, and flickering light', () => {
+    const sharedFlameGeo = createSharedFlameGeometry();
+    assertValidGeometry(sharedFlameGeo);
+    expect(sharedFlameGeo.attributes.aPhase).toBeDefined();
+    expect(sharedFlameGeo.attributes.aLayer).toBeDefined();
+
+    const fire = new HearthFire(1.7, sharedFlameGeo);
+    fire.update(1.25, 1.4, 0.35);
+    const lightPosA = fire.light.position.clone();
+    const intensityA = fire.light.intensity;
+
+    fire.update(2.85, 1.4, 0.85);
+    expect(fire.flameMaterial.uniforms.uTime.value).toBeGreaterThan(2.0);
+    expect(fire.light.intensity).toBeGreaterThan(1.0);
+    expect(
+      fire.light.position.distanceTo(lightPosA) > 0 || Math.abs(fire.light.intensity - intensityA) > 0,
+    ).toBe(true);
+
+    let meshCount = 0;
+    let pointsCount = 0;
+    fire.group.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) meshCount++;
+      if (obj instanceof THREE.Points) pointsCount++;
+    });
+    // Ember bed + volumetric flame mesh, plus rising sparks + rising smoke wisps
+    expect(meshCount).toBe(2);
+    expect(pointsCount).toBe(2);
+
+    const ovenMat = createOvenFireMaterial();
+    ovenMat.uniforms.uTime.value = 3.5;
+    expect(ovenMat.uniforms.uTime.value).toBe(3.5);
+    ovenMat.dispose();
+
+    fire.dispose();
+    sharedFlameGeo.dispose();
   });
 
   it('renders and animates all 14 diverse storybook city building types cleanly', () => {
