@@ -48,12 +48,14 @@ interface CreatureRig {
 
 interface SparkVisual {
   readonly mesh: THREE.Mesh;
-  readonly mat: THREE.MeshBasicMaterial;
+  readonly mat: THREE.Material;
   readonly createdAt: number;
   readonly duration: number;
   readonly vx: number;
-  readonly vy: number;
+  vy: number;
   readonly vz: number;
+  readonly baseScale: number;
+  readonly gravity: number;
 }
 
 interface SpeciesMaterialSet {
@@ -94,6 +96,11 @@ interface SharedGeometries {
   readonly acornHat: THREE.BufferGeometry;
   readonly selectionRing: THREE.BufferGeometry;
   readonly sparkStar: THREE.BufferGeometry;
+  readonly workChip: THREE.BufferGeometry;
+  readonly axeHead: THREE.BufferGeometry;
+  readonly spadeBlade: THREE.BufferGeometry;
+  readonly trowelBlade: THREE.BufferGeometry;
+  readonly hammerHead: THREE.BufferGeometry;
   readonly reedHat: THREE.BufferGeometry;
   readonly strawHat: THREE.BufferGeometry;
   readonly furCollar: THREE.BufferGeometry;
@@ -285,6 +292,172 @@ function buildBirdFootGeo(): THREE.BufferGeometry {
   return mergePartGeometries(parts, false);
 }
 
+function buildAxeHeadGeo(): THREE.BufferGeometry {
+  // Bearded woodcutter's axe head in the Y-Z plane:
+  // flat poll at +Y, haft eye at origin, flared crescent cutting bit at -Y
+  const shape = new THREE.Shape();
+  shape.moveTo(-0.044, 0.048);
+  shape.lineTo(0.044, 0.048);
+  shape.lineTo(0.048, -0.015);
+  shape.quadraticCurveTo(0.068, -0.095, 0.098, -0.155);
+  shape.quadraticCurveTo(0.0, -0.225, -0.106, -0.165);
+  shape.quadraticCurveTo(-0.066, -0.088, -0.048, -0.015);
+  shape.closePath();
+
+  const blade = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.038,
+    bevelEnabled: true,
+    bevelThickness: 0.01,
+    bevelSize: 0.007,
+    bevelSegments: 2,
+  });
+  blade.translate(0, 0, -0.019);
+  blade.rotateY(-Math.PI / 2);
+
+  // Forge-taper the cutting bit along X as y approaches the sharp crescent edge
+  const pos = blade.attributes.position as THREE.BufferAttribute;
+  for (let i = 0; i < pos.count; i++) {
+    const y = pos.getY(i);
+    if (y < -0.03) {
+      const t = Math.min(1, (-0.03 - y) / 0.19);
+      const scaleX = THREE.MathUtils.lerp(1.0, 0.24, t * t);
+      pos.setX(i, pos.getX(i) * scaleX);
+    }
+  }
+  pos.needsUpdate = true;
+  blade.computeVertexNormals();
+  return blade;
+}
+
+function buildSpadeBladeGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+
+  // Pointed shield-shaped shovel scoop extending along +Z
+  const shape = new THREE.Shape();
+  shape.moveTo(-0.094, 0.0);
+  shape.lineTo(0.094, 0.0);
+  shape.lineTo(0.102, 0.13);
+  shape.quadraticCurveTo(0.072, 0.21, 0.0, 0.255);
+  shape.quadraticCurveTo(-0.072, 0.21, -0.102, 0.13);
+  shape.closePath();
+
+  const scoop = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.014,
+    bevelEnabled: true,
+    bevelThickness: 0.004,
+    bevelSize: 0.004,
+    bevelSegments: 1,
+  });
+  scoop.translate(0, 0, -0.007);
+  scoop.rotateX(Math.PI / 2);
+
+  // Subtle upward dish curvature along the side edges so the blade reads as a 3D scoop
+  const pos = scoop.attributes.position as THREE.BufferAttribute;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const z = pos.getZ(i);
+    const dish = x * x * 1.45 - Math.max(0, z - 0.12) * 0.06;
+    pos.setY(i, pos.getY(i) + dish);
+  }
+  pos.needsUpdate = true;
+  scoop.computeVertexNormals();
+  parts.push(scoop);
+
+  // Upturned foot-tread shoulders along the rear edge of the scoop
+  const tread = new THREE.BoxGeometry(0.186, 0.024, 0.02);
+  tread.translate(0, 0.014, 0.008);
+  parts.push(tread);
+
+  // Forged steel socket hosel joining the ash shaft to the blade
+  const socket = new THREE.CylinderGeometry(0.032, 0.038, 0.1, 10);
+  socket.rotateX(Math.PI / 2);
+  socket.translate(0, 0.008, -0.025);
+  parts.push(socket);
+
+  return mergePartGeometries(parts, false);
+}
+
+function buildTrowelBladeGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+
+  // Pointed leaf-shaped mason's trowel blade lying in the X-Z plane
+  const shape = new THREE.Shape();
+  shape.moveTo(0.0, 0.0);
+  shape.quadraticCurveTo(0.072, 0.008, 0.084, 0.065);
+  shape.quadraticCurveTo(0.074, 0.145, 0.0, 0.225);
+  shape.quadraticCurveTo(-0.074, 0.145, -0.084, 0.065);
+  shape.quadraticCurveTo(-0.072, 0.008, 0.0, 0.0);
+  shape.closePath();
+
+  const blade = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.009,
+    bevelEnabled: true,
+    bevelThickness: 0.003,
+    bevelSize: 0.003,
+    bevelSegments: 1,
+  });
+  blade.translate(0, 0, -0.0045);
+  blade.rotateX(Math.PI / 2);
+  parts.push(blade);
+
+  // Stepped S-crank mason's steel tang linking blade heel up to the handle ferrule
+  const riser = new THREE.CylinderGeometry(0.012, 0.014, 0.052, 8);
+  riser.rotateX(-0.48);
+  riser.translate(0, 0.021, 0.0);
+  parts.push(riser);
+
+  const stem = new THREE.CylinderGeometry(0.012, 0.013, 0.056, 8);
+  stem.rotateX(Math.PI / 2);
+  stem.translate(0, 0.042, -0.032);
+  parts.push(stem);
+
+  return mergePartGeometries(parts, false);
+}
+
+function buildHammerHeadGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+
+  // Central forged cheek & eye block centered on the handle eye
+  const cheek = new THREE.CylinderGeometry(0.044, 0.044, 0.088, 10);
+  cheek.scale(0.86, 1.0, 1.06);
+  parts.push(cheek);
+
+  // Turned neck leading to the striking bell (-Y is downward strike direction)
+  const neck = new THREE.CylinderGeometry(0.032, 0.038, 0.046, 10);
+  neck.translate(0, -0.064, 0);
+  parts.push(neck);
+
+  // Flared round striking face / bell
+  const bell = new THREE.CylinderGeometry(0.046, 0.042, 0.03, 12);
+  bell.translate(0, -0.096, 0);
+  parts.push(bell);
+
+  // Twin curved split carpenter's claws curving back toward (+Y, -Z) with nail-puller slot
+  const clawShape = new THREE.Shape();
+  clawShape.moveTo(-0.026, 0.032);
+  clawShape.lineTo(0.026, 0.032);
+  clawShape.quadraticCurveTo(0.022, 0.086, -0.022, 0.118);
+  clawShape.quadraticCurveTo(-0.052, 0.128, -0.072, 0.114);
+  clawShape.quadraticCurveTo(-0.042, 0.092, -0.026, 0.032);
+  clawShape.closePath();
+
+  for (const side of [-1, 1] as const) {
+    const prong = new THREE.ExtrudeGeometry(clawShape, {
+      depth: 0.015,
+      bevelEnabled: true,
+      bevelThickness: 0.003,
+      bevelSize: 0.003,
+      bevelSegments: 1,
+    });
+    prong.translate(0, 0, -0.0075);
+    prong.rotateY(-Math.PI / 2);
+    prong.translate(side * 0.017, 0, 0);
+    parts.push(prong);
+  }
+
+  return mergePartGeometries(parts, false);
+}
+
 function createSharedGeometries(): SharedGeometries {
   // Pear-shaped cozy pleated woodland tunic
   const tunicPts = [
@@ -377,6 +550,11 @@ function createSharedGeometries(): SharedGeometries {
   const furCollar = new THREE.TorusGeometry(0.235, 0.078, 10, 22);
   furCollar.rotateX(Math.PI / 2);
 
+  // Tiny faceted wood splinter / earth clod / stone pebble for active construction debris
+  const workChip = new THREE.DodecahedronGeometry(0.038, 0);
+  workChip.scale(1.4, 0.52, 0.85);
+  workChip.computeVertexNormals();
+
   return {
     tunic,
     mantle,
@@ -407,6 +585,11 @@ function createSharedGeometries(): SharedGeometries {
     acornHat: buildAcornHatGeo(),
     selectionRing,
     sparkStar: new THREE.OctahedronGeometry(0.24, 0),
+    workChip,
+    axeHead: buildAxeHeadGeo(),
+    spadeBlade: buildSpadeBladeGeo(),
+    trowelBlade: buildTrowelBladeGeo(),
+    hammerHead: buildHammerHeadGeo(),
     reedHat: buildReedHatGeo(),
     strawHat: buildStrawHatGeo(),
     furCollar,
@@ -601,13 +784,14 @@ export class CreatureRenderer {
         opacity: 0.95,
         blending: THREE.AdditiveBlending,
       });
+      const baseScale = 0.65 + Math.random() * 0.5;
       const mesh = new THREE.Mesh(this.geo.sparkStar, mat);
       mesh.position.set(
         spark.position.x + (Math.random() - 0.5) * 0.25,
         spark.position.y + 0.15,
         spark.position.z + (Math.random() - 0.5) * 0.25,
       );
-      mesh.scale.setScalar(0.55 + Math.random() * 0.45);
+      mesh.scale.setScalar(baseScale);
       this.rootGroup.add(mesh);
       this.sparks.push({
         mesh,
@@ -617,11 +801,13 @@ export class CreatureRenderer {
         vx: (Math.random() - 0.5) * 1.4,
         vy: 0.8 + Math.random() * 1.1,
         vz: (Math.random() - 0.5) * 1.4,
+        baseScale,
+        gravity: 0.4,
       });
     }
   }
 
-  /** Spawns stage-colored wood chips, earthen clods, stone dust, or hammer sparks when actively constructing. */
+  /** Spawns tiny lit 3D wood splinters, earthen clods, stone chips, or hammer sparks when actively constructing. */
   private spawnWorkChip(c: Creature, stage: ConstructionStage): void {
     const palette =
       stage === 'clearing'
@@ -632,28 +818,43 @@ export class CreatureRenderer {
             ? [0xc7c3b8, 0xa89f91, 0xe3dfd5]
             : stage === 'disassembling'
               ? [0xd99b52, 0xb87642, 0xc7bfb2]
-              : [0xf7d88b, 0xd4a362, 0xfff1c2];
+              : [0xf7d88b, 0xd4a362, 0xffe49e];
 
-    const fx = c.x + Math.sin(c.heading) * 0.42;
-    const fz = c.z + Math.cos(c.heading) * 0.42;
+    const isSparkStage = stage === 'framing' || stage === 'finishing';
+    const fx = c.x + Math.sin(c.heading) * 0.48;
+    const fz = c.z + Math.cos(c.heading) * 0.48;
     for (let i = 0; i < 2; i++) {
-      const mat = new THREE.MeshBasicMaterial({
-        color: palette[Math.floor(Math.random() * palette.length)],
+      const color = palette[Math.floor(Math.random() * palette.length)];
+      const mat = new THREE.MeshStandardMaterial({
+        color,
+        roughness: isSparkStage ? 0.36 : 0.86,
+        metalness: isSparkStage ? 0.24 : 0.02,
+        emissive: isSparkStage ? color : 0x000000,
+        emissiveIntensity: isSparkStage ? 0.42 : 0,
         transparent: true,
-        opacity: 0.9,
+        opacity: 0.95,
       });
-      const mesh = new THREE.Mesh(this.geo.sparkStar, mat);
-      mesh.position.set(fx + (Math.random() - 0.5) * 0.22, c.y + 0.52 + Math.random() * 0.28, fz + (Math.random() - 0.5) * 0.22);
-      mesh.scale.setScalar(0.32 + Math.random() * 0.26);
+      const baseScale = 0.72 + Math.random() * 0.5;
+      const mesh = new THREE.Mesh(this.geo.workChip, mat);
+      mesh.name = 'work_chip';
+      mesh.position.set(
+        fx + (Math.random() - 0.5) * 0.24,
+        c.y + 0.52 + Math.random() * 0.26,
+        fz + (Math.random() - 0.5) * 0.24,
+      );
+      mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+      mesh.scale.setScalar(baseScale);
       this.rootGroup.add(mesh);
       this.sparks.push({
         mesh,
         mat,
         createdAt: this.world.elapsedSeconds,
         duration: 0.42 + Math.random() * 0.18,
-        vx: (Math.random() - 0.5) * 1.15,
-        vy: 0.75 + Math.random() * 0.85,
-        vz: (Math.random() - 0.5) * 1.15,
+        vx: (Math.random() - 0.5) * 1.25,
+        vy: 1.15 + Math.random() * 0.75,
+        vz: (Math.random() - 0.5) * 1.25,
+        baseScale,
+        gravity: 4.8,
       });
     }
   }
@@ -920,7 +1121,7 @@ export class CreatureRenderer {
       }
     }
 
-    // Update twinkling combat spark bursts
+    // Update twinkling combat sparks and ballistic construction chips
     for (let i = this.sparks.length - 1; i >= 0; i--) {
       const sp = this.sparks[i];
       const pct = (t - sp.createdAt) / sp.duration;
@@ -930,10 +1131,12 @@ export class CreatureRenderer {
         this.sparks.splice(i, 1);
         continue;
       }
+      sp.vy -= sp.gravity * dt;
       sp.mesh.position.x += sp.vx * dt;
       sp.mesh.position.y += sp.vy * dt;
       sp.mesh.position.z += sp.vz * dt;
-      sp.mesh.scale.setScalar(Math.sin(pct * Math.PI) * 1.65);
+      const pulse = Math.sin(Math.min(1, pct * 0.85 + 0.15) * Math.PI);
+      sp.mesh.scale.setScalar(Math.max(0.01, pulse * sp.baseScale));
       sp.mesh.rotation.y += dt * 12;
       sp.mesh.rotation.x += dt * 8;
       sp.mat.opacity = 1 - pct;
@@ -1693,18 +1896,26 @@ export class CreatureRenderer {
     let idleBuilderMallet: THREE.Group | undefined;
     if (c.role === 'builder' && !isBird && rightArm) {
       idleBuilderMallet = new THREE.Group();
-      const handle = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.02, 0.32, 8), this.woodMat), idleBuilderMallet);
+      idleBuilderMallet.name = 'idle_builder_mallet';
+      const handle = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.026, 0.36, 8), this.woodMat), idleBuilderMallet);
       handle.rotation.x = Math.PI / 2;
-      handle.position.set(0, -0.23, 0.16);
-      const malletHead = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.16, 10), this.leatherMat), idleBuilderMallet);
-      malletHead.rotation.z = Math.PI / 2;
-      malletHead.position.set(0, -0.23, 0.3);
+      handle.position.set(0, -0.23, 0.17);
+      const collar = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.04, 8), this.brassMat), idleBuilderMallet);
+      collar.rotation.x = Math.PI / 2;
+      collar.position.set(0, -0.23, 0.28);
+      const malletHead = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.18, 12), this.leatherMat), idleBuilderMallet);
+      malletHead.position.set(0, -0.23, 0.32);
+      for (const endY of [-0.072, 0.072]) {
+        const band = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.063, 0.063, 0.018, 12), this.brassMat), idleBuilderMallet);
+        band.position.set(0, -0.23 + endY, 0.32);
+      }
       rightArm.add(idleBuilderMallet);
     }
 
     // 6b. Stage-specific handheld construction tools (axe, spade, mason's trowel, carpenter's hammer)
     const toolMount: THREE.Object3D = !isBird && rightArm ? rightArm : headGroup;
     const toolHolder = new THREE.Group();
+    toolHolder.name = 'work_tool_holder';
     if (isBird) {
       toolHolder.position.set(0, -0.04, 0.32);
       toolHolder.scale.setScalar(0.65);
@@ -1714,40 +1925,70 @@ export class CreatureRenderer {
     toolMount.add(toolHolder);
 
     const axe = new THREE.Group();
-    const axeHaft = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.022, 0.52, 7), this.woodMat), axe);
+    axe.name = 'tool_axe';
+    const axeHaft = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.029, 0.58, 8), this.woodMat), axe);
     axeHaft.rotation.x = Math.PI / 2;
-    axeHaft.position.set(0, 0, 0.22);
-    const axeBlade = addPart(new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.16, 0.12), this.steelMat), axe);
-    axeBlade.position.set(0, -0.055, 0.42);
+    axeHaft.position.set(0, 0, 0.24);
+    const axeGrip = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.031, 0.031, 0.14, 8), this.leatherMat), axe);
+    axeGrip.rotation.x = Math.PI / 2;
+    axeGrip.position.set(0, 0, 0.04);
+    const axeCollar = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.045, 8), this.brassMat), axe);
+    axeCollar.rotation.x = Math.PI / 2;
+    axeCollar.position.set(0, 0, 0.38);
+    const axeBlade = addPart(new THREE.Mesh(this.geo.axeHead, this.steelMat), axe);
+    axeBlade.position.set(0, 0, 0.45);
     axe.visible = false;
     toolHolder.add(axe);
 
     const spade = new THREE.Group();
-    const spadeShaft = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.02, 0.58, 7), this.woodMat), spade);
+    spade.name = 'tool_spade';
+    const spadeShaft = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.026, 0.56, 8), this.woodMat), spade);
     spadeShaft.rotation.x = Math.PI / 2;
-    spadeShaft.position.set(0, 0, 0.24);
-    const spadeBlade = addPart(new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.025, 0.18), this.steelMat), spade);
-    spadeBlade.position.set(0, 0, 0.56);
+    spadeShaft.position.set(0, 0, 0.23);
+    const spadeCollar = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.031, 0.031, 0.04, 8), this.brassMat), spade);
+    spadeCollar.rotation.x = Math.PI / 2;
+    spadeCollar.position.set(0, 0, 0.45);
+    // D-grip handle at the butt end of the spade shaft
+    const dGripBar = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.12, 8), this.leatherMat), spade);
+    dGripBar.rotation.z = Math.PI / 2;
+    dGripBar.position.set(0, 0, -0.09);
+    for (const side of [-1, 1] as const) {
+      const strut = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.013, 0.075, 6), this.woodMat), spade);
+      strut.rotation.x = Math.PI / 2;
+      strut.rotation.y = side * 0.42;
+      strut.position.set(side * 0.035, 0, -0.06);
+    }
+    const spadeBlade = addPart(new THREE.Mesh(this.geo.spadeBlade, this.steelMat), spade);
+    spadeBlade.position.set(0, 0, 0.52);
     spade.visible = false;
     toolHolder.add(spade);
 
     const trowel = new THREE.Group();
-    const trowelHandle = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.018, 0.18, 6), this.woodMat), trowel);
+    trowel.name = 'tool_trowel';
+    const trowelHandle = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.028, 0.2, 8), this.woodMat), trowel);
     trowelHandle.rotation.x = Math.PI / 2;
-    trowelHandle.position.set(0, 0, 0.09);
-    const trowelBlade = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.18, 4), this.steelMat), trowel);
-    trowelBlade.rotation.x = Math.PI / 2;
-    trowelBlade.scale.set(1.0, 1.0, 0.22);
-    trowelBlade.position.set(0, 0, 0.25);
+    trowelHandle.position.set(0, 0, 0.07);
+    const trowelFerrule = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.027, 0.025, 0.035, 8), this.brassMat), trowel);
+    trowelFerrule.rotation.x = Math.PI / 2;
+    trowelFerrule.position.set(0, 0, 0.17);
+    const trowelBlade = addPart(new THREE.Mesh(this.geo.trowelBlade, this.steelMat), trowel);
+    trowelBlade.position.set(0, -0.042, 0.22);
     trowel.visible = false;
     toolHolder.add(trowel);
 
     const hammer = new THREE.Group();
-    const hamHandle = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.02, 0.36, 7), this.woodMat), hammer);
+    hammer.name = 'tool_hammer';
+    const hamHandle = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.023, 0.028, 0.42, 8), this.woodMat), hammer);
     hamHandle.rotation.x = Math.PI / 2;
     hamHandle.position.set(0, 0, 0.17);
-    const hamHead = addPart(new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.075, 0.085), this.steelMat), hammer);
-    hamHead.position.set(0, 0, 0.33);
+    const hamGrip = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.12, 8), this.leatherMat), hammer);
+    hamGrip.rotation.x = Math.PI / 2;
+    hamGrip.position.set(0, 0, 0.03);
+    const hamCollar = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.036, 8), this.brassMat), hammer);
+    hamCollar.rotation.x = Math.PI / 2;
+    hamCollar.position.set(0, 0, 0.31);
+    const hamHead = addPart(new THREE.Mesh(this.geo.hammerHead, this.steelMat), hammer);
+    hamHead.position.set(0, 0, 0.35);
     hammer.visible = false;
     toolHolder.add(hammer);
 
@@ -1868,6 +2109,11 @@ export class CreatureRenderer {
   }
 
   dispose(): void {
+    for (const sp of this.sparks) {
+      this.rootGroup.remove(sp.mesh);
+      sp.mat.dispose();
+    }
+    this.sparks.length = 0;
     const shared = new Set<THREE.BufferGeometry | THREE.Material>(this.disposables);
     this.rootGroup.traverse((obj) => {
       if (obj instanceof THREE.Mesh && obj.geometry && !shared.has(obj.geometry)) {

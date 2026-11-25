@@ -487,8 +487,48 @@ describe('High-Resolution Whimsical Procedural Models', () => {
       world.creatures[0].activeConstructionStage = stages[i];
       world.creatures[1].activity = 'emigrating';
 
+      world.elapsedSeconds += 0.2;
       settlementRenderer.update(0.05);
-      creatureRenderer.update(0.05, null);
+      creatureRenderer.update(0.2, null);
+    }
+
+    // Verify sculpted multi-part stage tools (no raw flat BoxGeometry tool blades)
+    const toolNames = ['tool_axe', 'tool_spade', 'tool_trowel', 'tool_hammer'];
+    for (const toolName of toolNames) {
+      const toolGroup = creatureRenderer.rootGroup.getObjectByName(toolName);
+      expect(toolGroup).toBeDefined();
+      let parts = 0;
+      let boxParts = 0;
+      toolGroup!.traverse((obj) => {
+        if (obj instanceof THREE.Mesh) {
+          parts++;
+          if (obj.geometry instanceof THREE.BoxGeometry) {
+            boxParts++;
+          }
+        }
+      });
+      expect(parts).toBeGreaterThanOrEqual(3);
+      expect(boxParts).toBe(0);
+    }
+
+    // Advance one more frame so active work chips are at mid-flight peak scale and inspect them
+    world.elapsedSeconds += 0.14;
+    creatureRenderer.update(0.14, null);
+    creatureRenderer.rootGroup.updateMatrixWorld(true);
+    const workChips: THREE.Mesh[] = [];
+    creatureRenderer.rootGroup.traverse((obj) => {
+      if (obj instanceof THREE.Mesh && obj.name === 'work_chip') {
+        workChips.push(obj);
+      }
+    });
+    expect(workChips.length).toBeGreaterThan(0);
+    const chipBox = new THREE.Box3();
+    const chipSize = new THREE.Vector3();
+    for (const chip of workChips) {
+      expect(chip.material).toBeInstanceOf(THREE.MeshStandardMaterial);
+      chipBox.setFromObject(chip);
+      chipBox.getSize(chipSize);
+      expect(Math.max(chipSize.x, chipSize.y, chipSize.z)).toBeLessThan(0.22);
     }
 
     const childrenBeforeRemove = settlementRenderer.rootGroup.children.length;
@@ -614,12 +654,12 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     floraRenderer.dispose();
     terrainRenderer.dispose();
     textures.dispose();
-  });
+  }, 15_000);
 
   it('builds a tall supernatural deity beam extending well above the player view', () => {
     const outerGeo = new THREE.CylinderGeometry(3.8, 5.4, DIVINE_BEAM_HEIGHT, 28, 1, true);
     const innerGeo = new THREE.CylinderGeometry(1.5, 2.1, DIVINE_BEAM_HEIGHT, 24, 1, true);
-    const ringGeo = new THREE.RingGeometry(0.85, 1.0, 48);
+    const ringGeo = new THREE.CircleGeometry(1.0, 72);
     ringGeo.rotateX(-Math.PI / 2);
 
     const beam = createDivineBeamVisual(
@@ -639,13 +679,22 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     );
 
     expect(DIVINE_BEAM_HEIGHT).toBeGreaterThanOrEqual(800);
-    // Outer aura + radiant inner core + expanding sacred ground ring
-    expect(beam.group.children.length).toBe(3);
+    // Outer aura + inner core + sacred mandala shockwave disc + volumetric aurora curtain
+    // + twin celestial armillary halos + GPU stardust/ember motes + local divine PointLight
+    expect(beam.group.children.length).toBe(8);
 
     const outerMesh = beam.group.children[0] as THREE.Mesh;
     const coreMesh = beam.group.children[1] as THREE.Mesh;
     expect(outerMesh.frustumCulled).toBe(false);
     expect(coreMesh.frustumCulled).toBe(false);
+    expect(beam.ringMat).toBeInstanceOf(THREE.ShaderMaterial);
+    expect(beam.ringMat.uniforms.uProgress).toBeDefined();
+    expect(beam.wallMat).toBeInstanceOf(THREE.ShaderMaterial);
+    expect(beam.haloMat).toBeInstanceOf(THREE.ShaderMaterial);
+    expect(beam.motesPoints).toBeInstanceOf(THREE.Points);
+    expect(beam.motesPoints.geometry.getAttribute('position').count).toBeGreaterThanOrEqual(100);
+    expect(beam.motesPoints.geometry.getAttribute('aKind')).toBeDefined();
+    expect(beam.glowLight).toBeInstanceOf(THREE.PointLight);
 
     // Beam top reaches far above even maximum overview camera altitude
     outerGeo.computeBoundingBox();
@@ -656,9 +705,7 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     expect(outerGeo.parameters.radiusTop / outerGeo.parameters.radiusBottom).toBeGreaterThan(0.65);
     expect(innerGeo.parameters.radiusTop / innerGeo.parameters.radiusBottom).toBeGreaterThan(0.65);
 
-    beam.outerMat.dispose();
-    beam.coreMat.dispose();
-    beam.ringMat.dispose();
+    beam.dispose();
     outerGeo.dispose();
     innerGeo.dispose();
     ringGeo.dispose();
