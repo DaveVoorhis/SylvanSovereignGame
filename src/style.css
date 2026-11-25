@@ -48,6 +48,41 @@ body,
   z-index: 10;
 }
 
+#hud-root > :not(.zen-exit-toast) {
+  transition: opacity 0.35s ease, visibility 0.35s ease;
+}
+
+#hud-root.zen-mode > :not(.zen-exit-toast) {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.zen-exit-toast {
+  position: absolute;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 12px;
+  letter-spacing: 0.35px;
+  color: rgba(237, 242, 234, 0.9);
+  background: rgba(13, 21, 17, 0.52);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 6px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(176, 212, 172, 0.22);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.65s ease, visibility 0.65s ease;
+}
+
+.zen-exit-toast.visible {
+  opacity: 0.78;
+  visibility: visible;
+}
+
 .hidden {
   display: none !important;
 }

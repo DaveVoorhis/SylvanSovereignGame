@@ -11,6 +11,7 @@ export interface HudCallbacks {
   onSetSpeed: (speed: number) => void;
   onToggleCinematic: () => boolean;
   onToggleCreatureView: () => void;
+  onToggleZenMode: () => void;
   onEnterCreaturePov: (creatureId: string) => void;
   onExitCreaturePov: () => void;
   onPrevCreature: () => void;
@@ -31,21 +32,27 @@ export interface HudCallbacks {
  * so UI refreshes never stall the 3D render loop.
  */
 export class HudManager {
+  private readonly root: HTMLElement;
   private readonly topBar: TopBar;
   private readonly deityPanel: DeityPanel;
   private readonly chroniclePanel: ChroniclePanel;
   private readonly inspectorPanel: InspectorPanel;
   private readonly povBar: CreaturePovBar;
   private readonly footerHint: HTMLElement;
+  private readonly zenToast: HTMLElement;
+  private zenMode = false;
+  private zenToastTimer: number | null = null;
   private accumSec = 0.25;
 
   constructor(root: HTMLElement, callbacks: HudCallbacks) {
+    this.root = root;
     root.innerHTML = '';
 
     this.topBar = new TopBar({
       onSetSpeed: callbacks.onSetSpeed,
       onToggleCinematic: callbacks.onToggleCinematic,
       onToggleCreatureView: callbacks.onToggleCreatureView,
+      onToggleZenMode: callbacks.onToggleZenMode,
       onResetOverview: callbacks.onResetOverview,
       onNewWorld: callbacks.onNewWorld,
       onChangeQuality: callbacks.onChangeQuality,
@@ -72,7 +79,11 @@ export class HudManager {
     this.footerHint = document.createElement('div');
     this.footerHint.className = 'hud-controls-hint';
     this.footerHint.textContent =
-      'Drag to orbit · Scroll to zoom · WASD to pan · Click creature to inspect · Press V for Creature Eye View';
+      'Drag to orbit · Scroll to zoom · WASD to pan · Click to inspect · V Creature View · Z Zen Mode';
+
+    this.zenToast = document.createElement('div');
+    this.zenToast.className = 'zen-exit-toast';
+    this.zenToast.textContent = 'Zen Mode · Press Z or Esc to return';
 
     root.append(
       this.topBar.element,
@@ -81,7 +92,30 @@ export class HudManager {
       this.inspectorPanel.element,
       this.povBar.element,
       this.footerHint,
+      this.zenToast,
     );
+  }
+
+  /** Toggles Zen Mode: hides all floating HUD panels/text and briefly fades a whisper exit hint. */
+  setZenMode(active: boolean): void {
+    this.zenMode = active;
+    this.root.classList.toggle('zen-mode', active);
+    this.topBar.setZenActive(active);
+
+    if (this.zenToastTimer !== null) {
+      window.clearTimeout(this.zenToastTimer);
+      this.zenToastTimer = null;
+    }
+
+    if (active) {
+      this.zenToast.classList.add('visible');
+      this.zenToastTimer = window.setTimeout(() => {
+        this.zenToast.classList.remove('visible');
+        this.zenToastTimer = null;
+      }, 2200);
+    } else {
+      this.zenToast.classList.remove('visible');
+    }
   }
 
   update(
@@ -92,6 +126,7 @@ export class HudManager {
     povCreatureId: string | null,
     force = false,
   ): void {
+    if (this.zenMode) return;
     this.accumSec += dt;
     if (!force && this.accumSec < 0.22) return;
     this.accumSec = 0;
@@ -103,5 +138,12 @@ export class HudManager {
     this.inspectorPanel.update(selection, world, isFollowing, povCreatureId);
     this.povBar.update(world, povCreatureId);
     this.footerHint.classList.toggle('hidden', inPov);
+  }
+
+  dispose(): void {
+    if (this.zenToastTimer !== null) {
+      window.clearTimeout(this.zenToastTimer);
+      this.zenToastTimer = null;
+    }
   }
 }

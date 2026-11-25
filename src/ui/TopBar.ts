@@ -5,6 +5,7 @@ export interface TopBarCallbacks {
   onSetSpeed: (speed: number) => void;
   onToggleCinematic: () => boolean;
   onToggleCreatureView: () => void;
+  onToggleZenMode: () => void;
   onResetOverview: () => void;
   onNewWorld: () => void;
   onChangeQuality: (preset: QualityPreset) => void;
@@ -19,6 +20,7 @@ export class TopBar {
   private readonly speedButtons: HTMLButtonElement[] = [];
   private readonly cinematicBtn: HTMLButtonElement;
   private readonly povToggleBtn: HTMLButtonElement;
+  private readonly zenBtn: HTMLButtonElement;
   private readonly qualitySelect: HTMLSelectElement;
 
   constructor(private readonly callbacks: TopBarCallbacks) {
@@ -81,6 +83,13 @@ export class TopBar {
     });
     controls.appendChild(this.cinematicBtn);
 
+    this.zenBtn = document.createElement('button');
+    this.zenBtn.className = 'hud-btn';
+    this.zenBtn.textContent = '🌿 Zen';
+    this.zenBtn.title = 'Enter full-screen Zen Mode — hide all UI (Z)';
+    this.zenBtn.addEventListener('click', () => this.callbacks.onToggleZenMode());
+    controls.appendChild(this.zenBtn);
+
     this.qualitySelect = document.createElement('select');
     this.qualitySelect.className = 'hud-select';
     this.qualitySelect.title = '3D Graphics Quality';
@@ -116,6 +125,10 @@ export class TopBar {
     for (const btn of this.speedButtons) {
       btn.classList.toggle('active', Number(btn.dataset.speed) === speed);
     }
+  }
+
+  setZenActive(active: boolean): void {
+    this.zenBtn.classList.toggle('active', active);
   }
 
   update(world: WorldState, inCreaturePov: boolean): void {

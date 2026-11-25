@@ -119,6 +119,11 @@ export class SceneManager {
     this.povCreatureId = creatureId;
   }
 
+  /** Synchronizes renderer, camera aspect, and post-processing targets with current viewport dimensions. */
+  resize(): void {
+    this.handleResize();
+  }
+
   rebuildWorldScene(newWorld: WorldState): void {
     this.povCreatureId = null;
     this.disposeWorldScene();

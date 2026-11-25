@@ -92,6 +92,7 @@ Forest/
 - **Scroll wheel**: Zoom in to creature-eye level or pull back to canopy overview
 - **Left-click creature / building / town square**: Open live Inspector
 - **Click Chronicle events / Settlement pills**: Smoothly fly camera to the location
+- **`🌿 Zen` button or press `Z`**: Enter full-screen Zen Mode, hiding all floating dialogs, panels, and text for complete immersion; press **`Z`** or **`Esc`** to return
 
 ### Creature Eye View (First-Person POV)
 - **`👁 Creature View` button or press `V`**: Enter first-person eye view of the selected (or first living) creature; press `V` again or **`Esc`** / **`🌍 World View`** to smoothly return to viewing the world

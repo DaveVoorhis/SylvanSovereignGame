@@ -21,10 +21,13 @@ export class GameEngine {
   private simSpeed = 1;
   private selection: SelectionTarget = null;
   private povCreatureId: string | null = null;
+  private zenMode = false;
+  private enteredFullscreenForZen = false;
   private rafId: number | null = null;
   private lastFrameMs = 0;
 
   private readonly onKeyDownBound: (e: KeyboardEvent) => void;
+  private readonly onFullscreenChangeBound: () => void;
 
   constructor(canvas: HTMLCanvasElement, hudRoot: HTMLElement) {
     this.world = new WorldState(this.bus);
@@ -45,6 +48,9 @@ export class GameEngine {
         } else {
           this.enterSelectedOrFirstCreaturePov();
         }
+      },
+      onToggleZenMode: () => {
+        this.toggleZenMode();
       },
       onEnterCreaturePov: (creatureId) => {
         this.enterCreaturePov(creatureId);
@@ -121,6 +127,13 @@ export class GameEngine {
         return;
       }
 
+      // In Zen Mode world view, keep the forest completely pure with no selection rings or inspector popups
+      if (this.zenMode && !this.povCreatureId) {
+        this.selection = null;
+        this.sceneManager.setSelection(null);
+        return;
+      }
+
       this.selection = target;
       if (!target) {
         this.sceneManager.cameraController.follow(null);
@@ -132,7 +145,13 @@ export class GameEngine {
       const activeTag = (document.activeElement as HTMLElement | null)?.tagName;
       if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return;
 
-      if (e.code === 'Escape' && this.povCreatureId) {
+      if (e.code === 'KeyZ' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        this.toggleZenMode();
+      } else if (e.code === 'Escape' && this.zenMode) {
+        e.preventDefault();
+        this.exitZenMode();
+      } else if (e.code === 'Escape' && this.povCreatureId) {
         e.preventDefault();
         this.exitCreaturePov();
       } else if (e.code === 'KeyV') {
@@ -155,7 +174,93 @@ export class GameEngine {
     };
     window.addEventListener('keydown', this.onKeyDownBound);
 
+    this.onFullscreenChangeBound = () => {
+      this.sceneManager.resize();
+      if (this.zenMode && this.enteredFullscreenForZen && !this.isDocumentFullscreen()) {
+        this.enteredFullscreenForZen = false;
+        this.exitZenMode();
+      }
+    };
+    document.addEventListener('fullscreenchange', this.onFullscreenChangeBound);
+    document.addEventListener('webkitfullscreenchange', this.onFullscreenChangeBound);
+
     this.refreshHudNow();
+  }
+
+  isZenMode(): boolean {
+    return this.zenMode;
+  }
+
+  toggleZenMode(): void {
+    if (this.zenMode) {
+      this.exitZenMode();
+    } else {
+      this.enterZenMode();
+    }
+  }
+
+  enterZenMode(): void {
+    if (this.zenMode) return;
+    this.zenMode = true;
+
+    if (!this.povCreatureId) {
+      this.selection = null;
+      this.sceneManager.setSelection(null);
+    }
+
+    document.body.classList.add('zen-mode');
+    this.hud.setZenMode(true);
+
+    if (!this.isDocumentFullscreen()) {
+      const docEl = document.documentElement as HTMLElement & {
+        webkitRequestFullscreen?: () => Promise<void> | void;
+      };
+      const req = docEl.requestFullscreen ?? docEl.webkitRequestFullscreen;
+      if (typeof req === 'function') {
+        try {
+          const result = req.call(docEl);
+          this.enteredFullscreenForZen = true;
+          if (result && typeof (result as Promise<void>).catch === 'function') {
+            (result as Promise<void>).catch(() => {
+              this.enteredFullscreenForZen = false;
+            });
+          }
+        } catch {
+          this.enteredFullscreenForZen = false;
+        }
+      }
+    }
+  }
+
+  exitZenMode(): void {
+    if (!this.zenMode) return;
+    this.zenMode = false;
+    const shouldExitFs = this.enteredFullscreenForZen && this.isDocumentFullscreen();
+    this.enteredFullscreenForZen = false;
+
+    document.body.classList.remove('zen-mode');
+    this.hud.setZenMode(false);
+    this.refreshHudNow();
+
+    if (shouldExitFs) {
+      const doc = document as Document & { webkitExitFullscreen?: () => Promise<void> | void };
+      const exitFs = doc.exitFullscreen ?? doc.webkitExitFullscreen;
+      if (typeof exitFs === 'function') {
+        try {
+          const res = exitFs.call(doc);
+          if (res && typeof (res as Promise<void>).catch === 'function') {
+            (res as Promise<void>).catch(() => {});
+          }
+        } catch {
+          // Ignore fullscreen exit errors
+        }
+      }
+    }
+  }
+
+  private isDocumentFullscreen(): boolean {
+    const doc = document as Document & { webkitFullscreenElement?: Element | null };
+    return Boolean(doc.fullscreenElement ?? doc.webkitFullscreenElement);
   }
 
   enterCreaturePov(creatureId: string): void {
@@ -320,6 +425,9 @@ export class GameEngine {
 
   dispose(): void {
     window.removeEventListener('keydown', this.onKeyDownBound);
+    document.removeEventListener('fullscreenchange', this.onFullscreenChangeBound);
+    document.removeEventListener('webkitfullscreenchange', this.onFullscreenChangeBound);
+    this.hud.dispose();
     if (this.rafId !== null) {
       cancelAnimationFrame(this.rafId);
       this.rafId = null;
