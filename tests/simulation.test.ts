@@ -1032,8 +1032,10 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
         const tdz = downPt.z - upPt.z;
         const tLen = Math.hypot(tdx, tdz) || 1;
         const flow = terrain.getWaterFlowAt(mid.x, mid.z);
-        const downstreamDot = (flow.x * tdx + flow.z * tdz) / tLen;
-        expect(downstreamDot).toBeGreaterThan(0.5);
+        const fLen = Math.hypot(flow.x, flow.z);
+        expect(fLen).toBeGreaterThan(0.15);
+        const downstreamDot = (flow.x * tdx + flow.z * tdz) / (tLen * fLen);
+        expect(downstreamDot).toBeGreaterThan(0.75);
 
         if (b.order === 2) {
           const chord = Math.hypot(b.endX - b.originX, b.endZ - b.originZ) || 1;
@@ -1089,6 +1091,53 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
         }
       }
       expect(mouthSegments).toBe(1);
+    }
+  });
+
+  it('places arid desert regions farthest away from the sea and rivers across seeds', () => {
+    const seeds = [20260501, 424242, 8675309, 1337, 271828];
+    for (const seed of seeds) {
+      const terrain = new TerrainMap({ ...DEFAULT_WORLD_CONFIG, seed });
+      let desertCount = 0;
+      let desertCoastSum = 0;
+      let desertFreshSum = 0;
+      let minDesertCoast = Infinity;
+      let minDesertFresh = Infinity;
+
+      let wetLandCount = 0;
+      let wetCoastSum = 0;
+      let wetFreshSum = 0;
+
+      const step = 28;
+      for (let x = -terrain.halfSize * 0.82; x <= terrain.halfSize * 0.82; x += step) {
+        for (let z = -terrain.halfSize * 0.82; z <= terrain.halfSize * 0.82; z += step) {
+          if (!terrain.isWithinPlayableArea(x, z, 20)) continue;
+          const biome = terrain.getBiomeAt(x, z);
+          if (biome === 'water' || biome === 'alpine_crag' || biome === 'rocky_ridge') continue;
+          const coastDist = terrain.getCoastSignedDistance(x, z);
+          const freshDist = terrain.getFreshwaterDistance(x, z);
+          if (biome === 'desert') {
+            desertCount++;
+            desertCoastSum += coastDist;
+            desertFreshSum += freshDist;
+            if (coastDist < minDesertCoast) minDesertCoast = coastDist;
+            if (freshDist < minDesertFresh) minDesertFresh = freshDist;
+          } else {
+            wetLandCount++;
+            wetCoastSum += coastDist;
+            wetFreshSum += freshDist;
+          }
+        }
+      }
+
+      expect(desertCount).toBeGreaterThanOrEqual(10);
+      expect(wetLandCount).toBeGreaterThan(desertCount);
+      // Deserts never border the sea or hug riverbanks
+      expect(minDesertCoast).toBeGreaterThan(60);
+      expect(minDesertFresh).toBeGreaterThan(15);
+      // On average, deserts sit notably farther from BOTH the sea and rivers than lush interior land
+      expect(desertCoastSum / desertCount).toBeGreaterThan(wetCoastSum / wetLandCount);
+      expect(desertFreshSum / desertCount).toBeGreaterThan(wetFreshSum / wetLandCount);
     }
   });
 });

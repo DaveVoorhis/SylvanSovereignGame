@@ -315,6 +315,7 @@ export class TerrainMap {
 
     // 5. Amorphous Interior Regions (Forests, Prairies, Deserts) woven between Mountains and Sea
     //    Evaluated in heavily domain-warped coordinates so every biome forms irregular organic patches.
+    //    Deserts are placed in the driest inland rain-shadow basins farthest from the sea and all rivers.
     const bandPoint = (alongFrac: number, depthFrac: number): Vec2 => {
       // alongFrac in [-0.75, 0.75] runs left-to-right across the continent;
       // depthFrac in [-0.36, 0.36] runs from back foothills (-0.36) to front coast (+0.36)
@@ -326,31 +327,101 @@ export class TerrainMap {
       };
     };
 
-    // Randomize lateral ordering of major desert, prairie, and forest belts per seed
-    const slots = [-0.52, -0.02, 0.52];
-    for (let i = slots.length - 1; i > 0; i--) {
-      const j = rng.int(0, i);
-      const tmp = slots[i];
-      slots[i] = slots[j];
-      slots[j] = tmp;
+    // Search the walkable interior for the driest basins farthest from BOTH the sea and every river/stream
+    const minDesertCoast = Math.min(130, this.halfSize * 0.28);
+    const dryCandidates: { x: number; z: number; alongFrac: number; riverDist: number; coastDist: number; score: number }[] = [];
+    for (let af = -0.74; af <= 0.741; af += 0.07) {
+      for (let df = -0.34; df <= 0.161; df += 0.06) {
+        const pt = bandPoint(af, df);
+        if (!this.isWithinPlayableArea(pt.x, pt.z, Math.min(34, this.halfSize * 0.12))) continue;
+        const coastDist = this.getCoastSignedDistance(pt.x, pt.z);
+        if (coastDist < minDesertCoast) continue;
+        const alpineDepth = this.getAlpineDepthAt(pt.x, pt.z);
+        if (alpineDepth > 8) continue;
+        const riverDist = this.getExactRiverDistance(pt.x, pt.z);
+        // Score maximizes simultaneous distance from ALL rivers/tributaries AND the front ocean
+        const score =
+          Math.min(riverDist * 1.65, coastDist * 0.92) +
+          riverDist * 0.45 +
+          coastDist * 0.14;
+        dryCandidates.push({ x: pt.x, z: pt.z, alongFrac: af, riverDist, coastDist, score });
+      }
     }
+    dryCandidates.sort((a, b) => b.score - a.score);
 
-    const desertMain = bandPoint(slots[0] + rng.range(-0.14, 0.14), rng.range(-0.22, 0.24));
-    const desertPocket = bandPoint(slots[2] + rng.range(-0.22, 0.22), rng.range(0.04, 0.3));
-    this.desertLobes = [
-      { x: desertMain.x, z: desertMain.z, radius: this.halfSize * rng.range(0.36, 0.46), strength: 0.94 },
-      { x: desertPocket.x, z: desertPocket.z, radius: this.halfSize * rng.range(0.24, 0.34), strength: 0.78 },
+    const fallbackDry = bandPoint(rng.chance(0.5) ? -0.58 : 0.58, -0.14);
+    const mainPick =
+      dryCandidates.length > 0
+        ? dryCandidates[rng.int(0, Math.min(2, dryCandidates.length - 1))]
+        : { x: fallbackDry.x, z: fallbackDry.z, alongFrac: 0.58, riverDist: 80, coastDist: 160, score: 100 };
+
+    const minSecondSep = this.halfSize * 0.46;
+    const minSecondRiver = Math.min(54, this.halfSize * 0.14);
+    const pocketPick = dryCandidates.find(
+      (c) =>
+        Math.hypot(c.x - mainPick.x, c.z - mainPick.z) >= minSecondSep &&
+        c.riverDist >= minSecondRiver,
+    );
+
+    const desertLobes: BiomeLobe[] = [
+      {
+        x: mainPick.x,
+        z: mainPick.z,
+        radius: this.halfSize * rng.range(0.36, 0.46),
+        strength: 0.98,
+      },
     ];
+    if (pocketPick) {
+      desertLobes.push({
+        x: pocketPick.x,
+        z: pocketPick.z,
+        radius: this.halfSize * rng.range(0.24, 0.34),
+        strength: 0.86,
+      });
+    }
+    this.desertLobes = desertLobes;
 
-    const prairieMain = bandPoint(slots[1] + rng.range(-0.14, 0.14), rng.range(-0.22, 0.24));
-    const prairiePocket = bandPoint(slots[0] + rng.range(-0.18, 0.18), rng.range(-0.3, -0.04));
+    // Place verdant forests and grassy prairies across the moister river-fed & coastal-breeze interior,
+    // well separated from the driest desert core
+    const desertSide = mainPick.alongFrac >= 0 ? 1 : -1;
+    const wetSlots = [-desertSide * 0.48, -desertSide * 0.04, desertSide * 0.24];
+    if (rng.chance(0.5)) {
+      const tmp = wetSlots[0];
+      wetSlots[0] = wetSlots[1];
+      wetSlots[1] = tmp;
+    }
+    const awayFromDesert = (pt: Vec2, fallbackAlong: number, fallbackDepth: number): Vec2 => {
+      if (Math.hypot(pt.x - mainPick.x, pt.z - mainPick.z) < this.halfSize * 0.32) {
+        return bandPoint(fallbackAlong, fallbackDepth);
+      }
+      return pt;
+    };
+
+    const prairieMain = awayFromDesert(
+      bandPoint(wetSlots[0] + rng.range(-0.12, 0.12), rng.range(-0.12, 0.26)),
+      -desertSide * 0.42,
+      0.14,
+    );
+    const prairiePocket = awayFromDesert(
+      bandPoint(wetSlots[2] + rng.range(-0.14, 0.14), rng.range(0.06, 0.3)),
+      0,
+      0.22,
+    );
     this.prairieLobes = [
       { x: prairieMain.x, z: prairieMain.z, radius: this.halfSize * rng.range(0.38, 0.48), strength: 0.94 },
       { x: prairiePocket.x, z: prairiePocket.z, radius: this.halfSize * rng.range(0.25, 0.34), strength: 0.76 },
     ];
 
-    const forestMain = bandPoint(slots[2] + rng.range(-0.14, 0.14), rng.range(-0.28, 0.18));
-    const forestHeart = bandPoint(rng.range(-0.22, 0.22), rng.range(-0.26, 0.14));
+    const forestMain = awayFromDesert(
+      bandPoint(wetSlots[1] + rng.range(-0.14, 0.14), rng.range(-0.24, 0.2)),
+      -desertSide * 0.22,
+      -0.08,
+    );
+    const forestHeart = awayFromDesert(
+      bandPoint(rng.range(-0.22, 0.22), rng.range(-0.2, 0.18)),
+      -desertSide * 0.12,
+      0.06,
+    );
     this.forestLobes = [
       { x: forestMain.x, z: forestMain.z, radius: this.halfSize * rng.range(0.38, 0.48), strength: 0.96 },
       { x: forestHeart.x, z: forestHeart.z, radius: this.halfSize * rng.range(0.28, 0.38), strength: 0.84 },
@@ -400,48 +471,32 @@ export class TerrainMap {
       scaleZ: 1 / pScaleX,
     });
 
-    // 2. Sparkling desert oasis lake tucked near the primary desert lobe
-    if (worldScale >= 1.4 && this.desertLobes.length > 0) {
-      const dLobe = this.desertLobes[0];
-      const oasisX = dLobe.x * 0.82 + rng.range(-18, 18);
-      const oasisZ = dLobe.z * 0.82 + rng.range(-18, 18);
-      if (
-        this.getCoastSignedDistance(oasisX, oasisZ) > 34 &&
-        this.getAlpineDepthAt(oasisX, oasisZ) < 12
-      ) {
-        const oAngle = rng.range(0, Math.PI * 2);
-        ponds.push({
-          x: oasisX,
-          z: oasisZ,
-          radius: rng.range(6.4, 9.8),
-          cos: Math.cos(oAngle),
-          sin: Math.sin(oAngle),
-          scaleX: 1.18,
-          scaleZ: 0.85,
-        });
-      }
-    }
-
-    // 3. Scenic inland lakes & foothill tarns dotted across the heartland between mountains and sea
+    // 2. Scenic inland lakes & foothill tarns dotted across fertile forests, prairies, and foothills
+    //    (kept out of arid desert basins so deserts remain genuinely dry and water-scarce)
     const extraCount =
       worldScale >= 5.5
-        ? rng.int(3, 5)
+        ? rng.int(4, 6)
         : worldScale >= 3.0
-          ? rng.int(2, 4)
+          ? rng.int(3, 5)
           : worldScale >= 1.5
-            ? 2
+            ? 3
             : rng.chance(0.6)
               ? 1
               : 0;
     for (let k = 0; k < extraCount; k++) {
-      for (let attempt = 0; attempt < 36; attempt++) {
+      for (let attempt = 0; attempt < 44; attempt++) {
         const along = rng.range(-this.halfSize * 0.72, this.halfSize * 0.72);
         const forward = rng.range(-this.halfSize * 0.36, this.halfSize * 0.3);
         const sx = forward * this.coastCos - along * this.coastSin;
         const sz = forward * this.coastSin + along * this.coastCos;
         if (!this.isWithinPlayableArea(sx, sz, 24)) continue;
-        if (this.getCoastSignedDistance(sx, sz) < 36) continue;
-        if (this.getAlpineDepthAt(sx, sz) > 14) continue;
+        const sCoast = this.getCoastSignedDistance(sx, sz);
+        if (sCoast < 36) continue;
+        const sAlpine = this.getAlpineDepthAt(sx, sz);
+        if (sAlpine > 14) continue;
+        const sRiver = this.getExactRiverDistance(sx, sz);
+        if (sRiver < 16) continue;
+        if (this.sampleAmorphousBiomes(sx, sz, sCoast, sAlpine, sRiver).aridity > 0.34) continue;
         let tooClose = false;
         for (const existing of ponds) {
           if (Math.hypot(sx - existing.x, sz - existing.z) < 48 * Math.sqrt(worldScale)) {
@@ -1022,7 +1077,7 @@ export class TerrainMap {
         });
 
         // Pad cell insertion generously so a single cell lookup covers carve width, estuary & moisture
-        const pad = Math.max(a.halfW, b.halfW) + (order === 3 ? 36 : 26);
+        const pad = Math.max(a.halfW, b.halfW) + (order === 3 ? 52 : 42);
         const minX = Math.min(a.x, b.x) - pad;
         const maxX = Math.max(a.x, b.x) + pad;
         const minZ = Math.min(a.z, b.z) - pad;
@@ -1070,6 +1125,26 @@ export class TerrainMap {
     return Math.hypot(lx, lz) - pond.radius;
   }
 
+  /** Exact signed distance from (x, z) to the nearest river/tributary/stream bank (no grid cap). */
+  private getExactRiverDistance(x: number, z: number): number {
+    let minDist = Infinity;
+    const segs = this.riverSegments;
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      const vx = x - seg.ax;
+      const vz = z - seg.az;
+      let t = (vx * seg.dx + vz * seg.dz) * seg.invLenSq;
+      if (t < 0) t = 0;
+      else if (t > 1) t = 1;
+      const px = vx - seg.dx * t;
+      const pz = vz - seg.dz * t;
+      const halfW = seg.halfW0 + (seg.halfW1 - seg.halfW0) * t;
+      const d = Math.sqrt(px * px + pz * pz) - halfW;
+      if (d < minDist) minDist = d;
+    }
+    return minDist;
+  }
+
   /** Signed distance from freshwater rivers, tributaries, and lakes (negative inside water). */
   getFreshwaterDistance(x: number, z: number): number {
     const coastDist = this.getCoastSignedDistance(x, z);
@@ -1093,7 +1168,7 @@ export class TerrainMap {
     // Taper rivers cleanly at alpine headwaters so they never slice through the impassable mountain wall
     const headwaterPush = smoothstep(22, 68, alpineDepth) * 44.0;
 
-    let waterDist = Math.min(maxRelevantDist, 48);
+    let waterDist = Math.min(maxRelevantDist, 56);
     const gx = Math.floor((x + this.riverGridHalf) / this.riverGridCellSize);
     const gz = Math.floor((z + this.riverGridHalf) / this.riverGridCellSize);
     if (
@@ -1324,23 +1399,31 @@ export class TerrainMap {
       if (m > forestLobe) forestLobe = m;
     }
 
-    // Fade deserts & prairies cleanly at the front seashore and back alpine mountain foothills
-    const coastCool = (1 - smoothstep(4, 24, coastDist)) * 0.56;
-    const alpineCool = smoothstep(0, 36, alpineDepth) * 0.72;
-    // Narrow fertile oasis fringe right alongside rivers & lakes cutting through arid sand
-    const waterCool = Math.exp(-Math.max(0, freshDist) * 0.15) * 0.54;
+    // Maritime humidity near the front sea and riparian moisture near rivers/lakes keep deserts
+    // strictly in the driest inland basins farthest away from water
+    const coastFadeStart = Math.min(48, this.halfSize * 0.14);
+    const coastFadeEnd = Math.min(140, this.halfSize * 0.34);
+    const desertCoastCool = (1 - smoothstep(coastFadeStart, coastFadeEnd, coastDist)) * 0.96;
+    const prairieCoastCool = (1 - smoothstep(4, 24, coastDist)) * 0.32;
+    const alpineCool = smoothstep(0, 36, alpineDepth) * 0.76;
+    const riverFadeStart = Math.min(14, this.halfSize * 0.08);
+    const riverFadeEnd = Math.min(44, this.halfSize * 0.2);
+    const desertWaterCool = (1 - smoothstep(riverFadeStart, riverFadeEnd, freshDist)) * 0.96;
 
     const rawDesert =
-      Math.max(desertLobe * 0.78 + dryWave * 0.38, dryWave * 0.88 - 0.14) -
-      forestLobe * 0.36 -
-      prairieLobe * 0.24;
-    const aridity = Math.max(0, Math.min(1, rawDesert - waterCool - coastCool - alpineCool));
+      desertLobe * (0.76 + dryWave * 0.44) -
+      forestLobe * 0.32 -
+      prairieLobe * 0.22;
+    const aridity = Math.max(
+      0,
+      Math.min(1, rawDesert - desertWaterCool - desertCoastCool - alpineCool),
+    );
 
     const rawPrairie =
       Math.max(prairieLobe * 0.78 + openWave * 0.38, openWave * 0.86 - 0.14) -
       forestLobe * 0.34 -
       aridity * 0.65;
-    const prairie = Math.max(0, Math.min(1, rawPrairie - coastCool * 0.55 - alpineCool * 0.85));
+    const prairie = Math.max(0, Math.min(1, rawPrairie - prairieCoastCool - alpineCool * 0.85));
 
     return { aridity, prairie };
   }
@@ -1349,7 +1432,7 @@ export class TerrainMap {
   getAridityAt(x: number, z: number): number {
     const coastDist = this.getCoastSignedDistance(x, z);
     const alpineDepth = this.getAlpineDepthAt(x, z);
-    const freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 44);
+    const freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 56);
     return this.sampleAmorphousBiomes(x, z, coastDist, alpineDepth, freshDist).aridity;
   }
 
@@ -1357,7 +1440,7 @@ export class TerrainMap {
   getPrairieWeightAt(x: number, z: number): number {
     const coastDist = this.getCoastSignedDistance(x, z);
     const alpineDepth = this.getAlpineDepthAt(x, z);
-    const freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 44);
+    const freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 56);
     return this.sampleAmorphousBiomes(x, z, coastDist, alpineDepth, freshDist).prairie;
   }
 
@@ -1383,7 +1466,7 @@ export class TerrainMap {
     const coastDist = this.getCoastSignedDistance(x, z);
     const landMask = smoothstep(-6, 30, coastDist);
     const alpineDepth = this.getAlpineDepthAt(x, z);
-    const freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 44);
+    const freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 56);
 
     // Smoothly transition inland outer terrain into distant hills/peaks while keeping the front ocean open
     const outerBlend = (radialDist > 0.8 ? smoothstep(0.8, 1.65, radialDist) : 0) * landMask;
@@ -1662,7 +1745,7 @@ export class TerrainMap {
     if (coastDist < 20.0 && h < this.waterLevel + 2.6) return 'seashore';
 
     const alpineDepth = this.getAlpineDepthAt(x, z);
-    const freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 44);
+    const freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 56);
     const { aridity, prairie } = this.sampleAmorphousBiomes(
       x,
       z,
