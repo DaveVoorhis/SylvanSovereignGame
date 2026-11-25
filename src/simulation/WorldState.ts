@@ -19,6 +19,7 @@ import { SettlementManager } from './settlements/SettlementManager';
 import { Chronicle } from './society/Chronicle';
 import { DiplomacySystem } from './society/DiplomacySystem';
 import { EconomySystem } from './society/EconomySystem';
+import { ObstacleMap } from './terrain/ObstacleMap';
 import { TerrainMap } from './terrain/TerrainMap';
 
 const SEASONS: readonly Season[] = ['spring', 'summer', 'autumn', 'winter'];
@@ -31,6 +32,7 @@ export class WorldState {
   readonly config: WorldConfig;
   readonly rng: SeededRandom;
   readonly terrain: TerrainMap;
+  readonly obstacles: ObstacleMap;
   readonly deity: ProceduralGod;
   readonly chronicle: Chronicle;
   readonly creatureAI: CreatureAI;
@@ -61,6 +63,7 @@ export class WorldState {
     this.config = { ...DEFAULT_WORLD_CONFIG, ...config };
     this.rng = new SeededRandom(this.config.seed);
     this.terrain = new TerrainMap(this.config);
+    this.obstacles = new ObstacleMap();
     this.deity = new ProceduralGod(this.config.seed, this.config.deityDecisionIntervalSec);
     this.chronicle = new Chronicle(bus);
     this.creatureAI = new CreatureAI();
@@ -69,6 +72,7 @@ export class WorldState {
     this.diplomacy = new DiplomacySystem();
 
     this.settlementManager.createInitialSettlements(this);
+    this.obstacles.sync(this.terrain, this.settlements);
     this.diplomacy.initialize(this.settlements, this);
 
     this.chronicle.record(
@@ -81,10 +85,23 @@ export class WorldState {
   }
 
   spawnCreature(settlement: Settlement, species: SpeciesId, role: CreatureRole): Creature {
+    this.obstacles.sync(this.terrain, this.settlements);
     const angle = this.rng.range(0, Math.PI * 2);
     const radius = this.rng.range(2.2, Math.min(6.8, Math.max(3.2, settlement.radius * 0.78)));
-    const x = settlement.center.x + Math.cos(angle) * radius;
-    const z = settlement.center.z + Math.sin(angle) * radius;
+    const rawX = settlement.center.x + Math.cos(angle) * radius;
+    const rawZ = settlement.center.z + Math.sin(angle) * radius;
+    const safe = this.obstacles.pushPointOutsideObstacles(
+      rawX,
+      rawZ,
+      settlement.center.x,
+      settlement.center.z,
+      0.42,
+      0,
+      0.15,
+      angle,
+    );
+    const x = safe.x;
+    const z = safe.z;
     const y = Math.max(this.terrain.getHeightAt(x, z), this.terrain.waterLevel);
 
     const creature = new Creature({
@@ -193,6 +210,7 @@ export class WorldState {
     // Step subsystems
     this.deity.tick(this, dt);
     this.settlementManager.tick(this, dt);
+    this.obstacles.sync(this.terrain, this.settlements);
     this.diplomacy.tick(this, dt);
 
     for (const creature of this.creatures) {

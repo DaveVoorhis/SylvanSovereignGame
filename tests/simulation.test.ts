@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { EventBus } from '@core/EventBus';
-import { HEARTH_FIRE_KEEP_OUT_RADIUS } from '@simulation/creatures/CreatureAI';
+import {
+  HEARTH_FIRE_KEEP_OUT_RADIUS,
+  getBuildingCollisionRadius,
+  getTreeTrunkRadius,
+  type SolidObstacle,
+} from '@simulation/terrain/ObstacleMap';
 import { ALL_SPECIES_IDS, SPECIES_CATALOG } from '@simulation/creatures/SpeciesCatalog';
 import { ALL_BUILDING_TYPES, BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
 import { WorldState } from '@simulation/WorldState';
@@ -171,5 +176,79 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     expect(minDistToFire).toBeGreaterThanOrEqual(HEARTH_FIRE_KEEP_OUT_RADIUS - 0.02);
     // Confirm the creature successfully curved around the fire and reached the far side
     expect(walker.x).toBeGreaterThan(settlement.center.x + 3.0);
+  });
+
+  it('prevents creatures from walking through buildings, trees, rocks, bushes, and town features', () => {
+    const world = new WorldState(new EventBus(), { seed: 271828 });
+    const settlement = world.settlements[0];
+    expect(settlement).toBeDefined();
+    const building = settlement.buildings[0];
+    expect(building).toBeDefined();
+
+    const walker = world.creatures.find((c) => !c.def.aerial && c.settlementId === settlement.id);
+    expect(walker).toBeDefined();
+    if (!walker) return;
+
+    // 1. Direct the creature straight across a building and confirm it walks around without clipping
+    const bRadius = getBuildingCollisionRadius(building.type);
+    const creatureR = Math.max(0.26, walker.def.bodyScale * 0.36);
+    walker.x = building.position.x - (bRadius + 3.2);
+    walker.z = building.position.z;
+    walker.activity = 'socialising';
+    walker.actionTimer = 30;
+    walker.targetX = building.position.x + (bRadius + 3.2);
+    walker.targetZ = building.position.z;
+
+    let minBuildingDist = Infinity;
+    for (let i = 0; i < 180; i++) {
+      world.step(0.08);
+      const d = Math.hypot(walker.x - building.position.x, walker.z - building.position.z);
+      if (d < minBuildingDist) minBuildingDist = d;
+    }
+    expect(minBuildingDist).toBeGreaterThanOrEqual(bRadius + creatureR - 0.05);
+    expect(walker.x).toBeGreaterThan(building.position.x + bRadius);
+
+    // 2. Direct the creature straight across a standing forest tree trunk and confirm it curves around
+    const treeObs = world.obstacles.getObstacles().find((o) => o.kind === 'tree');
+    expect(treeObs).toBeDefined();
+    const matchingTree = treeObs
+      ? world.terrain.trees.find((t) => t.x === treeObs.x && t.z === treeObs.z)
+      : undefined;
+    expect(matchingTree).toBeDefined();
+    if (!treeObs || !matchingTree) return;
+
+    const tRadius = getTreeTrunkRadius(matchingTree);
+    walker.x = treeObs.x - 4.0;
+    walker.z = treeObs.z;
+    walker.activity = 'socialising';
+    walker.actionTimer = 30;
+    walker.targetX = treeObs.x + 4.0;
+    walker.targetZ = treeObs.z;
+
+    let minTreeDist = Infinity;
+    const nearby: SolidObstacle[] = [];
+    for (let i = 0; i < 140; i++) {
+      world.step(0.08);
+      const d = Math.hypot(walker.x - treeObs.x, walker.z - treeObs.z);
+      if (d < minTreeDist) minTreeDist = d;
+
+      // Check ALL grounded creatures stay outside buildings, trees, rocks, bushes, benches, and fires
+      for (const c of world.creatures) {
+        if (!c.alive || c.def.aerial) continue;
+        const cR = Math.max(0.26, c.def.bodyScale * 0.36);
+        world.obstacles.queryNearby(c.x, c.z, 4.5, nearby);
+        for (const obs of nearby) {
+          const required = world.obstacles.getEffectiveRadius(obs, cR);
+          const dist = Math.hypot(c.x - obs.x, c.z - obs.z);
+          // Allow tiny tolerance when two densely placed terrain props overlap each other
+          if (obs.kind === 'building' || obs.kind === 'hearth' || obs.kind === 'tree') {
+            expect(dist).toBeGreaterThanOrEqual(required - 0.06);
+          }
+        }
+      }
+    }
+
+    expect(minTreeDist).toBeGreaterThanOrEqual(tRadius + creatureR - 0.05);
+    expect(walker.x).toBeGreaterThan(treeObs.x + 1.5);
   });
 });
