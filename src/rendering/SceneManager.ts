@@ -278,10 +278,41 @@ export class SceneManager {
 
     onProgress?.(98, 'Opening the canopy to morning light…');
     await nextPaintFrame();
-    // Compile GPU shaders and paint the first live frame behind the splash before revealing it
+    // Pre-compile all runtime PBR & divine shaders and paint the first live frame behind the splash
+    this.prewarmRuntimeShaders();
     this.renderFrame(0.016);
 
     onProgress?.(100, 'The realm awaits.');
+  }
+
+  /**
+   * Pre-compiles distinct architectural, species, and divine shader permutations once behind
+   * the loading splash so pioneering new biomes, species, or miracles never causes mid-game hitches.
+   */
+  private prewarmRuntimeShaders(): void {
+    if (!this.settlementRenderer || !this.creatureRenderer || !this.atmosphere) return;
+    const warmupGroup = new THREE.Group();
+    const proxyGeo = new THREE.PlaneGeometry(0.01, 0.01);
+    const seen = new Set<THREE.Material>();
+    const allMats = [
+      ...this.settlementRenderer.getWarmupMaterials(),
+      ...this.creatureRenderer.getWarmupMaterials(),
+    ];
+    for (const mat of allMats) {
+      if (seen.has(mat)) continue;
+      seen.add(mat);
+      const proxy = new THREE.Mesh(proxyGeo, mat);
+      proxy.frustumCulled = false;
+      warmupGroup.add(proxy);
+    }
+    this.scene.add(warmupGroup);
+    try {
+      this.renderer.compile(this.scene, this.camera);
+      this.atmosphere.prewarmDivineShaders(this.renderer, this.camera);
+    } finally {
+      this.scene.remove(warmupGroup);
+      proxyGeo.dispose();
+    }
   }
 
   private focusFoundingVillage(world: WorldState, immediate: boolean): void {
@@ -308,7 +339,7 @@ export class SceneManager {
     const sky = this.atmosphere.getSkyLightingState();
     this.terrainRenderer.update(dt, sky);
     this.floraRenderer.update(dt, sky);
-    this.settlementRenderer.update(dt, sky);
+    this.settlementRenderer.update(dt, sky, this.cameraController.controls.target);
     this.creatureRenderer.update(dt, this.selection, this.povCreatureId);
 
     if (this.dofPass) {

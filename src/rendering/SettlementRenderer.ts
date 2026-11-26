@@ -264,9 +264,13 @@ function createFountainSprayGeometry(seed: number): THREE.BufferGeometry {
   return geo;
 }
 
+/** Fixed count of scene PointLights dedicated to nearby village hearths (keeps NUM_POINT_LIGHTS constant). */
+const HEARTH_LIGHT_POOL_SIZE = 6;
+
 interface RenderedHearth {
   readonly settlementId: string;
   readonly fire: HearthFire;
+  readonly position: THREE.Vector3;
   readonly banner: THREE.Mesh;
   readonly seed: number;
   readonly festivalDecor: THREE.Group;
@@ -415,6 +419,8 @@ export class SettlementRenderer {
   private readonly buildingMeshes = new Map<string, RenderedBuilding>();
   private readonly bridgeMeshes = new Map<string, RenderedBridge>();
   private readonly hearths: RenderedHearth[] = [];
+  private readonly hearthLightPool: THREE.PointLight[] = [];
+  private readonly hearthSortScratch: { hearth: RenderedHearth; distSq: number }[] = [];
   private readonly settlementFlags = new Set<string>();
   private readonly extraDisposables: (THREE.BufferGeometry | THREE.Material)[] = [];
   private readonly archUniforms: ArchWeatheringUniforms = {
@@ -732,11 +738,19 @@ export class SettlementRenderer {
       this.sharedFlameGeo,
     ]);
 
+    // Pre-allocate a fixed pool of hearth PointLights permanently in the scene so founding new
+    // settlements never alters NUM_POINT_LIGHTS or triggers multi-second PBR shader recompilations.
+    for (let i = 0; i < HEARTH_LIGHT_POOL_SIZE; i++) {
+      const pooledLight = new THREE.PointLight(0xff8c2b, 0, 22, 1.55);
+      this.hearthLightPool.push(pooledLight);
+      this.rootGroup.add(pooledLight);
+    }
+
     scene.add(this.rootGroup);
     this.syncAll();
   }
 
-  update(dt: number, sky?: SkyLightingState): void {
+  update(dt: number, sky?: SkyLightingState, focusTarget?: THREE.Vector3): void {
     this.syncAll();
 
     const t = this.world.elapsedSeconds;
@@ -812,6 +826,46 @@ export class SettlementRenderer {
           hearth.festivalCrown.rotation.y = t * (cel.scope === 'national' ? 0.9 : 0.55);
           hearth.festivalCrown.position.y =
             (cel.scope === 'national' ? 5.6 : 4.9) + Math.sin(t * 2.1 + hearth.seed) * 0.22;
+        }
+      }
+    }
+
+    // Assign the fixed pool of hearth PointLights to the closest settlements to the camera focus
+    const hearthCount = this.hearths.length;
+    if (hearthCount > 0) {
+      const candidates = this.hearthSortScratch;
+      candidates.length = hearthCount;
+      const fx = focusTarget?.x ?? 0;
+      const fz = focusTarget?.z ?? 0;
+      for (let i = 0; i < hearthCount; i++) {
+        const h = this.hearths[i];
+        const dx = h.position.x - fx;
+        const dz = h.position.z - fz;
+        const distSq = focusTarget ? dx * dx + dz * dz : i;
+        if (candidates[i]) {
+          candidates[i].hearth = h;
+          candidates[i].distSq = distSq;
+        } else {
+          candidates[i] = { hearth: h, distSq };
+        }
+      }
+      if (focusTarget && hearthCount > HEARTH_LIGHT_POOL_SIZE) {
+        candidates.sort((a, b) => a.distSq - b.distSq);
+      }
+      const activeSlots = Math.min(HEARTH_LIGHT_POOL_SIZE, hearthCount);
+      for (let i = 0; i < HEARTH_LIGHT_POOL_SIZE; i++) {
+        const poolLight = this.hearthLightPool[i];
+        if (i < activeSlots) {
+          const entry = candidates[i];
+          const src = entry.hearth.fire.light;
+          const edgeFade = focusTarget
+            ? 1 - THREE.MathUtils.smoothstep(Math.sqrt(entry.distSq), 95, 140)
+            : 1;
+          poolLight.position.copy(entry.hearth.position).add(src.position);
+          poolLight.color.copy(src.color);
+          poolLight.intensity = src.intensity * edgeFade;
+        } else {
+          poolLight.intensity = 0;
         }
       }
     }
@@ -1082,7 +1136,7 @@ export class SettlementRenderer {
     // Volumetric procedural campfire: glowing coal bed, multi-layered turbulent blackbody flames,
     // spiraling rising sparks, wispy smoke plume, and dynamic dancing firelight
     const seed = settlement.center.x * 0.3 + settlement.center.z * 0.7;
-    const fire = new HearthFire(seed, this.sharedFlameGeo);
+    const fire = new HearthFire(seed, this.sharedFlameGeo, false);
     fire.group.userData.selectionTarget = { kind: 'settlement', id: settlement.id };
     group.add(fire.group);
 
@@ -1415,6 +1469,7 @@ export class SettlementRenderer {
     this.hearths.push({
       settlementId: settlement.id,
       fire,
+      position: new THREE.Vector3(settlement.center.x, settlement.groundY, settlement.center.z),
       banner,
       seed,
       festivalDecor,
@@ -1425,6 +1480,46 @@ export class SettlementRenderer {
     });
 
     this.rootGroup.add(group);
+  }
+
+  /** Returns architectural materials whose shader programs should be pre-compiled behind the splash screen. */
+  getWarmupMaterials(): THREE.Material[] {
+    return [
+      this.timberMat,
+      this.darkTimberMat,
+      this.plasterMat,
+      this.warmPlasterMat,
+      this.thatchMat,
+      this.slateRoofMat,
+      this.verdigrisMat,
+      this.brickMat,
+      this.glassMat,
+      this.fountainWaterMat,
+      this.fountainStreamMat,
+      this.canvasSailMat,
+      this.stoneMat,
+      this.windowMat,
+      this.shrineCrystalMat,
+      this.brassMat,
+      this.doorMat,
+      this.mossLeafMat,
+      this.flowerPinkMat,
+      this.flowerGoldMat,
+      this.flowerBlueMat,
+      this.charredLogMat,
+      this.ovenFireMat,
+      this.potteryMat,
+      this.earthPadMat,
+      this.ropeMat,
+      this.driftwoodMat,
+      this.tealTrimMat,
+      this.mossRoofMat,
+      this.terracottaPlasterMat,
+      this.terracottaRoofMat,
+      this.ochreCanvasMat,
+      this.goldenThatchMat,
+      this.graniteMat,
+    ];
   }
 
   private createBuildingMesh(

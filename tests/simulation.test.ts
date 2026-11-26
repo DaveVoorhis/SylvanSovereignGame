@@ -19,6 +19,14 @@ import {
 } from '@simulation/settlements/VillageAdaptation';
 import { TerrainMap } from '@simulation/terrain/TerrainMap';
 import { WorldState } from '@simulation/WorldState';
+import {
+  buildCreatureDirectorySnapshot,
+  collectLineageHighlightIds,
+  filterCreatureEntries,
+  filterLineageTrees,
+  sortCreatureEntries,
+  sortLineageTrees,
+} from '@ui/CreatureDirectoryLogic';
 
 describe('Forest Procedural God Game — Headless Simulation', () => {
   it('generates deterministic terrain, settlements, and creatures from a seed', () => {
@@ -1299,5 +1307,155 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     expect(world.getSettlement(s0.id)).toBeUndefined();
     world.settlements.push(s0);
     expect(world.getSettlement(s0.id)).toBe(s0);
+  });
+
+  it('builds sortable creature census snapshots and multi-generation lineage family trees', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 901234,
+      initialSettlements: 2,
+      initialCreaturesPerSettlement: 2,
+    });
+    const s0 = world.settlements[0];
+    const s1 = world.settlements[1];
+
+    // Clear initial random creatures so we can verify exact multi-generation genealogy
+    world.creatures.length = 0;
+
+    const f1 = world.spawnCreature(s0, 'fox', 'forager', {
+      ageDays: 10.5,
+      familySurname: 'Briarwood',
+    });
+    const f2 = world.spawnCreature(s0, 'fox', 'builder', {
+      ageDays: 9.2,
+      familySurname: 'Briarwood',
+    });
+    f1.wealth = 42;
+    f2.wealth = 18;
+    expect(world.pairCreatures(f1, f2, s0.name)).toBe(true);
+
+    // Gen 2 litter from f1 & f2
+    const childA = world.spawnCreature(s0, 'fox', 'artisan', {
+      ageDays: 4.5,
+      generation: 2,
+      parentIds: [f1.id, f2.id],
+      litterId: 'lit_1',
+      familySurname: 'Briarwood',
+    });
+    const childB = world.spawnCreature(s0, 'fox', 'guard', {
+      ageDays: 4.5,
+      generation: 2,
+      parentIds: [f1.id, f2.id],
+      litterId: 'lit_1',
+      familySurname: 'Briarwood',
+    });
+
+    // Second independent founding bloodline in settlement 2
+    const o1 = world.spawnCreature(s1, 'owl', 'mystic', {
+      ageDays: 14.0,
+      familySurname: 'Moonfeather',
+    });
+    o1.mood = 96;
+
+    // Cross-lineage marriage & Gen 3 grandchild
+    const outsiderFox = world.spawnCreature(s1, 'fox', 'merchant', {
+      ageDays: 4.8,
+      familySurname: 'Fernbrook',
+    });
+    expect(world.pairCreatures(childA, outsiderFox, s0.name)).toBe(true);
+    const grandKit = world.spawnCreature(s0, 'fox', 'forager', {
+      ageDays: 0.4,
+      generation: 3,
+      parentIds: [childA.id, outsiderFox.id],
+      litterId: 'lit_2',
+      familySurname: 'Briarwood',
+    });
+
+    // Mark founder f1 as deceased to verify fallen ancestors remain visible in family trees
+    f1.alive = false;
+
+    const snap = buildCreatureDirectorySnapshot(world.creatures, world.settlements);
+    expect(snap.entries.length).toBe(7);
+    expect(snap.totalLiving).toBe(6);
+    expect(snap.totalFallen).toBe(1);
+    expect(snap.trees.length).toBeGreaterThanOrEqual(2);
+
+    // Verify Briarwood tree spans 3 generations with founding couple + cross-lineage mate + grandchild
+    const briarTree = snap.trees.find((t) => t.memberIds.has(grandKit.id));
+    expect(briarTree).toBeDefined();
+    expect(briarTree!.maxGeneration).toBe(3);
+    expect(briarTree!.memberIds.has(f1.id)).toBe(true);
+    expect(briarTree!.memberIds.has(f2.id)).toBe(true);
+    expect(briarTree!.memberIds.has(childA.id)).toBe(true);
+    expect(briarTree!.memberIds.has(childB.id)).toBe(true);
+    expect(briarTree!.root.mate?.id).toBe(f2.id);
+    const childANode = briarTree!.root.children.find((n) => n.primary.id === childA.id);
+    expect(childANode?.mate?.id).toBe(outsiderFox.id);
+    expect(childANode?.mateIsCrossLineage).toBe(true);
+    expect(childANode?.children.map((n) => n.primary.id)).toContain(grandKit.id);
+
+    // Highlight path from Gen 3 grandchild walks up to Gen 1 founders & parents
+    const highlight = collectLineageHighlightIds(briarTree!, grandKit.id);
+    expect(highlight.has(grandKit.id)).toBe(true);
+    expect(highlight.has(childA.id)).toBe(true);
+    expect(highlight.has(f1.id)).toBe(true);
+    expect(snap.entriesById.get(f1.id)?.offspringCount).toBe(2);
+    expect(snap.entriesById.get(childA.id)?.offspringCount).toBe(1);
+
+    // Sorting & filtering verification (species, lineage, age, wealth, includeFallen)
+    const livingOnly = filterCreatureEntries(snap.entries, {
+      search: '',
+      species: 'all',
+      settlementId: 'all',
+      lifeStage: 'all',
+      includeFallen: false,
+    });
+    expect(livingOnly.length).toBe(6);
+    expect(livingOnly.some((e) => e.id === f1.id)).toBe(false);
+
+    const byAgeDesc = sortCreatureEntries(snap.entries, 'age', 'desc');
+    expect(byAgeDesc[0].id).toBe(o1.id);
+    expect(byAgeDesc[byAgeDesc.length - 1].id).toBe(grandKit.id);
+
+    const bySpeciesAsc = sortCreatureEntries(snap.entries, 'species', 'asc');
+    expect(bySpeciesAsc[0].species).toBe('fox');
+    expect(bySpeciesAsc[bySpeciesAsc.length - 1].species).toBe('owl');
+
+    const byLineageAsc = sortCreatureEntries(snap.entries, 'lineage', 'asc');
+    expect(byLineageAsc[0].lineageName.localeCompare(byLineageAsc[byLineageAsc.length - 1].lineageName)).toBeLessThanOrEqual(0);
+
+    const sortedTrees = sortLineageTrees(
+      filterLineageTrees(snap.trees, {
+        search: '',
+        species: 'all',
+        settlementId: 'all',
+        lifeStage: 'all',
+        includeFallen: true,
+      }),
+      'depth',
+      'desc',
+    );
+    expect(sortedTrees[0].maxGeneration).toBe(3);
+  });
+
+  it('steps a densely populated multi-settlement world smoothly without multi-second frame freezes', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 777123,
+      initialSettlements: 8,
+      initialCreaturesPerSettlement: 18,
+    });
+    expect(world.settlements.length).toBeGreaterThanOrEqual(6);
+    expect(world.creatures.length).toBeGreaterThanOrEqual(100);
+
+    // Step 24 seconds across bridge, emigration, expansion, festival & trade windows
+    let maxStepMs = 0;
+    for (let i = 0; i < 240; i++) {
+      const t0 = performance.now();
+      world.step(0.1);
+      const dtMs = performance.now() - t0;
+      if (dtMs > maxStepMs) maxStepMs = dtMs;
+    }
+
+    // Every individual simulation step must stay far below multi-second freeze territory
+    expect(maxStepMs).toBeLessThan(250);
   });
 });

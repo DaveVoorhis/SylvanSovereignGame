@@ -7,6 +7,7 @@ import type {
   VillageAdaptationId,
 } from '@core/Types';
 import type { Creature } from '@simulation/creatures/Creature';
+import { SPECIES_CATALOG } from '@simulation/creatures/SpeciesCatalog';
 import { VILLAGE_ADAPTATION_CATALOG } from '@simulation/settlements/VillageAdaptation';
 import type { WorldState } from '@simulation/WorldState';
 import {
@@ -809,6 +810,7 @@ export class CreatureRenderer {
     { readonly mantle: THREE.MeshStandardMaterial; readonly accent: THREE.MeshStandardMaterial }
   >();
   private readonly disposables: (THREE.BufferGeometry | THREE.Material)[] = [];
+  private readonly sharedDisposableSet = new Set<THREE.BufferGeometry | THREE.Material>();
   private readonly primGeoCache = new Map<string, THREE.BufferGeometry>();
 
   // Shared detail materials
@@ -845,7 +847,7 @@ export class CreatureRenderer {
     private readonly textures?: TextureLibrary,
   ) {
     this.geo = createSharedGeometries();
-    this.disposables.push(...Object.values(this.geo));
+    this.trackDisposables(...Object.values(this.geo));
 
     const fabricDetail: Partial<THREE.MeshStandardMaterialParameters> = textures?.fabricNormal
       ? { normalMap: textures.fabricNormal, normalScale: new THREE.Vector2(0.48, 0.48) }
@@ -1020,7 +1022,7 @@ export class CreatureRenderer {
       ...fabricDetail,
     });
 
-    this.disposables.push(
+    this.trackDisposables(
       this.eyeMat,
       this.eyelidRimMat,
       this.warmIrisMat,
@@ -1051,6 +1053,13 @@ export class CreatureRenderer {
 
     scene.add(this.rootGroup);
     this.syncCreatures(null);
+  }
+
+  private trackDisposables(...items: (THREE.BufferGeometry | THREE.Material)[]): void {
+    for (const item of items) {
+      this.disposables.push(item);
+      this.sharedDisposableSet.add(item);
+    }
   }
 
   spawnCombatSpark(spark: CombatSparkVisual): void {
@@ -1500,16 +1509,20 @@ export class CreatureRenderer {
   }
 
   private getSpeciesMaterials(c: Creature): SpeciesMaterialSet {
-    const existing = this.speciesMats.get(c.species);
+    return this.getSpeciesMaterialsById(c.species);
+  }
+
+  private getSpeciesMaterialsById(species: SpeciesId): SpeciesMaterialSet {
+    const existing = this.speciesMats.get(species);
     if (existing) return existing;
 
-    const def = c.def;
-    const isFrog = c.species === 'frog';
-    const isCrow = c.species === 'crow';
-    const isMagpie = c.species === 'magpie';
+    const def = SPECIES_CATALOG[species];
+    const isFrog = species === 'frog';
+    const isCrow = species === 'crow';
+    const isMagpie = species === 'magpie';
     const isGlossyBird = isCrow || isMagpie;
-    const isSnake = c.species === 'snake';
-    const isTurtle = c.species === 'turtle';
+    const isSnake = species === 'snake';
+    const isTurtle = species === 'turtle';
     const isBird = def.silhouette === 'bird' || def.silhouette === 'owl';
     const furMap = isFrog || isSnake || isTurtle ? null : (this.textures?.furMap ?? null);
     const furNormal = isFrog || isSnake ? null : (this.textures?.furNormal ?? null);
@@ -1593,10 +1606,42 @@ export class CreatureRenderer {
       ...fabricDetail,
     });
 
-    this.disposables.push(primary, secondary, accent, cloak, scarf);
+    this.trackDisposables(primary, secondary, accent, cloak, scarf);
     const set: SpeciesMaterialSet = { primary, secondary, accent, cloak, scarf };
-    this.speciesMats.set(c.species, set);
+    this.speciesMats.set(species, set);
     return set;
+  }
+
+  /**
+   * Returns representative species, adaptation, and detail PBR materials covering every distinct
+   * MeshPhysicalMaterial shader permutation (fur sheen, clearcoat amphibians/reptiles, iridescent
+   * corvids/pigeons) so shaders compile once behind the splash screen rather than stalling mid-game.
+   */
+  getWarmupMaterials(): THREE.Material[] {
+    const mats: THREE.Material[] = [
+      this.eyeMat,
+      this.eyelidRimMat,
+      this.warmIrisMat,
+      this.pinkInnerMat,
+      this.noseBlackMat,
+      this.leatherMat,
+      this.brassMat,
+      this.woodMat,
+      this.crystalGlowMat,
+      this.lanternGlowMat,
+      this.pigeonIridescentMat,
+      this.turtleShellRimMat,
+      this.reedWeaveMat,
+      this.strawWeaveMat,
+    ];
+    const archetypes: SpeciesId[] = ['fox', 'owl', 'frog', 'crow', 'magpie', 'snake', 'turtle'];
+    for (const sp of archetypes) {
+      const set = this.getSpeciesMaterialsById(sp);
+      mats.push(set.primary, set.secondary, set.accent, set.cloak);
+    }
+    const adapt = this.getAdaptationMaterials('forest_canopy');
+    mats.push(adapt.mantle, adapt.accent);
+    return mats;
   }
 
   private getAdaptationMaterials(
@@ -1625,7 +1670,7 @@ export class CreatureRenderer {
       sheenColor: new THREE.Color(palette.accentColor).lerp(new THREE.Color(0xf4ead8), 0.32),
       ...fabricDetail,
     });
-    this.disposables.push(mantle, accent);
+    this.trackDisposables(mantle, accent);
     const pair = { mantle, accent };
     this.adaptationMats.set(adaptation, pair);
     return pair;
@@ -1636,7 +1681,7 @@ export class CreatureRenderer {
     if (hit) return hit as T;
     const geo = create();
     this.primGeoCache.set(key, geo);
-    this.disposables.push(geo);
+    this.trackDisposables(geo);
     return geo;
   }
 
@@ -1668,24 +1713,35 @@ export class CreatureRenderer {
     return this.cachedGeo(`O:${r}:${d}`, () => new THREE.OctahedronGeometry(r, d));
   }
 
+  private disposeRig(rig: CreatureRig): void {
+    const shared = this.sharedDisposableSet;
+    rig.root.traverse((obj) => {
+      if (obj instanceof THREE.Mesh && obj.geometry && !shared.has(obj.geometry)) {
+        obj.geometry.dispose();
+      }
+    });
+    this.rootGroup.remove(rig.root);
+  }
+
   private syncCreatures(_selection: SelectionTarget): void {
     for (const c of this.world.creatures) {
+      const existing = this.rigs.get(c.id);
+      if (!c.alive) {
+        if (existing) {
+          this.disposeRig(existing);
+          this.rigs.delete(c.id);
+        }
+        continue;
+      }
       const currentAdaptation: VillageAdaptationId =
         this.world.getSettlement(c.settlementId)?.adaptation ?? 'forest_canopy';
-      const existing = this.rigs.get(c.id);
       if (!existing) {
         const rig = this.buildRig(c);
         this.rigs.set(c.id, rig);
         this.rootGroup.add(rig.root);
       } else if (existing.adaptation !== currentAdaptation) {
         // Pioneer settled into a new biome — refresh attire to match the new village's adaptation!
-        const shared = new Set<THREE.BufferGeometry | THREE.Material>(this.disposables);
-        existing.root.traverse((obj) => {
-          if (obj instanceof THREE.Mesh && obj.geometry && !shared.has(obj.geometry)) {
-            obj.geometry.dispose();
-          }
-        });
-        this.rootGroup.remove(existing.root);
+        this.disposeRig(existing);
         const rig = this.buildRig(c);
         this.rigs.set(c.id, rig);
         this.rootGroup.add(rig.root);
@@ -2971,7 +3027,7 @@ export class CreatureRenderer {
       sp.mat.dispose();
     }
     this.sparks.length = 0;
-    const shared = new Set<THREE.BufferGeometry | THREE.Material>(this.disposables);
+    const shared = this.sharedDisposableSet;
     this.rootGroup.traverse((obj) => {
       if (obj instanceof THREE.Mesh && obj.geometry && !shared.has(obj.geometry)) {
         obj.geometry.dispose();
@@ -2981,6 +3037,7 @@ export class CreatureRenderer {
       d.dispose();
     }
     this.disposables.length = 0;
+    this.sharedDisposableSet.clear();
     this.primGeoCache.clear();
     this.speciesMats.clear();
     this.adaptationMats.clear();

@@ -1208,4 +1208,71 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     creatureRenderer.dispose();
     textures.dispose();
   });
+
+  it('keeps scene PointLight count strictly constant as settlements multiply (zero runtime shader recompiles)', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 654321,
+      initialSettlements: 1,
+      initialCreaturesPerSettlement: 4,
+    });
+    const scene = new THREE.Scene();
+    const textures = createStubTextureLibrary();
+    const settlementRenderer = new SettlementRenderer(scene, world, textures);
+
+    const countPointLights = (): number => {
+      let count = 0;
+      scene.traverse((obj) => {
+        if (obj instanceof THREE.PointLight) count++;
+      });
+      return count;
+    };
+
+    const initialLights = countPointLights();
+    expect(initialLights).toBe(6);
+
+    // Add 9 more settlements dynamically (10 total) — scene PointLight count MUST remain constant!
+    for (let i = 0; i < 9; i++) {
+      const s = new Settlement({
+        id: `extra_settlement_${i}`,
+        name: `Outpost ${i}`,
+        bannerColor: 0xcc6633,
+        center: { x: 40 + i * 24, z: -30 + (i % 3) * 28 },
+        groundY: 4,
+        biome: 'meadow',
+        adaptation: ALL_VILLAGE_ADAPTATIONS[i % ALL_VILLAGE_ADAPTATIONS.length],
+        foundingSpecies: ['fox', 'owl'],
+      });
+      world.settlements.push(s);
+    }
+    world.structureRevision++;
+    settlementRenderer.update(0.05, undefined, new THREE.Vector3(40, 4, -30));
+
+    expect(countPointLights()).toBe(initialLights);
+    expect(settlementRenderer.getWarmupMaterials().length).toBeGreaterThan(20);
+
+    settlementRenderer.dispose();
+    textures.dispose();
+  });
+
+  it('removes and disposes 3D rigs of deceased creatures while preserving lineage records', () => {
+    const world = new WorldState(new EventBus(), { seed: 246810, initialSettlements: 1 });
+    const scene = new THREE.Scene();
+    const textures = createStubTextureLibrary();
+    const creatureRenderer = new CreatureRenderer(scene, world, textures);
+    creatureRenderer.update(0.05, null);
+
+    const initialRigCount = creatureRenderer.rootGroup.children.length;
+    expect(initialRigCount).toBeGreaterThan(0);
+    expect(creatureRenderer.getWarmupMaterials().length).toBeGreaterThan(20);
+
+    const elder = world.creatures[0];
+    elder.alive = false;
+    creatureRenderer.update(0.05, null);
+
+    expect(creatureRenderer.rootGroup.children.length).toBe(initialRigCount - 1);
+    expect(world.creatures).toContain(elder);
+
+    creatureRenderer.dispose();
+    textures.dispose();
+  });
 });

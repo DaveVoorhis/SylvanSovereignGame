@@ -154,6 +154,15 @@ export class GameEngine {
         this.sceneManager.cameraController.flyTo(s.center, s.groundY + 1.8, 25);
         this.refreshHudNow();
       },
+      onInspectCreature: (creatureId) => {
+        const c = this.world.getCreature(creatureId);
+        if (!c) return;
+        this.exitCreaturePov(false);
+        this.selection = { kind: 'creature', id: creatureId };
+        this.sceneManager.setSelection(this.selection);
+        this.sceneManager.cameraController.flyTo({ x: c.x, z: c.z }, c.y + 0.9, 13);
+        this.refreshHudNow();
+      },
       onFollowCreature: (creatureId) => {
         const c = this.world.getCreature(creatureId);
         if (!c) return;
@@ -201,11 +210,21 @@ export class GameEngine {
 
     this.onKeyDownBound = (e: KeyboardEvent) => {
       const activeTag = (document.activeElement as HTMLElement | null)?.tagName;
+      if (e.code === 'Escape' && this.hud.isCreatureDirectoryOpen()) {
+        e.preventDefault();
+        this.hud.closeCreatureDirectory();
+        return;
+      }
       if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return;
 
       if (e.code === 'KeyZ' && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         this.toggleZenMode();
+      } else if (e.code === 'KeyC' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        if (!this.zenMode) {
+          this.hud.toggleCreatureDirectory();
+        }
       } else if (e.code === 'Escape' && this.zenMode) {
         e.preventDefault();
         this.exitZenMode();

@@ -935,6 +935,8 @@ const SKY_FRAGMENT_SHADER = /* glsl */ `
  * with drifting clouds, camera-adaptive shadow frustum, seasonal & day/night transitions,
  * weather particles, fireflies, and divine intervention light beams.
  */
+const DIVINE_LIGHT_POOL_SIZE = 2;
+
 export class AtmosphereSystem {
   readonly sunLight: THREE.DirectionalLight;
   readonly hemiLight: THREE.HemisphereLight;
@@ -970,6 +972,7 @@ export class AtmosphereSystem {
 
   private readonly divineGroup = new THREE.Group();
   private readonly divineLightGroup = new THREE.Group();
+  private readonly divineLightPool: THREE.PointLight[] = [];
   private readonly divineDepthUniforms: DivineDepthUniforms = {
     uSceneDepth: { value: null },
     uResolution: { value: new THREE.Vector2(1, 1) },
@@ -1177,6 +1180,13 @@ export class AtmosphereSystem {
     this.beamHaloGeo.rotateX(Math.PI / 2);
 
     this.divineOverlayScene.add(this.divineGroup);
+    // Pre-allocate a fixed pool of divine PointLights so casting/expiring miracles never
+    // changes NUM_POINT_LIGHTS in the main scene and never triggers PBR shader recompiles.
+    for (let i = 0; i < DIVINE_LIGHT_POOL_SIZE; i++) {
+      const pooled = new THREE.PointLight(0xffffff, 0, 32, 1.5);
+      this.divineLightPool.push(pooled);
+      this.divineLightGroup.add(pooled);
+    }
     this.scene.add(this.divineLightGroup);
     this.refreshEnvironmentMap();
   }
@@ -1186,6 +1196,33 @@ export class AtmosphereSystem {
     this.divineDepthUniforms.uResolution.value.set(Math.max(1, width), Math.max(1, height));
     this.divineDepthUniforms.uHasSceneDepth.value = depthTex ? 1.0 : 0.0;
     return this.activeBeams.length > 0;
+  }
+
+  /** Pre-compiles divine beam overlay ShaderMaterials once behind the splash screen. */
+  prewarmDivineShaders(renderer: THREE.WebGLRenderer, camera: THREE.Camera): void {
+    const dummy: DivineEffectVisual = {
+      id: -1,
+      type: 'sunlit_blessing',
+      position: { x: 0, z: 0 },
+      radius: 14,
+      colorHex: 0xffd56b,
+      createdAt: 0,
+      duration: 1,
+    };
+    const visual = createDivineBeamVisual(
+      dummy,
+      0,
+      this.beamOuterGeo,
+      this.beamInnerGeo,
+      this.beamRingGeo,
+      this.beamWallGeo,
+      this.beamHaloGeo,
+      this.divineDepthUniforms,
+    );
+    this.divineGroup.add(visual.group);
+    renderer.compile(this.divineOverlayScene, camera);
+    this.divineGroup.remove(visual.group);
+    visual.dispose();
   }
 
   spawnDivineVisual(effect: DivineEffectVisual, groundY: number): void {
@@ -1203,7 +1240,6 @@ export class AtmosphereSystem {
     // visuals in the post-fog overlay pass so distant horizon mist never splits foreground beams.
     visual.group.remove(visual.glowLight);
     visual.glowLight.position.set(effect.position.x, groundY + 6.8, effect.position.z);
-    this.divineLightGroup.add(visual.glowLight);
     this.divineGroup.add(visual.group);
     this.activeBeams.push({
       id: effect.id,
@@ -1373,13 +1409,13 @@ export class AtmosphereSystem {
     // Periodically refresh PMREM environment map for accurate sky/cloud/ground reflections
     this.envRefreshTimer -= dt;
     if (this.envRefreshTimer <= 0) {
-      this.envRefreshTimer = 3.5;
+      this.envRefreshTimer = 6.0;
       const needsEnvRefresh =
         !this.envRenderTarget ||
-        Math.abs(sunY - this.lastEnvSunY) > 0.012 ||
-        Math.abs(daylight - this.lastEnvDaylight) > 0.012 ||
-        Math.abs(this.currentCloudCoverage - this.lastEnvCloudCoverage) > 0.025 ||
-        Math.abs(this.currentCloudTime - this.lastEnvCloudTime) > 12.0 ||
+        Math.abs(sunY - this.lastEnvSunY) > 0.03 ||
+        Math.abs(daylight - this.lastEnvDaylight) > 0.03 ||
+        Math.abs(this.currentCloudCoverage - this.lastEnvCloudCoverage) > 0.05 ||
+        Math.abs(this.currentCloudTime - this.lastEnvCloudTime) > 20.0 ||
         world.weather !== this.lastEnvWeather ||
         world.season !== this.lastEnvSeason;
       if (needsEnvRefresh) {
@@ -1432,7 +1468,6 @@ export class AtmosphereSystem {
       const pct = age / beam.duration;
       if (pct >= 1) {
         this.divineGroup.remove(v.group);
-        this.divineLightGroup.remove(v.glowLight);
         v.dispose();
         this.activeBeams.splice(i, 1);
         continue;
@@ -1485,6 +1520,22 @@ export class AtmosphereSystem {
       v.glowLight.intensity = fade * 20.0;
       const tintCycle = 0.5 + 0.5 * Math.sin(t * 1.35);
       v.glowLight.color.copy(v.palette.primary).lerp(v.palette.jewelD, tintCycle * 0.25);
+    }
+
+    // Sync up to DIVINE_LIGHT_POOL_SIZE most recent active beams into the permanently mounted PointLight pool
+    const beamCount = this.activeBeams.length;
+    for (let i = 0; i < DIVINE_LIGHT_POOL_SIZE; i++) {
+      const poolLight = this.divineLightPool[i];
+      const beamIdx = beamCount - 1 - i;
+      if (beamIdx >= 0) {
+        const src = this.activeBeams[beamIdx].visual.glowLight;
+        poolLight.position.copy(src.position);
+        poolLight.color.copy(src.color);
+        poolLight.intensity = src.intensity;
+        poolLight.distance = src.distance;
+      } else {
+        poolLight.intensity = 0;
+      }
     }
   }
 
@@ -1591,7 +1642,6 @@ export class AtmosphereSystem {
     this.fireflyMat.dispose();
     for (const beam of this.activeBeams) {
       this.divineGroup.remove(beam.visual.group);
-      this.divineLightGroup.remove(beam.visual.glowLight);
       beam.visual.dispose();
     }
     this.activeBeams.length = 0;

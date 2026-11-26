@@ -39,9 +39,13 @@ export class SettlementManager {
   private expansionCooldown = 2.5;
   private bridgeCooldown = 5.5;
   private emigrationCooldown = 14.0;
+  private expansionCursor = 0;
+  private bridgeCursor = 0;
+  private emigrationCursor = 0;
   private bridgeRng: SeededRandom | null = null;
   private emigrationRng: SeededRandom | null = null;
   private readonly activeEmigrations = new Map<string, EmigrationParty>();
+  private readonly bridgeNoRiverUntilSec = new Map<string, number>();
 
   createInitialSettlements(world: WorldState): void {
     const sites = world.terrain.findSettlementSites(
@@ -193,33 +197,43 @@ export class SettlementManager {
       }
     }
 
+    const settlementCount = world.settlements.length;
+    if (settlementCount === 0) return;
+
+    // Stagger heavy per-settlement terrain & expansion checks round-robin (1 settlement per window)
+    // so growing worlds with 10–16 villages never run synchronized terrain-search spikes on one frame.
     this.bridgeCooldown -= dt;
     if (this.bridgeCooldown <= 0) {
-      this.bridgeCooldown = 6.0;
+      this.bridgeCooldown = Math.max(0.55, 6.0 / settlementCount);
       if (!this.bridgeRng) {
         this.bridgeRng = new SeededRandom(world.config.seed ^ 0x42524944);
       }
-      for (const settlement of world.settlements) {
-        this.considerNewBridge(settlement, world, this.bridgeRng);
-      }
+      const settlement = world.settlements[this.bridgeCursor % settlementCount];
+      this.bridgeCursor = (this.bridgeCursor + 1) % settlementCount;
+      this.considerNewBridge(settlement, world, this.bridgeRng);
     }
 
     this.emigrationCooldown -= dt;
     if (this.emigrationCooldown <= 0) {
-      this.emigrationCooldown = 14.0;
+      this.emigrationCooldown = Math.max(1.2, 14.0 / settlementCount);
       if (!this.emigrationRng) {
         this.emigrationRng = new SeededRandom(world.config.seed ^ 0x454d4947);
       }
       this.pruneStaleEmigrations(world);
-      for (const settlement of world.settlements) {
-        this.considerEmigration(settlement, world, this.emigrationRng);
+      if (world.settlements.length > 0) {
+        const idx = this.emigrationCursor % world.settlements.length;
+        this.emigrationCursor = (idx + 1) % world.settlements.length;
+        this.considerEmigration(world.settlements[idx], world, this.emigrationRng);
       }
     }
 
     if (this.expansionCooldown > 0) return;
-    this.expansionCooldown = 3.0;
+    this.expansionCooldown = Math.max(0.3, 3.0 / world.settlements.length);
 
-    for (const settlement of world.settlements) {
+    if (world.settlements.length > 0) {
+      const idx = this.expansionCursor % world.settlements.length;
+      this.expansionCursor = (idx + 1) % world.settlements.length;
+      const settlement = world.settlements[idx];
       this.considerNewBuilding(settlement, world);
       this.considerPopulationGrowth(settlement, world);
     }
@@ -816,6 +830,9 @@ export class SettlementManager {
    */
   private considerNewBridge(settlement: Settlement, world: WorldState, rng: SeededRandom): void {
     if (world.bridges.length >= MAX_BRIDGES_PER_WORLD) return;
+    const retryAt = this.bridgeNoRiverUntilSec.get(settlement.id);
+    if (retryAt !== undefined && world.elapsedSeconds < retryAt) return;
+
 
     let ownedCount = 0;
     for (const b of world.bridges) {
@@ -859,7 +876,11 @@ export class SettlementManager {
       avoidPoints,
       Math.max(85, world.terrain.size * 0.25),
     );
-    if (!crossing) return;
+    if (!crossing) {
+      // Back off inland/desert/mountain villages that have no bridgeable river nearby
+      this.bridgeNoRiverUntilSec.set(settlement.id, world.elapsedSeconds + 90);
+      return;
+    }
 
     this.spendResources(settlement, cost);
     const bridge: BridgeInstance = {
@@ -961,7 +982,10 @@ export class SettlementManager {
   }
 
   private considerPopulationGrowth(settlement: Settlement, world: WorldState): void {
-    const aliveTotal = world.creatures.filter((c) => c.alive).length;
+    let aliveTotal = 0;
+    for (let i = 0; i < world.creatures.length; i++) {
+      if (world.creatures[i].alive) aliveTotal++;
+    }
     if (aliveTotal >= world.config.maxPopulation) return;
 
     const pop = world.getSettlementPopulation(settlement.id);

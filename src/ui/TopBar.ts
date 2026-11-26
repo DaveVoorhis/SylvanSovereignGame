@@ -1,4 +1,5 @@
 import type { QualityPreset } from '@core/Config';
+import type { Season, WeatherType } from '@core/Types';
 import { getBiomeDisplayName } from '@simulation/settlements/VillageAdaptation';
 import type { WorldState } from '@simulation/WorldState';
 
@@ -6,6 +7,7 @@ export interface TopBarCallbacks {
   onSetSpeed: (speed: number) => void;
   onToggleCinematic: () => boolean;
   onToggleCreatureView: () => void;
+  onToggleCreatureDirectory: () => void;
   onToggleZenMode: () => void;
   onResetOverview: () => void;
   onNewWorld: () => void;
@@ -13,44 +15,208 @@ export interface TopBarCallbacks {
   onFocusSettlement: (settlementId: string) => void;
 }
 
+interface TelemetrySlotNodes {
+  readonly root: HTMLElement;
+  readonly valueEl: HTMLElement;
+}
+
+interface SettlementPillNodes {
+  readonly button: HTMLButtonElement;
+  readonly dotEl: HTMLElement;
+  readonly iconEl: HTMLElement;
+  readonly nameEl: HTMLElement;
+  readonly metaLabelEl: HTMLElement;
+  readonly popEl: HTMLElement;
+}
+
+const SEASON_ICONS: Record<Season, string> = {
+  spring: '🌸',
+  summer: '☀️',
+  autumn: '🍂',
+  winter: '❄️',
+};
+
+const WEATHER_ICONS: Record<WeatherType, string> = {
+  clear: '☀️',
+  sunbeams: '✨',
+  mist: '🌫️',
+  rain: '🌧️',
+  storm: '⛈️',
+  snow: '🌨️',
+  blossom: '🌸',
+};
+
+function createTelemetrySlot(icon: string, label: string, title: string): TelemetrySlotNodes {
+  const root = document.createElement('span');
+  root.className = 'telemetry-slot';
+  root.title = title;
+
+  const iconEl = document.createElement('span');
+  iconEl.className = 'telemetry-icon';
+  iconEl.textContent = icon;
+
+  const valueEl = document.createElement('span');
+  valueEl.className = 'telemetry-value';
+  valueEl.textContent = '0';
+
+  const labelEl = document.createElement('span');
+  labelEl.className = 'telemetry-label';
+  labelEl.textContent = label;
+
+  root.append(iconEl, valueEl, labelEl);
+  return { root, valueEl };
+}
+
 export class TopBar {
   readonly element: HTMLElement;
-  private readonly clockEl: HTMLElement;
-  private readonly statsEl: HTMLElement;
-  private readonly settlementsBar: HTMLElement;
+
+  // Temporal capsule slots (updated in-place — never torn down)
+  private readonly dayValueEl: HTMLElement;
+  private readonly timeValueEl: HTMLElement;
+  private readonly seasonIconEl: HTMLElement;
+  private readonly seasonTextEl: HTMLElement;
+  private readonly weatherIconEl: HTMLElement;
+  private readonly weatherTextEl: HTMLElement;
+
+  // Telemetry strip slots (always mounted so sibling layout never shifts)
+  private readonly kinBtn: HTMLButtonElement;
+  private readonly kinValueEl: HTMLElement;
+  private readonly youngSlot: TelemetrySlotNodes;
+  private readonly buildingsSlot: TelemetrySlotNodes;
+  private readonly tradeSlot: TelemetrySlotNodes;
+  private readonly pioneersSlot: TelemetrySlotNodes;
+
+  // Controls
   private readonly speedButtons: HTMLButtonElement[] = [];
   private readonly cinematicBtn: HTMLButtonElement;
   private readonly povToggleBtn: HTMLButtonElement;
   private readonly zenBtn: HTMLButtonElement;
   private readonly qualitySelect: HTMLSelectElement;
 
+  // Band 2: reconciled settlement pills + dedicated right-anchored event slot
+  private readonly settlementsBar: HTMLElement;
+  private readonly settlementPills = new Map<string, SettlementPillNodes>();
+  private readonly eventBadgeEl: HTMLElement;
+  private readonly eventIconEl: HTMLElement;
+  private readonly eventTextEl: HTMLElement;
+
   constructor(private readonly callbacks: TopBarCallbacks) {
     this.element = document.createElement('header');
     this.element.className = 'hud-topbar glass-panel';
 
+    // === BAND 1: Main Bar (3-zone stable grid) ===
+    const mainRow = document.createElement('div');
+    mainRow.className = 'topbar-main';
+
+    // Left Zone: Brand + Temporal Capsule
+    const leftZone = document.createElement('div');
+    leftZone.className = 'topbar-left';
+
     const brand = document.createElement('div');
     brand.className = 'topbar-brand';
-    brand.innerHTML = `<span class="brand-title">Sylvan Sovereign</span><span class="brand-sub">Procedural Living World Spectator</span>`;
+    const brandTitle = document.createElement('span');
+    brandTitle.className = 'brand-title';
+    brandTitle.textContent = 'Sylvan Sovereign';
+    const brandSub = document.createElement('span');
+    brandSub.className = 'brand-sub';
+    brandSub.textContent = 'Living Woodland Realm';
+    brand.append(brandTitle, brandSub);
 
-    this.clockEl = document.createElement('div');
-    this.clockEl.className = 'topbar-clock';
+    const clockCapsule = document.createElement('div');
+    clockCapsule.className = 'clock-capsule';
 
-    this.statsEl = document.createElement('div');
-    this.statsEl.className = 'topbar-stats';
+    const daySeg = document.createElement('span');
+    daySeg.className = 'clock-seg seg-day';
+    const dayPrefix = document.createElement('span');
+    dayPrefix.className = 'clock-muted';
+    dayPrefix.textContent = 'Day';
+    this.dayValueEl = document.createElement('span');
+    this.dayValueEl.className = 'clock-num';
+    this.dayValueEl.textContent = '1';
+    daySeg.append(dayPrefix, this.dayValueEl);
 
+    const timeSeg = document.createElement('span');
+    timeSeg.className = 'clock-seg seg-time';
+    this.timeValueEl = document.createElement('span');
+    this.timeValueEl.className = 'clock-num';
+    this.timeValueEl.textContent = '08:00';
+    timeSeg.appendChild(this.timeValueEl);
+
+    const seasonSeg = document.createElement('span');
+    seasonSeg.className = 'clock-seg seg-season';
+    this.seasonIconEl = document.createElement('span');
+    this.seasonIconEl.className = 'clock-icon';
+    this.seasonIconEl.textContent = '🌸';
+    this.seasonTextEl = document.createElement('span');
+    this.seasonTextEl.textContent = 'Spring';
+    seasonSeg.append(this.seasonIconEl, this.seasonTextEl);
+
+    const weatherSeg = document.createElement('span');
+    weatherSeg.className = 'clock-seg seg-weather';
+    this.weatherIconEl = document.createElement('span');
+    this.weatherIconEl.className = 'clock-icon';
+    this.weatherIconEl.textContent = '☀️';
+    this.weatherTextEl = document.createElement('span');
+    this.weatherTextEl.textContent = 'Clear';
+    weatherSeg.append(this.weatherIconEl, this.weatherTextEl);
+
+    clockCapsule.append(daySeg, timeSeg, seasonSeg, weatherSeg);
+    leftZone.append(brand, clockCapsule);
+
+    // Center Zone: Fixed-slot Telemetry Strip + Interactive Creature Census button
+    const telemetry = document.createElement('div');
+    telemetry.className = 'topbar-telemetry';
+
+    this.kinBtn = document.createElement('button');
+    this.kinBtn.type = 'button';
+    this.kinBtn.className = 'telemetry-btn';
+    this.kinBtn.title = 'Open Woodland Census & Family Trees (C)';
+    const kinIcon = document.createElement('span');
+    kinIcon.className = 'telemetry-icon';
+    kinIcon.textContent = '🐾';
+    this.kinValueEl = document.createElement('span');
+    this.kinValueEl.className = 'telemetry-value';
+    this.kinValueEl.textContent = '0';
+    const kinLabel = document.createElement('span');
+    kinLabel.className = 'telemetry-label';
+    kinLabel.textContent = 'Kin';
+    const kinCaret = document.createElement('span');
+    kinCaret.className = 'telemetry-caret';
+    kinCaret.textContent = '🌳';
+    this.kinBtn.append(kinIcon, this.kinValueEl, kinLabel, kinCaret);
+    this.kinBtn.addEventListener('click', () => this.callbacks.onToggleCreatureDirectory());
+
+    this.youngSlot = createTelemetrySlot('🐣', 'Young', 'Newborn & juvenile woodland kin');
+    this.buildingsSlot = createTelemetrySlot('🏡', 'Bldgs', 'Completed settlement buildings');
+    this.tradeSlot = createTelemetrySlot('⚖️', 'Trade', 'Active merchant caravans');
+    this.pioneersSlot = createTelemetrySlot('🧭', 'Pioneers', 'Emigration pioneer parties');
+
+    telemetry.append(
+      this.kinBtn,
+      this.youngSlot.root,
+      this.buildingsSlot.root,
+      this.tradeSlot.root,
+      this.pioneersSlot.root,
+    );
+
+    // Right Zone: Grouped Controls
     const controls = document.createElement('div');
     controls.className = 'topbar-controls';
 
-    const speeds: [string, number][] = [
-      ['⏸', 0],
-      ['1×', 1],
-      ['2×', 2],
-      ['4×', 4],
+    const speedGroup = document.createElement('div');
+    speedGroup.className = 'segmented-group';
+    const speeds: [string, number, string][] = [
+      ['⏸', 0, 'Pause simulation'],
+      ['1×', 1, 'Normal speed'],
+      ['2×', 2, '2× speed'],
+      ['4×', 4, '4× speed'],
     ];
-    for (const [label, spd] of speeds) {
+    for (const [label, spd, title] of speeds) {
       const btn = document.createElement('button');
-      btn.className = 'hud-btn';
+      btn.type = 'button';
+      btn.className = 'seg-btn';
       btn.textContent = label;
+      btn.title = title;
       btn.dataset.speed = String(spd);
       if (spd === 1) btn.classList.add('active');
       btn.addEventListener('click', () => {
@@ -58,24 +224,28 @@ export class TopBar {
         this.callbacks.onSetSpeed(spd);
       });
       this.speedButtons.push(btn);
-      controls.appendChild(btn);
+      speedGroup.appendChild(btn);
     }
 
+    const viewGroup = document.createElement('div');
+    viewGroup.className = 'control-group';
+
     this.povToggleBtn = document.createElement('button');
-    this.povToggleBtn.className = 'hud-btn';
+    this.povToggleBtn.type = 'button';
+    this.povToggleBtn.className = 'hud-btn pov-btn';
     this.povToggleBtn.textContent = '👁 Creature View';
     this.povToggleBtn.title = 'View the forest from a creature’s eyes (V)';
     this.povToggleBtn.addEventListener('click', () => this.callbacks.onToggleCreatureView());
-    controls.appendChild(this.povToggleBtn);
 
     const overviewBtn = document.createElement('button');
+    overviewBtn.type = 'button';
     overviewBtn.className = 'hud-btn';
     overviewBtn.textContent = 'Overview';
     overviewBtn.title = 'Zoom out to view the entire country map';
     overviewBtn.addEventListener('click', () => this.callbacks.onResetOverview());
-    controls.appendChild(overviewBtn);
 
     this.cinematicBtn = document.createElement('button');
+    this.cinematicBtn.type = 'button';
     this.cinematicBtn.className = 'hud-btn';
     this.cinematicBtn.textContent = 'Drift';
     this.cinematicBtn.title = 'Toggle gentle cinematic spectator camera orbit';
@@ -83,14 +253,18 @@ export class TopBar {
       const active = this.callbacks.onToggleCinematic();
       this.cinematicBtn.classList.toggle('active', active);
     });
-    controls.appendChild(this.cinematicBtn);
 
     this.zenBtn = document.createElement('button');
+    this.zenBtn.type = 'button';
     this.zenBtn.className = 'hud-btn';
     this.zenBtn.textContent = '🌿 Zen';
     this.zenBtn.title = 'Enter full-screen Zen Mode — hide all UI (Z)';
     this.zenBtn.addEventListener('click', () => this.callbacks.onToggleZenMode());
-    controls.appendChild(this.zenBtn);
+
+    viewGroup.append(this.povToggleBtn, overviewBtn, this.cinematicBtn, this.zenBtn);
+
+    const worldGroup = document.createElement('div');
+    worldGroup.className = 'control-group';
 
     this.qualitySelect = document.createElement('select');
     this.qualitySelect.className = 'hud-select';
@@ -105,23 +279,40 @@ export class TopBar {
     this.qualitySelect.addEventListener('change', () => {
       this.callbacks.onChangeQuality(this.qualitySelect.value as QualityPreset);
     });
-    controls.appendChild(this.qualitySelect);
 
     const seedBtn = document.createElement('button');
+    seedBtn.type = 'button';
     seedBtn.className = 'hud-btn accent';
     seedBtn.textContent = 'New World';
     seedBtn.title = 'Generate a brand-new procedural world';
     seedBtn.addEventListener('click', () => this.callbacks.onNewWorld());
-    controls.appendChild(seedBtn);
 
-    const topRow = document.createElement('div');
-    topRow.className = 'topbar-row';
-    topRow.append(brand, this.clockEl, this.statsEl, controls);
+    worldGroup.append(this.qualitySelect, seedBtn);
+    controls.append(speedGroup, viewGroup, worldGroup);
+
+    mainRow.append(leftZone, telemetry, controls);
+
+    // === BAND 2: Reconciled Settlement Strip + Right-Anchored Celebration Slot ===
+    const subRow = document.createElement('div');
+    subRow.className = 'topbar-subrow';
 
     this.settlementsBar = document.createElement('div');
     this.settlementsBar.className = 'settlement-pills';
 
-    this.element.append(topRow, this.settlementsBar);
+    const eventSlot = document.createElement('div');
+    eventSlot.className = 'topbar-event-slot';
+
+    this.eventBadgeEl = document.createElement('span');
+    this.eventBadgeEl.className = 'celebration-pill is-idle';
+    this.eventIconEl = document.createElement('span');
+    this.eventIconEl.className = 'cel-slot-icon';
+    this.eventTextEl = document.createElement('span');
+    this.eventTextEl.className = 'cel-slot-text';
+    this.eventBadgeEl.append(this.eventIconEl, this.eventTextEl);
+    eventSlot.appendChild(this.eventBadgeEl);
+
+    subRow.append(this.settlementsBar, eventSlot);
+    this.element.append(mainRow, subRow);
   }
 
   setActiveSpeed(speed: number): void {
@@ -134,67 +325,177 @@ export class TopBar {
     this.zenBtn.classList.toggle('active', active);
   }
 
+  setDirectoryOpen(open: boolean): void {
+    this.kinBtn.classList.toggle('active', open);
+  }
+
   update(world: WorldState, inCreaturePov: boolean): void {
-    this.povToggleBtn.textContent = inCreaturePov ? '🌍 World View' : '👁 Creature View';
+    // 1. POV button text (fixed min-width in CSS prevents horizontal shift)
+    const nextPovText = inCreaturePov ? '🌍 World View' : '👁 Creature View';
+    if (this.povToggleBtn.textContent !== nextPovText) {
+      this.povToggleBtn.textContent = nextPovText;
+    }
     this.povToggleBtn.classList.toggle('active', inCreaturePov);
 
+    // 2. Temporal Capsule (in-place text updates)
     const hours = Math.floor(world.timeOfDay * 24);
     const mins = Math.floor((world.timeOfDay * 24 - hours) * 60);
+    const dayStr = String(world.day);
     const timeStr = `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
     const seasonLabel = world.season[0].toUpperCase() + world.season.slice(1);
     const weatherLabel = world.weather[0].toUpperCase() + world.weather.slice(1);
 
-    this.clockEl.innerHTML = `
-      <span class="pill">Day ${world.day}</span>
-      <span class="pill">${seasonLabel}</span>
-      <span class="pill">${timeStr}</span>
-      <span class="pill">${weatherLabel}</span>
-    `;
+    if (this.dayValueEl.textContent !== dayStr) this.dayValueEl.textContent = dayStr;
+    if (this.timeValueEl.textContent !== timeStr) this.timeValueEl.textContent = timeStr;
+    if (this.seasonIconEl.textContent !== SEASON_ICONS[world.season]) {
+      this.seasonIconEl.textContent = SEASON_ICONS[world.season];
+    }
+    if (this.seasonTextEl.textContent !== seasonLabel) {
+      this.seasonTextEl.textContent = seasonLabel;
+    }
+    if (this.weatherIconEl.textContent !== WEATHER_ICONS[world.weather]) {
+      this.weatherIconEl.textContent = WEATHER_ICONS[world.weather];
+    }
+    if (this.weatherTextEl.textContent !== weatherLabel) {
+      this.weatherTextEl.textContent = weatherLabel;
+    }
 
-    const aliveCount = world.creatures.filter((c) => c.alive).length;
-    const youngCount = world.creatures.filter(
-      (c) => c.alive && (c.lifeStage === 'young' || c.lifeStage === 'juvenile'),
-    ).length;
+    // 3. Single-pass creature telemetry counts (zero layout mount/unmount)
+    let aliveCount = 0;
+    let youngCount = 0;
+    let caravans = 0;
+    let pioneerCount = 0;
+    let celebratingCount = 0;
+
+    for (const c of world.creatures) {
+      if (!c.alive) continue;
+      aliveCount++;
+      if (c.lifeStage === 'young' || c.lifeStage === 'juvenile') youngCount++;
+      if (c.activity === 'trading') caravans++;
+      else if (c.activity === 'emigrating') pioneerCount++;
+      else if (c.activity === 'celebrating') celebratingCount++;
+    }
+
     const totalBuildings = world.settlements.reduce((sum, s) => sum + s.getCompletedCount(), 0);
-    const caravans = world.creatures.filter((c) => c.alive && c.activity === 'trading').length;
-    const pioneerCount = world.creatures.filter((c) => c.alive && c.activity === 'emigrating').length;
-    const celebratingCount = world.creatures.filter(
-      (c) => c.alive && c.activity === 'celebrating',
-    ).length;
+
+    this.setTextIfChanged(this.kinValueEl, String(aliveCount));
+    this.updateSlot(this.youngSlot, youngCount);
+    this.updateSlot(this.buildingsSlot, totalBuildings);
+    this.updateSlot(this.tradeSlot, caravans);
+    this.updateSlot(this.pioneersSlot, pioneerCount);
+
+    // 4. Right-anchored Celebration Event Slot (never nudges Band 1 or settlement pills)
     const nationalHoliday = world.festivals.getNationalHoliday();
     const activeRegional = world.festivals.activeCelebrations.find((c) => c.scope === 'regional');
-    this.statsEl.innerHTML = `
-      <span>🐾 ${aliveCount} Kin</span>
-      ${youngCount > 0 ? `<span>🐣 ${youngCount} Young</span>` : ''}
-      <span>🏡 ${totalBuildings} Bldgs</span>
-      <span>⚖️ ${caravans} Caravans</span>
-      ${pioneerCount > 0 ? `<span>🧭 ${pioneerCount} Pioneers</span>` : ''}
-      ${
-        nationalHoliday
-          ? `<span class="celebration-pill scope-national" title="${nationalHoliday.theme}">${nationalHoliday.icon} National Holiday: ${nationalHoliday.name}</span>`
-          : activeRegional
-            ? `<span class="celebration-pill scope-regional" title="${activeRegional.theme}">${activeRegional.icon} Regional Event (${celebratingCount})</span>`
-            : celebratingCount > 0
-              ? `<span class="celebration-pill scope-local">🎉 ${celebratingCount} Celebrating</span>`
-              : ''
-      }
-    `;
 
-    this.settlementsBar.innerHTML = '';
+    this.eventBadgeEl.classList.remove('scope-national', 'scope-regional', 'scope-local', 'is-idle');
+    if (nationalHoliday) {
+      this.eventBadgeEl.classList.add('scope-national');
+      this.eventBadgeEl.title = nationalHoliday.theme;
+      this.setTextIfChanged(this.eventIconEl, nationalHoliday.icon);
+      this.setTextIfChanged(this.eventTextEl, `Holiday: ${nationalHoliday.name}`);
+    } else if (activeRegional) {
+      this.eventBadgeEl.classList.add('scope-regional');
+      this.eventBadgeEl.title = activeRegional.theme;
+      this.setTextIfChanged(this.eventIconEl, activeRegional.icon);
+      this.setTextIfChanged(this.eventTextEl, `${activeRegional.name} (${celebratingCount})`);
+    } else if (celebratingCount > 0) {
+      this.eventBadgeEl.classList.add('scope-local');
+      this.eventBadgeEl.title = 'Village celebration underway';
+      this.setTextIfChanged(this.eventIconEl, '🎉');
+      this.setTextIfChanged(this.eventTextEl, `${celebratingCount} Celebrating`);
+    } else {
+      this.eventBadgeEl.classList.add('is-idle');
+      this.eventBadgeEl.title = '';
+    }
+
+    // 5. Reconcile settlement pills in-place by settlement.id (preserves hover & DOM stability)
+    const activeIds = new Set<string>();
     for (const s of world.settlements) {
-      const btn = document.createElement('button');
+      activeIds.add(s.id);
+      let nodes = this.settlementPills.get(s.id);
+      if (!nodes) {
+        nodes = this.createSettlementPill(s.id);
+        this.settlementPills.set(s.id, nodes);
+        this.settlementsBar.appendChild(nodes.button);
+      }
+
       const cel = world.festivals.getCelebrationForSettlement(s.id);
-      btn.className = `settlement-pill${cel ? ` celebrating scope-${cel.scope}` : ''}`;
       const hex = `#${s.bannerColor.toString(16).padStart(6, '0')}`;
       const pop = world.getSettlementPopulation(s.id);
       const profile = s.getAdaptationProfile();
-      const celBadge = cel ? `<span class="cel-badge" title="${cel.name}">${cel.icon}</span>` : '';
-      btn.title = cel
+
+      nodes.button.classList.toggle('celebrating', Boolean(cel));
+      nodes.button.classList.toggle('scope-national', cel?.scope === 'national');
+      nodes.button.classList.toggle('scope-regional', cel?.scope === 'regional');
+      nodes.button.classList.toggle('scope-local', cel?.scope === 'local');
+
+      if (nodes.dotEl.style.background !== hex) {
+        nodes.dotEl.style.background = hex;
+      }
+
+      // Swap the fixed-width icon box to the festival icon during celebrations so pill width never shifts
+      const displayIcon = cel ? cel.icon : profile.icon;
+      this.setTextIfChanged(nodes.iconEl, displayIcon);
+      this.setTextIfChanged(nodes.nameEl, s.name);
+      this.setTextIfChanged(nodes.metaLabelEl, profile.shortLabel);
+      this.setTextIfChanged(nodes.popEl, String(pop));
+
+      const nextTitle = cel
         ? `${s.name} — ${cel.icon} ${cel.name} (${cel.scope}): ${cel.theme}`
         : `${s.name} — ${profile.title} (${getBiomeDisplayName(s.biome)}): ${profile.summary}`;
-      btn.innerHTML = `<span class="dot" style="background:${hex}"></span><span class="adapt-icon">${profile.icon}</span>${s.name} <small>(${profile.shortLabel} · ${pop})</small>${celBadge}`;
-      btn.addEventListener('click', () => this.callbacks.onFocusSettlement(s.id));
-      this.settlementsBar.appendChild(btn);
+      if (nodes.button.title !== nextTitle) {
+        nodes.button.title = nextTitle;
+      }
+    }
+
+    // Remove pills only if a settlement no longer exists (e.g. after New World reset)
+    for (const [id, nodes] of this.settlementPills) {
+      if (!activeIds.has(id)) {
+        nodes.button.remove();
+        this.settlementPills.delete(id);
+      }
+    }
+  }
+
+  private createSettlementPill(settlementId: string): SettlementPillNodes {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'settlement-pill';
+    button.dataset.settlementId = settlementId;
+
+    const dotEl = document.createElement('span');
+    dotEl.className = 'dot';
+
+    const iconEl = document.createElement('span');
+    iconEl.className = 'adapt-icon';
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'settlement-name';
+
+    const metaWrap = document.createElement('small');
+    metaWrap.className = 'settlement-meta';
+    const metaLabelEl = document.createElement('span');
+    const sepEl = document.createElement('span');
+    sepEl.textContent = ' · ';
+    const popEl = document.createElement('span');
+    popEl.className = 'settlement-pop';
+    metaWrap.append(metaLabelEl, sepEl, popEl);
+
+    button.append(dotEl, iconEl, nameEl, metaWrap);
+    button.addEventListener('click', () => this.callbacks.onFocusSettlement(settlementId));
+
+    return { button, dotEl, iconEl, nameEl, metaLabelEl, popEl };
+  }
+
+  private updateSlot(slot: TelemetrySlotNodes, count: number): void {
+    this.setTextIfChanged(slot.valueEl, String(count));
+    slot.root.classList.toggle('is-empty', count === 0);
+  }
+
+  private setTextIfChanged(el: HTMLElement, text: string): void {
+    if (el.textContent !== text) {
+      el.textContent = text;
     }
   }
 }

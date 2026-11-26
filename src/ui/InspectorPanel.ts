@@ -10,6 +10,7 @@ export interface InspectorCallbacks {
   onEnterCreaturePov: (creatureId: string) => void;
   onExitCreaturePov: () => void;
   onFocusSettlement: (settlementId: string) => void;
+  onViewLineage?: (creatureId: string) => void;
 }
 
 export class InspectorPanel {
@@ -102,6 +103,7 @@ export class InspectorPanel {
               : ''
           }
           <button class="hud-btn" data-action="follow">${isFollowing ? 'Following ✓' : 'Follow'}</button>
+          <button class="hud-btn" data-action="lineage" title="View family tree">🌳 Lineage</button>
           ${home ? `<button class="hud-btn" data-action="home">${home.name}</button>` : ''}
         </div>
       `;
@@ -118,6 +120,9 @@ export class InspectorPanel {
       });
       this.contentEl.querySelector('[data-action="follow"]')?.addEventListener('click', () => {
         this.callbacks.onFollowCreature(c.id);
+      });
+      this.contentEl.querySelector('[data-action="lineage"]')?.addEventListener('click', () => {
+        this.callbacks.onViewLineage?.(c.id);
       });
       this.contentEl.querySelector('[data-action="home"]')?.addEventListener('click', () => {
         if (home) this.callbacks.onFocusSettlement(home.id);

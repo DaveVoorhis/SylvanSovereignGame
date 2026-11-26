@@ -729,7 +729,11 @@ export class HearthFire {
   private readonly lightColorDeep = new THREE.Color(0xff5e16);
   private readonly lightColorCurr = new THREE.Color(0xff8c2b);
 
-  constructor(private readonly seed: number, sharedFlameGeo: THREE.BufferGeometry) {
+  constructor(
+    private readonly seed: number,
+    sharedFlameGeo: THREE.BufferGeometry,
+    attachLightToGroup = true,
+  ) {
     const pixelRatio = getDevicePixelRatio();
 
     // 1. Mounded glowing ember & ash bed
@@ -807,10 +811,13 @@ export class HearthFire {
     this.smokePoints.renderOrder = 3;
     this.group.add(this.smokePoints);
 
-    // 5. Dynamic warm flickering firelight
+    // 5. Dynamic warm flickering firelight (optionally detached when driven by a fixed scene PointLight pool
+    //    so adding settlements never changes NUM_POINT_LIGHTS and triggers scene-wide PBR shader recompiles)
     this.light = new THREE.PointLight(0xff8c2b, 5.2, 22, 1.55);
     this.light.position.copy(this.baseLightPos);
-    this.group.add(this.light);
+    if (attachLightToGroup) {
+      this.group.add(this.light);
+    }
   }
 
   /** Updates shader uniforms, wind bend, and organic multi-frequency firelight flicker. */

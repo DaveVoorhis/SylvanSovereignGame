@@ -874,12 +874,17 @@ export class CreatureAI {
 
       // Interact with nearby creature
       if (world.rng.chance(dt * 0.42)) {
-        const nearby = world.creatures.find(
-          (other) =>
-            other.alive &&
-            other.id !== creature.id &&
-            Math.hypot(other.x - creature.x, other.z - creature.z) < 5.5,
-        );
+        this.queryNearbyCreatures(creature, creature.x, creature.z, 5.5, world, this.nearbyCreatures);
+        let nearby: Creature | undefined;
+        for (let i = 0; i < this.nearbyCreatures.length; i++) {
+          const other = this.nearbyCreatures[i];
+          const dx = other.x - creature.x;
+          const dz = other.z - creature.z;
+          if (dx * dx + dz * dz < 5.5 * 5.5) {
+            nearby = other;
+            break;
+          }
+        }
         if (nearby) {
           const sameFaction = nearby.settlementId === creature.settlementId;
           const compat =
@@ -1145,7 +1150,10 @@ export class CreatureAI {
   }
 
   private handleFighting(creature: Creature, world: WorldState, _dt: number): void {
-    const target = world.creatures.find((c) => c.id === creature.targetCreatureId && c.alive);
+    const rawTarget = creature.targetCreatureId
+      ? world.getCreature(creature.targetCreatureId)
+      : undefined;
+    const target = rawTarget && rawTarget.alive ? rawTarget : undefined;
     if (!target || creature.actionTimer <= 0) {
       creature.activity = 'idle';
       creature.targetCreatureId = null;

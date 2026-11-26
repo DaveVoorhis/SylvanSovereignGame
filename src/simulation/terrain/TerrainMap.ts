@@ -2037,6 +2037,7 @@ export class TerrainMap {
           score: number;
         })
       | null = null;
+    let bestScore = -Infinity;
 
     const evaluateCandidate = (cx: number, cz: number, tx: number, tz: number): void => {
       const distFromOrigin = Math.hypot(cx - originX, cz - originZ);
@@ -2053,16 +2054,16 @@ export class TerrainMap {
       const nz = tx;
 
       const findBank = (sign: 1 | -1): { x: number; z: number; y: number } | null => {
-        for (let d = 2.4; d <= 22.0; d += 0.5) {
+        for (let d = 2.4; d <= 22.0; d += 0.8) {
           const bx = cx + nx * sign * d;
           const bz = cz + nz * sign * d;
           const h = this.getHeightAt(bx, bz);
           if (h >= this.waterLevel + 0.34 && this.getSlopeAt(bx, bz) < 0.28) {
             const ax = cx + nx * sign * (d + 1.5);
             const az = cz + nz * sign * (d + 1.5);
+            if (Math.hypot(ax, az) > maxPlayable) continue;
             const ay = this.getHeightAt(ax, az);
             if (
-              Math.hypot(ax, az) <= maxPlayable &&
               ay >= this.waterLevel + 0.32 &&
               this.getSlopeAt(ax, az) < 0.3 &&
               !this.isImpassableMountainAt(ax, az, ay)
@@ -2111,7 +2112,8 @@ export class TerrainMap {
         minClearCrown - chordMidY,
       );
       const score = -distFromOrigin - length * 0.85 - Math.abs(start.y - end.y) * 3.0;
-      if (!bestCandidate || score > bestCandidate.score) {
+      if (score > bestScore) {
+        bestScore = score;
         bestCandidate = {
           startX: start.x,
           startZ: start.z,
@@ -2132,15 +2134,32 @@ export class TerrainMap {
       }
     };
 
-    // Probe nearby meandering trunk, tributary & stream segments directly with seeded sub-segment jitter
+    // Collect in-range meandering river segments, sort closest-first, and cap evaluations so wide
+    // searches never perform hundreds of thousands of terrain queries in a single simulation frame.
     const maxDistSq = (maxSearchDist + 14) * (maxSearchDist + 14);
+    const candidates: { idx: number; distSq: number }[] = [];
     for (let i = 0; i < this.riverSegments.length; i++) {
       const seg = this.riverSegments[i];
       const mx = seg.ax + seg.dx * 0.5;
       const mz = seg.az + seg.dz * 0.5;
       const ddx = mx - originX;
       const ddz = mz - originZ;
-      if (ddx * ddx + ddz * ddz > maxDistSq) continue;
+      const distSq = ddx * ddx + ddz * ddz;
+      if (distSq > maxDistSq) continue;
+      candidates.push({ idx: i, distSq });
+    }
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => a.distSq - b.distSq);
+
+    const maxEval = 48;
+    const step = candidates.length > maxEval ? candidates.length / maxEval : 1;
+    for (let k = 0; k < Math.min(candidates.length, maxEval); k++) {
+      const entry = candidates[Math.floor(k * step)];
+      // Early exit once we already have a strong nearby crossing and remaining segments are far away
+      if (k >= 12 && entry.distSq > 55 * 55 && bestScore > -75) {
+        break;
+      }
+      const seg = this.riverSegments[entry.idx];
       const jitterT = rng.range(0.2, 0.8);
       const cx = seg.ax + seg.dx * jitterT;
       const cz = seg.az + seg.dz * jitterT;
@@ -2262,32 +2281,37 @@ export class TerrainMap {
     // Mountain settlements sit on the mountain edge and climbable foothill slopes, never on impassable peaks
     const maxH = target === 'mountain_stone' ? 25.5 : 12.0;
 
+    const minSpacingSq = minSpacing * minSpacing;
     let best: { x: number; z: number; score: number } | null = null;
     for (let i = 0; i < attempts; i++) {
       const angle = rng.range(0, Math.PI * 2);
       const r = Math.sqrt(rng.next()) * maxRadius;
       const x = Math.cos(angle) * r;
       const z = Math.sin(angle) * r;
-      if (this.isDeepSeaAt(x, z)) continue;
-      const h = this.getHeightAt(x, z);
-      const slope = this.getSlopeAt(x, z);
-      const waterDist = this.getWaterDistance(x, z);
-      if (h < this.waterLevel + minH || h > maxH || slope > maxSlope || waterDist < minWaterDist) {
-        continue;
-      }
-      if (this.isImpassableMountainAt(x, z, h, slope)) continue;
 
-      const adaptation = this.getSiteAdaptation(x, z);
-      if (adaptation !== target) continue;
-
+      // Reject points too close to existing settlements first (O(N) arithmetic, zero noise queries)
       let tooClose = false;
       for (const site of existing) {
-        if (Math.hypot(site.x - x, site.z - z) < minSpacing) {
+        const dx = site.x - x;
+        const dz = site.z - z;
+        if (dx * dx + dz * dz < minSpacingSq) {
           tooClose = true;
           break;
         }
       }
       if (tooClose) continue;
+
+      if (this.isDeepSeaAt(x, z)) continue;
+      const h = this.getHeightAt(x, z);
+      if (h < this.waterLevel + minH || h > maxH) continue;
+      const slope = this.getSlopeAt(x, z);
+      if (slope > maxSlope) continue;
+      if (this.isImpassableMountainAt(x, z, h, slope)) continue;
+      const waterDist = this.getWaterDistance(x, z);
+      if (waterDist < minWaterDist) continue;
+
+      const adaptation = this.getSiteAdaptation(x, z);
+      if (adaptation !== target) continue;
 
       let score = -slope * 18;
       if (target === 'coastal_harbor') {
@@ -2345,14 +2369,16 @@ export class TerrainMap {
           candidates[i] = candidates[j];
           candidates[j] = tmp;
         }
-        for (const desired of candidates) {
+        const maxAdaptChecks = Math.min(3, candidates.length);
+        for (let idx = 0; idx < maxAdaptChecks; idx++) {
+          const desired = candidates[idx];
           const specialized = this.findSiteForAdaptation(
             desired,
             existingCenters,
             minSpacing,
             maxRadius,
             rng,
-            560,
+            320,
             origin,
           );
           if (specialized) return specialized;
@@ -2362,7 +2388,7 @@ export class TerrainMap {
 
     const passes = [
       {
-        attempts: 520,
+        attempts: 300,
         minSpacing,
         minH: 0.55,
         maxH: 15.5,
@@ -2370,7 +2396,7 @@ export class TerrainMap {
         minWaterDist: 4.5,
       },
       {
-        attempts: 400,
+        attempts: 240,
         minSpacing: Math.max(36, this.size * 0.12),
         minH: 0.42,
         maxH: 18.0,
@@ -2381,26 +2407,31 @@ export class TerrainMap {
 
     let bestFallback: { x: number; z: number; score: number } | null = null;
     for (const pass of passes) {
+      const passSpacingSq = pass.minSpacing * pass.minSpacing;
       for (let attempt = 0; attempt < pass.attempts; attempt++) {
         const angle = rng.range(0, Math.PI * 2);
         const r = Math.sqrt(rng.next()) * maxRadius;
         const x = Math.cos(angle) * r;
         const z = Math.sin(angle) * r;
-        if (this.getCoastSignedDistance(x, z) < 5.0) continue;
-        const h = this.getHeightAt(x, z);
-        const slope = this.getSlopeAt(x, z);
-        if (h < this.waterLevel + pass.minH || h > pass.maxH || slope > pass.maxSlope) continue;
-        if (this.isImpassableMountainAt(x, z, h, slope)) continue;
-        if (this.getWaterDistance(x, z) < pass.minWaterDist) continue;
 
         let tooClose = false;
         for (const site of existingCenters) {
-          if (Math.hypot(site.x - x, site.z - z) < pass.minSpacing) {
+          const dx = site.x - x;
+          const dz = site.z - z;
+          if (dx * dx + dz * dz < passSpacingSq) {
             tooClose = true;
             break;
           }
         }
         if (tooClose) continue;
+
+        if (this.getCoastSignedDistance(x, z) < 5.0) continue;
+        const h = this.getHeightAt(x, z);
+        if (h < this.waterLevel + pass.minH || h > pass.maxH) continue;
+        const slope = this.getSlopeAt(x, z);
+        if (slope > pass.maxSlope) continue;
+        if (this.isImpassableMountainAt(x, z, h, slope)) continue;
+        if (this.getWaterDistance(x, z) < pass.minWaterDist) continue;
 
         const trekDist = origin ? Math.hypot(x - origin.x, z - origin.z) : 110;
         const score =
