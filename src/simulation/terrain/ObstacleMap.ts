@@ -104,7 +104,9 @@ export class ObstacleMap {
     this.lastBridgeCount = bridges.length;
     this.lastStructureRevision = structureRevision;
     this._version++;
-    this.cells.clear();
+    for (const bucket of this.cells.values()) {
+      bucket.length = 0;
+    }
     this.allObstacles.length = 0;
 
     let nextId = 1;
@@ -172,15 +174,33 @@ export class ObstacleMap {
     };
 
     // 3. Standing forest trees (skip trees cleared from settlement clearings, building footprints & bridges)
+    const clearingRadSq = INITIAL_CLEARING_TREE_RADIUS * INITIAL_CLEARING_TREE_RADIUS;
+    const settleMaxDistSq = new Float64Array(settlements.length);
+    for (let sIdx = 0; sIdx < settlements.length; sIdx++) {
+      const s = settlements[sIdx];
+      let maxExtent = INITIAL_CLEARING_TREE_RADIUS;
+      for (let bIdx = 0; bIdx < s.buildings.length; bIdx++) {
+        const b = s.buildings[bIdx];
+        const bdx = b.position.x - s.center.x;
+        const bdz = b.position.z - s.center.z;
+        const reach = Math.sqrt(bdx * bdx + bdz * bdz) + BUILDING_CATALOG[b.type].footprintRadius + 1.45;
+        if (reach > maxExtent) maxExtent = reach;
+      }
+      settleMaxDistSq[sIdx] = maxExtent * maxExtent;
+    }
+
     for (const tree of terrain.trees) {
       let cleared = false;
-      for (const s of settlements) {
+      for (let sIdx = 0; sIdx < settlements.length; sIdx++) {
+        const s = settlements[sIdx];
         const dx = tree.x - s.center.x;
         const dz = tree.z - s.center.z;
-        if (dx * dx + dz * dz < INITIAL_CLEARING_TREE_RADIUS * INITIAL_CLEARING_TREE_RADIUS) {
+        const distSq = dx * dx + dz * dz;
+        if (distSq < clearingRadSq) {
           cleared = true;
           break;
         }
+        if (distSq > settleMaxDistSq[sIdx]) continue;
         for (const b of s.buildings) {
           const clearDist = BUILDING_CATALOG[b.type].footprintRadius + 1.45;
           const bdx = tree.x - b.position.x;
@@ -283,7 +303,7 @@ export class ObstacleMap {
           } else {
             const rx = refX - obs.x;
             const rz = refZ - obs.z;
-            const rd = Math.hypot(rx, rz);
+            const rd = Math.sqrt(rx * rx + rz * rz);
             if (rd > 0.05) {
               ux = rx / rd;
               uz = rz / rd;

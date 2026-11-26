@@ -1176,4 +1176,36 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     expect(subtitleNode.textContent).toBe('Dreaming up a brand-new valley…');
     expect(splash.getPercent()).toBe(2);
   });
+
+  it('shares cached primitive BufferGeometries across many creature rigs without losing mesh fidelity', () => {
+    const world = new WorldState(new EventBus(), { seed: 314159, initialSettlements: 1 });
+    const home = world.settlements[0];
+    const roles = ['builder', 'forager', 'guard', 'merchant', 'mystic', 'artisan'] as const;
+
+    // Populate 63 creatures (3 per species across all 21 species and all 6 roles)
+    for (let i = 0; i < ALL_SPECIES_IDS.length * 3; i++) {
+      world.spawnCreature(home, ALL_SPECIES_IDS[i % ALL_SPECIES_IDS.length], roles[i % roles.length]);
+    }
+
+    const scene = new THREE.Scene();
+    const textures = createStubTextureLibrary();
+    const creatureRenderer = new CreatureRenderer(scene, world, textures);
+    creatureRenderer.update(0.05, null);
+
+    let meshCount = 0;
+    const uniqueGeos = new Set<THREE.BufferGeometry>();
+    creatureRenderer.rootGroup.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        meshCount++;
+        uniqueGeos.add(obj.geometry);
+      }
+    });
+
+    // 70+ creatures generate thousands of articulated part meshes while sharing ~150 cached BufferGeometries
+    expect(meshCount).toBeGreaterThan(3000);
+    expect(uniqueGeos.size).toBeLessThan(200);
+
+    creatureRenderer.dispose();
+    textures.dispose();
+  });
 });

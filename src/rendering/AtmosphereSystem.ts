@@ -959,9 +959,13 @@ export class AtmosphereSystem {
   private readonly weatherPoints: THREE.Points;
   private readonly weatherPositions: Float32Array;
   private readonly weatherMat: THREE.PointsMaterial;
+  private readonly weatherSinPhase: Float32Array;
+  private readonly weatherCosPhase: Float32Array;
 
   private readonly fireflyPoints: THREE.Points;
   private readonly fireflyBase: Float32Array;
+  private readonly fireflyPositions: Float32Array;
+  private readonly fireflyTrig: Float32Array;
   private readonly fireflyMat: THREE.PointsMaterial;
 
   private readonly divineGroup = new THREE.Group();
@@ -983,6 +987,12 @@ export class AtmosphereSystem {
   private readonly envSkyMat: THREE.ShaderMaterial;
   private envRenderTarget: THREE.WebGLRenderTarget | null = null;
   private envRefreshTimer = 0;
+  private lastEnvSunY = Number.NaN;
+  private lastEnvDaylight = Number.NaN;
+  private lastEnvCloudCoverage = Number.NaN;
+  private lastEnvCloudTime = Number.NaN;
+  private lastEnvWeather = '';
+  private lastEnvSeason = '';
 
   private readonly lightDirState = new THREE.Vector3(0.5, 0.7, 0.4).normalize();
   private currentDaylight = 1.0;
@@ -994,6 +1004,17 @@ export class AtmosphereSystem {
   private readonly shadowMapSize: number;
   private currentShadowExtent = 120;
   private lastAppliedShadowExtent = 120;
+  // Reusable per-frame scratch math objects (zero GC pressure in update())
+  private readonly tmpLightDir = new THREE.Vector3();
+  private readonly tmpTopDay = new THREE.Color();
+  private readonly tmpTopNight = new THREE.Color(0x060b16);
+  private readonly tmpHorizDay = new THREE.Color();
+  private readonly tmpHorizGold = new THREE.Color(0xe2955c);
+  private readonly tmpHorizNight = new THREE.Color(0x111c2c);
+  private readonly tmpSunGold = new THREE.Color(0xf5924d);
+  private readonly tmpMoonTint = new THREE.Color(0x6486b8);
+  private readonly tmpSunTint = new THREE.Color();
+  private readonly tmpSunTintGold = new THREE.Color(0xf79954);
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -1077,12 +1098,16 @@ export class AtmosphereSystem {
     // Weather particles distributed in a wide circular canopy
     const weatherCount = 1500;
     this.weatherPositions = new Float32Array(weatherCount * 3);
+    this.weatherSinPhase = new Float32Array(weatherCount);
+    this.weatherCosPhase = new Float32Array(weatherCount);
     for (let i = 0; i < weatherCount; i++) {
       const a = Math.random() * Math.PI * 2;
       const r = Math.sqrt(Math.random()) * 128;
       this.weatherPositions[i * 3] = Math.cos(a) * r;
       this.weatherPositions[i * 3 + 1] = Math.random() * 68;
       this.weatherPositions[i * 3 + 2] = Math.sin(a) * r;
+      this.weatherSinPhase[i] = Math.sin(i);
+      this.weatherCosPhase[i] = Math.cos(i);
     }
     const weatherGeo = new THREE.BufferGeometry();
     weatherGeo.setAttribute('position', new THREE.BufferAttribute(this.weatherPositions, 3));
@@ -1103,6 +1128,8 @@ export class AtmosphereSystem {
     const fireflyCount = 260;
     this.fireflyBase = new Float32Array(fireflyCount * 3);
     const fireflyPos = new Float32Array(fireflyCount * 3);
+    this.fireflyPositions = fireflyPos;
+    this.fireflyTrig = new Float32Array(fireflyCount * 6);
     for (let i = 0; i < fireflyCount; i++) {
       const a = Math.random() * Math.PI * 2;
       const r = Math.sqrt(Math.random()) * 96;
@@ -1115,6 +1142,13 @@ export class AtmosphereSystem {
       fireflyPos[i * 3] = fx;
       fireflyPos[i * 3 + 1] = fy;
       fireflyPos[i * 3 + 2] = fz;
+      const k = i * 6;
+      this.fireflyTrig[k] = Math.cos(i);
+      this.fireflyTrig[k + 1] = Math.sin(i);
+      this.fireflyTrig[k + 2] = Math.cos(i * 1.7);
+      this.fireflyTrig[k + 3] = Math.sin(i * 1.7);
+      this.fireflyTrig[k + 4] = Math.cos(i * 1.3);
+      this.fireflyTrig[k + 5] = Math.sin(i * 1.3);
     }
     const fireflyGeo = new THREE.BufferGeometry();
     fireflyGeo.setAttribute('position', new THREE.BufferAttribute(fireflyPos, 3));
@@ -1208,7 +1242,7 @@ export class AtmosphereSystem {
     const daylight = THREE.MathUtils.clamp((sunY + 0.14) / 0.52, 0, 1);
     const goldenHour = THREE.MathUtils.clamp(1 - Math.abs(sunY - 0.1) * 4.4, 0, 1);
 
-    const lightDir = new THREE.Vector3(sunX, Math.max(0.18, Math.abs(sunY)), sunZ).normalize();
+    const lightDir = this.tmpLightDir.set(sunX, Math.max(0.18, Math.abs(sunY)), sunZ).normalize();
 
     // Camera-distance-adaptive shadow frustum: crisp ~2–4 cm/texel shadows close-up, wide coverage at overview
     const targetExtent = THREE.MathUtils.clamp(focusDist * 1.15 + 16, 42, 205);
@@ -1270,7 +1304,7 @@ export class AtmosphereSystem {
     this.skyUniforms.uDaylight.value = daylight;
 
     // Naturalistic photographic sky & fog colors across day, golden hour, night, and weather
-    const topDay = new THREE.Color(
+    const topDay = this.tmpTopDay.setHex(
       world.weather === 'storm'
         ? 0x3b4854
         : world.weather === 'rain'
@@ -1279,8 +1313,8 @@ export class AtmosphereSystem {
             ? 0x526e8a
             : 0x265890,
     );
-    const topNight = new THREE.Color(0x060b16);
-    const horizDay = new THREE.Color(
+    const topNight = this.tmpTopNight;
+    const horizDay = this.tmpHorizDay.setHex(
       world.weather === 'storm'
         ? 0x505b63
         : world.weather === 'rain'
@@ -1291,8 +1325,8 @@ export class AtmosphereSystem {
               ? 0xc8d2da
               : 0xc2d2cb,
     );
-    const horizGold = new THREE.Color(0xe2955c);
-    const horizNight = new THREE.Color(0x111c2c);
+    const horizGold = this.tmpHorizGold;
+    const horizNight = this.tmpHorizNight;
 
     this.skyUniforms.uTopColor.value.copy(topNight).lerp(topDay, daylight);
     this.skyUniforms.uHorizonColor.value
@@ -1304,13 +1338,13 @@ export class AtmosphereSystem {
       .multiplyScalar(0.25 + daylight * 0.75);
     this.skyUniforms.uSunColor.value
       .setHex(0xfff3dc)
-      .lerp(new THREE.Color(0xf5924d), goldenHour * 0.82);
+      .lerp(this.tmpSunGold, goldenHour * 0.82);
     this.skyUniforms.uStarIntensity.value = THREE.MathUtils.clamp(1 - daylight * 1.65, 0, 1);
 
     // Directional light intensity & color (crisp sunlit vs cool shaded contrast)
     const stormDim = world.weather === 'storm' ? 0.45 : world.weather === 'rain' ? 0.66 : 1.0;
-    const moonTint = new THREE.Color(0x6486b8);
-    const sunTint = new THREE.Color(0xfff1d6).lerp(new THREE.Color(0xf79954), goldenHour * 0.78);
+    const moonTint = this.tmpMoonTint;
+    const sunTint = this.tmpSunTint.setHex(0xfff1d6).lerp(this.tmpSunTintGold, goldenHour * 0.78);
     this.sunLight.color.copy(moonTint).lerp(sunTint, daylight);
     this.sunLight.intensity = (0.38 + daylight * 3.15) * stormDim;
 
@@ -1340,7 +1374,23 @@ export class AtmosphereSystem {
     this.envRefreshTimer -= dt;
     if (this.envRefreshTimer <= 0) {
       this.envRefreshTimer = 3.5;
-      this.refreshEnvironmentMap();
+      const needsEnvRefresh =
+        !this.envRenderTarget ||
+        Math.abs(sunY - this.lastEnvSunY) > 0.012 ||
+        Math.abs(daylight - this.lastEnvDaylight) > 0.012 ||
+        Math.abs(this.currentCloudCoverage - this.lastEnvCloudCoverage) > 0.025 ||
+        Math.abs(this.currentCloudTime - this.lastEnvCloudTime) > 12.0 ||
+        world.weather !== this.lastEnvWeather ||
+        world.season !== this.lastEnvSeason;
+      if (needsEnvRefresh) {
+        this.refreshEnvironmentMap();
+        this.lastEnvSunY = sunY;
+        this.lastEnvDaylight = daylight;
+        this.lastEnvCloudCoverage = this.currentCloudCoverage;
+        this.lastEnvCloudTime = this.currentCloudTime;
+        this.lastEnvWeather = world.weather;
+        this.lastEnvSeason = world.season;
+      }
     }
 
     // 2. Weather particles
@@ -1353,16 +1403,23 @@ export class AtmosphereSystem {
     if (this.fireflyMat.opacity > 0.02) {
       const posAttr = this.fireflyPoints.geometry.getAttribute('position') as THREE.BufferAttribute;
       const t = world.elapsedSeconds;
-      for (let i = 0; i < posAttr.count; i++) {
-        const bx = this.fireflyBase[i * 3];
-        const by = this.fireflyBase[i * 3 + 1];
-        const bz = this.fireflyBase[i * 3 + 2];
-        posAttr.setXYZ(
-          i,
-          bx + Math.sin(t * 0.7 + i) * 1.8,
-          by + Math.sin(t * 1.3 + i * 1.7) * 0.65,
-          bz + Math.cos(t * 0.6 + i * 1.3) * 1.8,
-        );
+      const sin07 = Math.sin(t * 0.7);
+      const cos07 = Math.cos(t * 0.7);
+      const sin13 = Math.sin(t * 1.3);
+      const cos13 = Math.cos(t * 1.3);
+      const sin06 = Math.sin(t * 0.6);
+      const cos06 = Math.cos(t * 0.6);
+      const base = this.fireflyBase;
+      const pos = this.fireflyPositions;
+      const trig = this.fireflyTrig;
+      const count = posAttr.count;
+      for (let i = 0; i < count; i++) {
+        const j = i * 3;
+        const k = i * 6;
+        // Angle-addition identities match sin(t*0.7+i), sin(t*1.3+i*1.7), cos(t*0.6+i*1.3) with zero per-particle trig
+        pos[j] = base[j] + (sin07 * trig[k] + cos07 * trig[k + 1]) * 1.8;
+        pos[j + 1] = base[j + 1] + (sin13 * trig[k + 2] + cos13 * trig[k + 3]) * 0.65;
+        pos[j + 2] = base[j + 2] + (cos06 * trig[k + 4] - sin06 * trig[k + 5]) * 1.8;
       }
       posAttr.needsUpdate = true;
     }
@@ -1466,22 +1523,33 @@ export class AtmosphereSystem {
     this.weatherMat.opacity += (targetOpacity - this.weatherMat.opacity) * Math.min(1, dt * 2.5);
 
     const wrapRadius = 128;
-    for (let i = 0; i < posAttr.count; i++) {
-      let x = this.weatherPositions[i * 3] + windX * dt;
-      let y = this.weatherPositions[i * 3 + 1] - fallSpeed * dt;
-      let z = this.weatherPositions[i * 3 + 2] + Math.sin(world.elapsedSeconds + i) * 0.28 * dt;
+    const wrapRadiusSq = wrapRadius * wrapRadius;
+    const dx = windX * dt;
+    const dy = fallSpeed * dt;
+    const swayScale = 0.28 * dt;
+    const sinT = Math.sin(world.elapsedSeconds);
+    const cosT = Math.cos(world.elapsedSeconds);
+    const wPos = this.weatherPositions;
+    const wSin = this.weatherSinPhase;
+    const wCos = this.weatherCosPhase;
+    const count = posAttr.count;
+    for (let i = 0; i < count; i++) {
+      const j = i * 3;
+      let x = wPos[j] + dx;
+      let y = wPos[j + 1] - dy;
+      let z = wPos[j + 2] + (sinT * wCos[i] + cosT * wSin[i]) * swayScale;
 
       if (y < 0) y = 68;
       const rSq = x * x + z * z;
-      if (rSq > wrapRadius * wrapRadius) {
+      if (rSq > wrapRadiusSq) {
         const inv = wrapRadius / Math.sqrt(rSq);
         x = -x * inv * 0.94;
         z = -z * inv * 0.94;
       }
 
-      this.weatherPositions[i * 3] = x;
-      this.weatherPositions[i * 3 + 1] = y;
-      this.weatherPositions[i * 3 + 2] = z;
+      wPos[j] = x;
+      wPos[j + 1] = y;
+      wPos[j + 2] = z;
     }
     posAttr.needsUpdate = true;
   }

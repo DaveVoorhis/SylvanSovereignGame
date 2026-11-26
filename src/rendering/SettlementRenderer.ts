@@ -144,6 +144,9 @@ interface RenderedBuilding {
   readonly fountainSpray?: THREE.Points;
   readonly swayPart?: THREE.Object3D;
   readonly chimneySmokes?: THREE.Points[];
+  lastAppliedProgress: number;
+  lastAppliedCompleted: boolean;
+  lastAppliedDisassembling: boolean;
 }
 
 /** Shared GPU shader for sparkling ballistic fountain water droplets & basin splash spray. */
@@ -349,6 +352,8 @@ interface RenderedBridge {
   readonly group: THREE.Group;
   readonly stages: { readonly t: number; readonly obj: THREE.Object3D }[];
   readonly lanterns: THREE.Object3D[];
+  lastAppliedProgress: number;
+  lastAppliedCompleted: boolean;
 }
 
 /**
@@ -405,6 +410,7 @@ export class SettlementRenderer {
   private readonly gableRoofGeo: THREE.BufferGeometry;
   private readonly fountainBowlGeo: THREE.BufferGeometry;
   private readonly sharedFlameGeo: THREE.BufferGeometry;
+  private readonly sharedGeos: Set<THREE.BufferGeometry>;
 
   private readonly buildingMeshes = new Map<string, RenderedBuilding>();
   private readonly bridgeMeshes = new Map<string, RenderedBridge>();
@@ -417,6 +423,11 @@ export class SettlementRenderer {
   };
   private readonly windowDayColor = new THREE.Color(0x32404a);
   private readonly windowNightColor = new THREE.Color(0xffe094);
+  private readonly liveBuildingIdsScratch = new Set<string>();
+  private lastSyncedStructureRevision = -1;
+  private lastSyncedSettlementCount = -1;
+  private lastSyncedBuildingCount = -1;
+  private lastSyncedBridgeCount = -1;
 
   constructor(
     scene: THREE.Scene,
@@ -713,6 +724,13 @@ export class SettlementRenderer {
     this.fountainBowlGeo = new THREE.LatheGeometry(bowlPts, 24);
 
     this.sharedFlameGeo = createSharedFlameGeometry();
+    this.sharedGeos = new Set<THREE.BufferGeometry>([
+      this.bellRoofGeo,
+      this.acornSiloGeo,
+      this.gableRoofGeo,
+      this.fountainBowlGeo,
+      this.sharedFlameGeo,
+    ]);
 
     scene.add(this.rootGroup);
     this.syncAll();
@@ -856,6 +874,9 @@ export class SettlementRenderer {
     for (const bridge of this.world.bridges) {
       const entry = this.bridgeMeshes.get(bridge.id);
       if (!entry) continue;
+      if (entry.lastAppliedProgress === bridge.progress && entry.lastAppliedCompleted === bridge.completed) continue;
+      entry.lastAppliedProgress = bridge.progress;
+      entry.lastAppliedCompleted = bridge.completed;
       const frac = bridge.completed ? 1.05 : Math.max(0.08, bridge.progress / 100);
       for (const stage of entry.stages) {
         stage.obj.visible = stage.t <= frac;
@@ -876,7 +897,18 @@ export class SettlementRenderer {
    * 100% completed (scaffolding removed). Disassembling steps backward from 100 -> 0.
    */
   private applyConstructionStageVisuals(entry: RenderedBuilding, b: BuildingInstance): void {
-    const p = b.completed && !b.disassembling ? 100 : THREE.MathUtils.clamp(b.progress, 0, 100);
+    const disassembling = Boolean(b.disassembling);
+    const p = b.completed && !disassembling ? 100 : THREE.MathUtils.clamp(b.progress, 0, 100);
+    if (
+      entry.lastAppliedProgress === p &&
+      entry.lastAppliedCompleted === b.completed &&
+      entry.lastAppliedDisassembling === disassembling
+    ) {
+      return;
+    }
+    entry.lastAppliedProgress = p;
+    entry.lastAppliedCompleted = b.completed;
+    entry.lastAppliedDisassembling = disassembling;
     const stage = getBuildingStage(b);
 
     // Stage 1: Clearing land (0-18%, and kept lightly visible at low leveling)
@@ -921,7 +953,25 @@ export class SettlementRenderer {
   }
 
   private syncAll(): void {
-    const liveBuildingIds = new Set<string>();
+    let totalBuildings = 0;
+    for (let i = 0; i < this.world.settlements.length; i++) {
+      totalBuildings += this.world.settlements[i].buildings.length;
+    }
+    if (
+      this.world.structureRevision === this.lastSyncedStructureRevision &&
+      this.world.settlements.length === this.lastSyncedSettlementCount &&
+      totalBuildings === this.lastSyncedBuildingCount &&
+      this.world.bridges.length === this.lastSyncedBridgeCount
+    ) {
+      return;
+    }
+    this.lastSyncedStructureRevision = this.world.structureRevision;
+    this.lastSyncedSettlementCount = this.world.settlements.length;
+    this.lastSyncedBuildingCount = totalBuildings;
+    this.lastSyncedBridgeCount = this.world.bridges.length;
+
+    const liveBuildingIds = this.liveBuildingIdsScratch;
+    liveBuildingIds.clear();
     for (const settlement of this.world.settlements) {
       if (!this.settlementFlags.has(settlement.id)) {
         this.settlementFlags.add(settlement.id);
@@ -940,13 +990,7 @@ export class SettlementRenderer {
     }
 
     // Cleanly remove & dispose meshes for disassembled buildings
-    const sharedGeos = new Set<THREE.BufferGeometry>([
-      this.bellRoofGeo,
-      this.acornSiloGeo,
-      this.gableRoofGeo,
-      this.fountainBowlGeo,
-      this.sharedFlameGeo,
-    ]);
+    const sharedGeos = this.sharedGeos;
     for (const [id, entry] of this.buildingMeshes) {
       if (!liveBuildingIds.has(id)) {
         this.rootGroup.remove(entry.group);
@@ -2445,6 +2489,9 @@ export class SettlementRenderer {
       fountainSpray,
       swayPart,
       chimneySmokes: chimneySmokes.length > 0 ? chimneySmokes : undefined,
+      lastAppliedProgress: -1,
+      lastAppliedCompleted: false,
+      lastAppliedDisassembling: false,
     };
   }
 
@@ -2871,7 +2918,7 @@ export class SettlementRenderer {
       }
     }
 
-    return { group, stages, lanterns };
+    return { group, stages, lanterns, lastAppliedProgress: -1, lastAppliedCompleted: false };
   }
 
   dispose(): void {

@@ -1,11 +1,16 @@
 import { SeededRandom } from '@core/SeededRandom';
 
+const GRAD_X = new Int8Array([1, -1, 1, -1, 1, -1, 0, 0]);
+const GRAD_Y = new Int8Array([1, 1, -1, -1, 0, 0, 1, -1]);
+
 /**
  * Deterministic 2D Perlin-style gradient noise + FBM utilities for
  * sculpting forest valleys, riverbeds, clearings, and soil fertility.
  */
 export class Noise2D {
   private readonly perm: Uint8Array;
+  private readonly permGradX: Int8Array;
+  private readonly permGradY: Int8Array;
 
   constructor(seed: number) {
     const rng = new SeededRandom(seed);
@@ -18,63 +23,47 @@ export class Noise2D {
       p[j] = tmp;
     }
     this.perm = new Uint8Array(512);
+    this.permGradX = new Int8Array(512);
+    this.permGradY = new Int8Array(512);
     for (let i = 0; i < 512; i++) {
-      this.perm[i] = p[i & 255];
-    }
-  }
-
-  private static fade(t: number): number {
-    return t * t * t * (t * (t * 6 - 15) + 10);
-  }
-
-  private static lerp(a: number, b: number, t: number): number {
-    return a + t * (b - a);
-  }
-
-  private static grad(hash: number, x: number, y: number): number {
-    switch (hash & 7) {
-      case 0:
-        return x + y;
-      case 1:
-        return -x + y;
-      case 2:
-        return x - y;
-      case 3:
-        return -x - y;
-      case 4:
-        return x;
-      case 5:
-        return -x;
-      case 6:
-        return y;
-      default:
-        return -y;
+      const v = p[i & 255];
+      this.perm[i] = v;
+      const g = v & 7;
+      this.permGradX[i] = GRAD_X[g];
+      this.permGradY[i] = GRAD_Y[g];
     }
   }
 
   /** Smooth 2D gradient noise in approximately [-1, 1]. */
   sample(x: number, y: number): number {
-    const xi = Math.floor(x) & 255;
-    const yi = Math.floor(y) & 255;
-    const xf = x - Math.floor(x);
-    const yf = y - Math.floor(y);
+    const fx = Math.floor(x);
+    const fy = Math.floor(y);
+    const xi = fx & 255;
+    const yi = fy & 255;
+    const xf = x - fx;
+    const yf = y - fy;
 
-    const u = Noise2D.fade(xf);
-    const v = Noise2D.fade(yf);
+    const u = xf * xf * xf * (xf * (xf * 6 - 15) + 10);
+    const v = yf * yf * yf * (yf * (yf * 6 - 15) + 10);
 
-    const aa = this.perm[this.perm[xi] + yi];
-    const ab = this.perm[this.perm[xi] + yi + 1];
-    const ba = this.perm[this.perm[xi + 1] + yi];
-    const bb = this.perm[this.perm[xi + 1] + yi + 1];
+    const perm = this.perm;
+    const gx = this.permGradX;
+    const gy = this.permGradY;
+    const p0 = perm[xi] + yi;
+    const p1 = perm[xi + 1] + yi;
 
-    const x1 = Noise2D.lerp(Noise2D.grad(aa, xf, yf), Noise2D.grad(ba, xf - 1, yf), u);
-    const x2 = Noise2D.lerp(
-      Noise2D.grad(ab, xf, yf - 1),
-      Noise2D.grad(bb, xf - 1, yf - 1),
-      u,
-    );
+    const xf1 = xf - 1;
+    const yf1 = yf - 1;
 
-    return Noise2D.lerp(x1, x2, v);
+    const gAA = gx[p0] * xf + gy[p0] * yf;
+    const gBA = gx[p1] * xf1 + gy[p1] * yf;
+    const gAB = gx[p0 + 1] * xf + gy[p0 + 1] * yf1;
+    const gBB = gx[p1 + 1] * xf1 + gy[p1 + 1] * yf1;
+
+    const x1 = gAA + u * (gBA - gAA);
+    const x2 = gAB + u * (gBB - gAB);
+
+    return x1 + v * (x2 - x1);
   }
 
   /** Fractal Brownian Motion in approximately [-1, 1]. */

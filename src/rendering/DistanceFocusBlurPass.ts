@@ -82,10 +82,14 @@ const FRAGMENT_SHADER = /* glsl */ `
     vec2 dx = vec2(uTexelSize.x, 0.0);
     vec2 dy = vec2(0.0, uTexelSize.y);
 
-    vec3 posR = getViewPos(clamp(uv + dx, 0.001, 0.999), texture2D(tDepth, clamp(uv + dx, 0.001, 0.999)).x);
-    vec3 posL = getViewPos(clamp(uv - dx, 0.001, 0.999), texture2D(tDepth, clamp(uv - dx, 0.001, 0.999)).x);
-    vec3 posU = getViewPos(clamp(uv + dy, 0.001, 0.999), texture2D(tDepth, clamp(uv + dy, 0.001, 0.999)).x);
-    vec3 posD = getViewPos(clamp(uv - dy, 0.001, 0.999), texture2D(tDepth, clamp(uv - dy, 0.001, 0.999)).x);
+    vec2 uvR = clamp(uv + dx, 0.001, 0.999);
+    vec2 uvL = clamp(uv - dx, 0.001, 0.999);
+    vec2 uvU = clamp(uv + dy, 0.001, 0.999);
+    vec2 uvD = clamp(uv - dy, 0.001, 0.999);
+    vec3 posR = getViewPos(uvR, texture2D(tDepth, uvR).x);
+    vec3 posL = getViewPos(uvL, texture2D(tDepth, uvL).x);
+    vec3 posU = getViewPos(uvU, texture2D(tDepth, uvU).x);
+    vec3 posD = getViewPos(uvD, texture2D(tDepth, uvD).x);
 
     vec3 dPx = abs(posR.z - centerPos.z) < abs(centerPos.z - posL.z) ? (posR - centerPos) : (centerPos - posL);
     vec3 dPy = abs(posU.z - centerPos.z) < abs(centerPos.z - posD.z) ? (posU - centerPos) : (centerPos - posD);
@@ -114,13 +118,16 @@ const FRAGMENT_SHADER = /* glsl */ `
     vec2 aspectScale = vec2(1.0 / max(0.5, uAspect), 1.0);
 
     float occ = 0.0;
-    const float GOLDEN_ANGLE = 2.39996323;
+    // Incremental 2D rotation matrix for GOLDEN_ANGLE = 2.39996323 rad (avoids per-tap cos/sin)
+    const mat2 GOLDEN_ROT = mat2(-0.73736888, 0.67549029, -0.67549029, -0.73736888);
     float baseAngle = ign * 6.2831853;
+    vec2 rotDir = vec2(cos(baseAngle), sin(baseAngle));
 
     for (int i = 0; i < 8; i++) {
       float fi = (float(i) + 0.5) / 8.0;
-      float ang = baseAngle + float(i) * GOLDEN_ANGLE;
-      vec2 offset = vec2(cos(ang), sin(ang)) * (sqrt(fi) * screenRadius) * aspectScale;
+      vec2 curDir = rotDir;
+      rotDir = GOLDEN_ROT * rotDir;
+      vec2 offset = curDir * (sqrt(fi) * screenRadius) * aspectScale;
       vec2 sUv = uv + offset;
       if (sUv.x <= 0.002 || sUv.x >= 0.998 || sUv.y <= 0.002 || sUv.y >= 0.998) continue;
 
@@ -131,8 +138,9 @@ const FRAGMENT_SHADER = /* glsl */ `
       vec3 diff = sPos - centerPos;
       float dLenSq = dot(diff, diff);
       if (dLenSq < 1e-6) continue;
-      float dLen = sqrt(dLenSq);
-      vec3 dir = diff / dLen;
+      float invLen = inversesqrt(dLenSq);
+      float dLen = dLenSq * invLen;
+      vec3 dir = diff * invLen;
 
       float ndotd = max(0.0, dot(viewN, dir) - 0.06);
       float rangeAtten = smoothstep(worldRadius * 2.2, worldRadius * 0.25, dLen);
@@ -171,15 +179,17 @@ const FRAGMENT_SHADER = /* glsl */ `
       float blurRadius = centerCoc * uMaxBlur;
       vec2 aspectScale = vec2(1.0 / max(0.5, uAspect), 1.0);
       const float GOLDEN_ANGLE = 2.39996323;
+      const mat2 GOLDEN_ROT = mat2(-0.73736888, 0.67549029, -0.67549029, -0.73736888);
       float tapCountF = float(max(uTaps, 6));
-      float angleJitter = ign * 6.2831853;
+      float startTheta = 0.5 * GOLDEN_ANGLE + ign * 6.2831853;
+      vec2 rotDir = vec2(cos(startTheta), sin(startTheta));
 
       for (int i = 0; i < 20; i++) {
         if (i >= uTaps) break;
         float fi = float(i) + 0.5;
         float r = sqrt(fi / tapCountF);
-        float theta = fi * GOLDEN_ANGLE + angleJitter;
-        vec2 offset = vec2(cos(theta), sin(theta)) * (r * blurRadius) * aspectScale;
+        vec2 offset = rotDir * (r * blurRadius) * aspectScale;
+        rotDir = GOLDEN_ROT * rotDir;
         vec2 sampleUv = clamp(vUv + offset, vec2(0.001), vec2(0.999));
 
         float sampleDepth = texture2D(tDepth, sampleUv).x;
@@ -219,7 +229,8 @@ const FRAGMENT_SHADER = /* glsl */ `
       float valleyDistFactor = 1.0 - exp(-max(0.0, centerDist - 18.0) * (0.0022 + uMistStrength * 0.0055));
       float valleyMist = clamp(valleyHeightFactor * valleyDistFactor * uMistStrength, 0.0, 0.68);
 
-      float sunDot = max(dot(rayDir, normalize(uSunDirection)), 0.0);
+      vec3 sunDir = normalize(uSunDirection);
+      float sunDot = max(dot(rayDir, sunDir), 0.0);
       float mieScatter = pow(sunDot, 7.0) * uDaylight * 0.48;
       vec3 mistColor = mix(uHorizonColor, uSunColor * 1.15, clamp(mieScatter, 0.0, 0.65));
 

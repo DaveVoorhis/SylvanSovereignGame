@@ -79,6 +79,12 @@ export class WorldState {
   private litterSeq = 1;
   private sparkSeq = 1;
   private routeRefreshTimer = 0;
+  private readonly settlementIndex = new Map<string, number>();
+  private cachedSettlementLen = -1;
+  private readonly bridgeIndex = new Map<string, number>();
+  private cachedBridgeLen = -1;
+  private readonly creatureIndex = new Map<string, number>();
+  private cachedCreatureLen = -1;
 
   constructor(
     readonly bus: EventBus,
@@ -327,15 +333,75 @@ export class WorldState {
   }
 
   getSettlement(id: string): Settlement | undefined {
-    return this.settlements.find((s) => s.id === id);
+    const list = this.settlements;
+    const idx = this.settlementIndex.get(id);
+    if (idx !== undefined && idx < list.length && list[idx].id === id) {
+      return list[idx];
+    }
+    if (this.cachedSettlementLen !== list.length) {
+      this.settlementIndex.clear();
+      for (let i = 0; i < list.length; i++) {
+        this.settlementIndex.set(list[i].id, i);
+      }
+      this.cachedSettlementLen = list.length;
+      const rebuilt = this.settlementIndex.get(id);
+      return rebuilt !== undefined ? list[rebuilt] : undefined;
+    }
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].id === id) {
+        this.settlementIndex.set(id, i);
+        return list[i];
+      }
+    }
+    return undefined;
   }
 
   getBridge(id: string): BridgeInstance | undefined {
-    return this.bridges.find((b) => b.id === id);
+    const list = this.bridges;
+    const idx = this.bridgeIndex.get(id);
+    if (idx !== undefined && idx < list.length && list[idx].id === id) {
+      return list[idx];
+    }
+    if (this.cachedBridgeLen !== list.length) {
+      this.bridgeIndex.clear();
+      for (let i = 0; i < list.length; i++) {
+        this.bridgeIndex.set(list[i].id, i);
+      }
+      this.cachedBridgeLen = list.length;
+      const rebuilt = this.bridgeIndex.get(id);
+      return rebuilt !== undefined ? list[rebuilt] : undefined;
+    }
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].id === id) {
+        this.bridgeIndex.set(id, i);
+        return list[i];
+      }
+    }
+    return undefined;
   }
 
   getCreature(id: string): Creature | undefined {
-    return this.creatures.find((c) => c.id === id);
+    const list = this.creatures;
+    const idx = this.creatureIndex.get(id);
+    if (idx !== undefined && idx < list.length && list[idx].id === id) {
+      return list[idx];
+    }
+    if (this.cachedCreatureLen !== list.length) {
+      this.creatureIndex.clear();
+      for (let i = 0; i < list.length; i++) {
+        this.creatureIndex.set(list[i].id, i);
+      }
+      this.cachedCreatureLen = list.length;
+      const rebuilt = this.creatureIndex.get(id);
+      return rebuilt !== undefined ? list[rebuilt] : undefined;
+    }
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].id === id) {
+        this.creatureIndex.set(id, i);
+        return list[i];
+      }
+    }
+    return undefined;
   }
 
   getSettlementPopulation(settlementId: string): number {

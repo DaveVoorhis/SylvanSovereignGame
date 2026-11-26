@@ -1257,4 +1257,47 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     const festivalChronicles = world.chronicle.entries.filter((e) => e.category === 'festival');
     expect(festivalChronicles.length).toBeGreaterThanOrEqual(3);
   });
+
+  it('keeps optimized terrain biome sampling and O(1) WorldState/TerrainMap caches consistent under mutations', () => {
+    const world = new WorldState(new EventBus(), { seed: 424242, initialSettlements: 2 });
+
+    // 1. getBiomeAtKnownHeight(x, z, h) must match getBiomeAtSample(x, z, h, slope) identically across the world
+    const r = world.terrain.playableRadius;
+    let checked = 0;
+    for (let x = -r; x <= r; x += 28) {
+      for (let z = -r; z <= r; z += 28) {
+        const h = world.terrain.getHeightAt(x, z);
+        const slope = world.terrain.getSlopeAt(x, z);
+        expect(world.terrain.getBiomeAtKnownHeight(x, z, h)).toBe(
+          world.terrain.getBiomeAtSample(x, z, h, slope),
+        );
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(800);
+
+    // 2. O(1) resource node lookup matches direct array entries
+    const firstNode = world.terrain.resourceNodes[0];
+    expect(world.terrain.getResourceNode(firstNode.id)).toBe(firstNode);
+    expect(world.terrain.getResourceNode(null)).toBeUndefined();
+
+    // 3. WorldState O(1) creature/settlement/bridge index caches stay accurate across direct array mutations
+    const c0 = world.creatures[0];
+    const cLast = world.creatures[world.creatures.length - 1];
+    expect(world.getCreature(c0.id)).toBe(c0);
+    expect(world.getCreature(cLast.id)).toBe(cLast);
+
+    // Remove first creature via splice (shifts all indices)
+    world.creatures.splice(0, 1);
+    expect(world.getCreature(c0.id)).toBeUndefined();
+    expect(world.getCreature(cLast.id)).toBe(cLast);
+
+    // Clear settlements directly and verify cache reconciles cleanly
+    const s0 = world.settlements[0];
+    expect(world.getSettlement(s0.id)).toBe(s0);
+    world.settlements.splice(0, 1);
+    expect(world.getSettlement(s0.id)).toBeUndefined();
+    world.settlements.push(s0);
+    expect(world.getSettlement(s0.id)).toBe(s0);
+  });
 });

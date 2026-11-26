@@ -692,15 +692,55 @@ class DirectMeshWriter {
   }
 }
 
-interface BoughRecord {
-  readonly meshIndex: 0 | 1 | 2;
-  readonly matrix: Float32Array; // 16 elements
-  readonly r: number;
-  readonly g: number;
-  readonly b: number;
-  readonly wx: number;
-  readonly wz: number;
-  readonly sway: number;
+class BoughBucket {
+  matrices: Float32Array;
+  colors: Float32Array;
+  wind: Float32Array;
+  count = 0;
+  private cap: number;
+
+  constructor(initialCap: number) {
+    this.cap = Math.max(64, initialCap);
+    this.matrices = new Float32Array(this.cap * 16);
+    this.colors = new Float32Array(this.cap * 3);
+    this.wind = new Float32Array(this.cap * 3);
+  }
+
+  push(
+    matElements: ArrayLike<number>,
+    r: number,
+    g: number,
+    b: number,
+    wx: number,
+    wz: number,
+    sway: number,
+  ): void {
+    if (this.count >= this.cap) {
+      const nextCap = this.cap * 2;
+      const nextMat = new Float32Array(nextCap * 16);
+      nextMat.set(this.matrices);
+      this.matrices = nextMat;
+      const nextCol = new Float32Array(nextCap * 3);
+      nextCol.set(this.colors);
+      this.colors = nextCol;
+      const nextWind = new Float32Array(nextCap * 3);
+      nextWind.set(this.wind);
+      this.wind = nextWind;
+      this.cap = nextCap;
+    }
+    const idx = this.count++;
+    const mOff = idx * 16;
+    for (let k = 0; k < 16; k++) {
+      this.matrices[mOff + k] = matElements[k];
+    }
+    const cOff = idx * 3;
+    this.colors[cOff] = r;
+    this.colors[cOff + 1] = g;
+    this.colors[cOff + 2] = b;
+    this.wind[cOff] = wx;
+    this.wind[cOff + 1] = wz;
+    this.wind[cOff + 2] = sway;
+  }
 }
 
 /**
@@ -737,7 +777,7 @@ function sampleTrunkPoint(
  */
 export function buildProceduralPineForest(
   spots: readonly TreeSpot[],
-  getBiomeAt: (x: number, z: number) => BiomeType,
+  getBiomeAt: (x: number, z: number, y?: number) => BiomeType,
   getCoastSignedDistance: (x: number, z: number) => number,
   barkMat: THREE.Material,
   foliageMat: THREE.Material,
@@ -748,7 +788,11 @@ export function buildProceduralPineForest(
 
   const trunkRanges: PineTrunkRange[] = new Array(count);
   const boughRangesPerTree: PineBoughRange[][] = new Array(count);
-  const buckets: [BoughRecord[], BoughRecord[], BoughRecord[]] = [[], [], []];
+  const buckets: [BoughBucket, BoughBucket, BoughBucket] = [
+    new BoughBucket(count * 26),
+    new BoughBucket(count * 12),
+    new BoughBucket(count * 2),
+  ];
 
   const dummy = new THREE.Object3D();
   dummy.rotation.order = 'YXZ';
@@ -763,10 +807,13 @@ export function buildProceduralPineForest(
   const pt = new THREE.Vector3();
   const bMid = new THREE.Vector3();
   const bEnd = new THREE.Vector3();
+  const trunkPts = Array.from({ length: 7 }, () => new THREE.Vector3());
+  const forkPts = Array.from({ length: 5 }, () => new THREE.Vector3());
+  const branchPts = [pt, bMid, bEnd];
 
   for (let i = 0; i < count; i++) {
     const spot = spots[i];
-    const biome = getBiomeAt(spot.x, spot.z);
+    const biome = getBiomeAt(spot.x, spot.z, spot.y);
     const coastDist = getCoastSignedDistance(spot.x, spot.z);
     const spec = generateProceduralPineSpec(spot, i, biome, coastDist);
     const rng = createTreeRng(spec.seed ^ 0x51f15e);
@@ -792,16 +839,15 @@ export function buildProceduralPineForest(
 
     const trunkStartVert = writer.vertCount;
     const bucketStarts: [number, number, number] = [
-      buckets[0].length,
-      buckets[1].length,
-      buckets[2].length,
+      buckets[0].count,
+      buckets[1].count,
+      buckets[2].count,
     ];
 
     // 1. Unique curved tapered trunk with natural flared buttress roots
     const trunkRingCount = 7;
-    const trunkPts: THREE.Vector3[] = [];
     for (let r = 0; r < trunkRingCount; r++) {
-      trunkPts.push(sampleTrunkPoint(new THREE.Vector3(), p0, p1, p2, p3, r / (trunkRingCount - 1)));
+      sampleTrunkPoint(trunkPts[r], p0, p1, p2, p3, r / (trunkRingCount - 1));
     }
     const baseRadWorld = spec.baseRadius * sXZ;
     writer.appendTube(
@@ -839,9 +885,8 @@ export function buildProceduralPineForest(
       );
       fp3.set(fp0.x + fCos * fSpread, fTopY, fp0.z + fSin * fSpread);
 
-      const forkPts: THREE.Vector3[] = [];
       for (let r = 0; r < 5; r++) {
-        forkPts.push(sampleTrunkPoint(new THREE.Vector3(), fp0, fp1, fp2, fp3, r / 4));
+        sampleTrunkPoint(forkPts[r], fp0, fp1, fp2, fp3, r / 4);
       }
       const forkBaseRad = baseRadWorld * lerp(0.55, 0.30, spec.forkStartFrac);
       writer.appendTube(forkPts, 5, (t) => lerp(forkBaseRad, 0.042 * sXZ, t), 1.4);
@@ -857,7 +902,7 @@ export function buildProceduralPineForest(
       const sa = Math.sin(a);
       bMid.set(pt.x + ca * stubLen * 0.52, pt.y - 0.10 * sY, pt.z + sa * stubLen * 0.52);
       bEnd.set(pt.x + ca * stubLen, pt.y - (0.18 + rng() * 0.16) * sY, pt.z + sa * stubLen);
-      writer.appendTube([pt.clone(), bMid.clone(), bEnd.clone()], 4, (t) => lerp(0.058 * sXZ, 0.014 * sXZ, t), 0.5);
+      writer.appendTube(branchPts, 4, (t) => lerp(0.058 * sXZ, 0.014 * sXZ, t), 0.5);
     }
 
     // Helper to emit one unique procedural bough instance
@@ -888,16 +933,7 @@ export function buildProceduralPineForest(
       const b = clamp((spec.tintB - warm * 0.6) * shade, 0.45, 1.28);
       const sway = clamp(0.14 + heightNorm * 0.86, 0.12, 1.0);
 
-      buckets[meshIndex].push({
-        meshIndex,
-        matrix: new Float32Array(dummy.matrix.elements),
-        r,
-        g,
-        b,
-        wx: baseX,
-        wz: baseZ,
-        sway,
-      });
+      buckets[meshIndex].push(dummy.matrix.elements, r, g, b, baseX, baseZ, sway);
     };
 
     // 4. Procedurally grow whorls & individual boughs along this tree's unique trunk curve
@@ -954,7 +990,7 @@ export function buildProceduralPineForest(
           bMid.set(pt.x + sinA * woodLen * 0.55, pt.y + droopY * 0.65, pt.z + cosA * woodLen * 0.55);
           bEnd.set(pt.x + sinA * woodLen, pt.y + droopY + 0.08 * sY, pt.z + cosA * woodLen);
           const brRad = Math.max(0.025, baseRadWorld * 0.18 * (1 - wt * 0.5));
-          writer.appendTube([pt.clone(), bMid.clone(), bEnd.clone()], 4, (t) => lerp(brRad, 0.015 * sXZ, t), 0.7);
+          writer.appendTube(branchPts, 4, (t) => lerp(brRad, 0.015 * sXZ, t), 0.7);
         }
 
         // Choose between feathered spruce/fir spray (type 0) and tufted Scots/umbrella pad (type 1)
@@ -1060,7 +1096,7 @@ export function buildProceduralPineForest(
     trunkRanges[i] = { start: trunkStartVert, count: writer.vertCount - trunkStartVert };
     const ranges: PineBoughRange[] = [];
     for (let m = 0; m < PINE_FROND_TYPE_COUNT; m++) {
-      const added = buckets[m].length - bucketStarts[m];
+      const added = buckets[m].count - bucketStarts[m];
       if (added > 0) {
         ranges.push({ meshIndex: m, start: bucketStarts[m], count: added });
       }
@@ -1077,43 +1113,34 @@ export function buildProceduralPineForest(
 
   const disposables: THREE.BufferGeometry[] = [trunksGeo];
   const frondMeshes: THREE.InstancedMesh[] = [];
-  const mat4 = new THREE.Matrix4();
-  const color = new THREE.Color();
   let totalBoughInstances = 0;
 
   for (let m = 0; m < PINE_FROND_TYPE_COUNT; m++) {
-    const records = buckets[m];
+    const bucket = buckets[m];
+    const n = bucket.count;
     const baseGeo = createPineFrondGeo(m as 0 | 1 | 2);
-    const windData = new Float32Array(Math.max(1, records.length) * 3);
-    for (let k = 0; k < records.length; k++) {
-      const rec = records[k];
-      windData[k * 3] = rec.wx;
-      windData[k * 3 + 1] = rec.wz;
-      windData[k * 3 + 2] = rec.sway;
-    }
+    const windData = n > 0 ? bucket.wind.subarray(0, n * 3) : new Float32Array(3);
     baseGeo.setAttribute('aWindData', new THREE.InstancedBufferAttribute(windData, 3));
     disposables.push(baseGeo);
 
-    const instMesh = new THREE.InstancedMesh(baseGeo, foliageMat, Math.max(1, records.length));
+    const instMesh = new THREE.InstancedMesh(baseGeo, foliageMat, Math.max(1, n));
     instMesh.name = `procedural_pine_fronds_${m}`;
-    instMesh.count = records.length;
+    instMesh.count = n;
     instMesh.customDepthMaterial = depthMat;
     instMesh.castShadow = true;
     instMesh.receiveShadow = true;
     instMesh.frustumCulled = false;
 
-    for (let k = 0; k < records.length; k++) {
-      const rec = records[k];
-      mat4.fromArray(rec.matrix);
-      instMesh.setMatrixAt(k, mat4);
-      color.setRGB(rec.r, rec.g, rec.b);
-      instMesh.setColorAt(k, color);
+    if (n > 0) {
+      (instMesh.instanceMatrix.array as Float32Array).set(bucket.matrices.subarray(0, n * 16));
+      const colAttr = new THREE.InstancedBufferAttribute(bucket.colors.subarray(0, n * 3), 3);
+      instMesh.instanceColor = colAttr;
+      instMesh.instanceColor.needsUpdate = true;
     }
     instMesh.instanceMatrix.needsUpdate = true;
-    if (instMesh.instanceColor) instMesh.instanceColor.needsUpdate = true;
 
     frondMeshes.push(instMesh);
-    totalBoughInstances += records.length;
+    totalBoughInstances += n;
   }
 
   // Support instant settlement/bridge tree clearing for individual procedural pines

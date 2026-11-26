@@ -61,37 +61,13 @@ function finalizeTexture(
   return tex;
 }
 
+const INV_U32 = 1 / 4294967295;
+
 function hash2(x: number, y: number, seed: number): number {
   let n = Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(seed, 1442695041);
   n = (n ^ (n >>> 13)) >>> 0;
   n = Math.imul(n, 1274126177) >>> 0;
-  return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
-}
-
-/**
- * Tileable periodic 2D value noise in [0, 1] with smooth Hermite interpolation.
- * Period must be a positive integer so textures wrap seamlessly without edge seams.
- */
-function tileNoise(u: number, v: number, periodX: number, periodY: number, seed: number): number {
-  const px = u * periodX;
-  const py = v * periodY;
-  const x0 = Math.floor(px);
-  const y0 = Math.floor(py);
-  const fx = px - x0;
-  const fy = py - y0;
-  const sx = fx * fx * (3 - 2 * fx);
-  const sy = fy * fy * (3 - 2 * fy);
-
-  const ix0 = ((x0 % periodX) + periodX) % periodX;
-  const ix1 = (ix0 + 1) % periodX;
-  const iy0 = ((y0 % periodY) + periodY) % periodY;
-  const iy1 = (iy0 + 1) % periodY;
-
-  const a = hash2(ix0, iy0, seed);
-  const b = hash2(ix1, iy0, seed);
-  const c = hash2(ix0, iy1, seed);
-  const d = hash2(ix1, iy1, seed);
-  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+  return ((n ^ (n >>> 16)) >>> 0) * INV_U32;
 }
 
 function tileFbm(
@@ -107,12 +83,62 @@ function tileFbm(
   let norm = 0;
   let px = basePeriodX;
   let py = basePeriodY;
+  let s = seed;
   for (let o = 0; o < octaves; o++) {
-    sum += tileNoise(u, v, px, py, seed + o * 37) * amp;
+    const fxAll = u * px;
+    const fyAll = v * py;
+    const x0 = fxAll >= 0 ? fxAll | 0 : Math.floor(fxAll);
+    const y0 = fyAll >= 0 ? fyAll | 0 : Math.floor(fyAll);
+    const fx = fxAll - x0;
+    const fy = fyAll - y0;
+    const sx = fx * fx * (3 - 2 * fx);
+    const sy = fy * fy * (3 - 2 * fy);
+
+    let ix0 = x0;
+    if (ix0 < 0) {
+      ix0 %= px;
+      if (ix0 < 0) ix0 += px;
+    } else if (ix0 >= px) {
+      ix0 %= px;
+    }
+    const ix1 = ix0 + 1 === px ? 0 : ix0 + 1;
+    let iy0 = y0;
+    if (iy0 < 0) {
+      iy0 %= py;
+      if (iy0 < 0) iy0 += py;
+    } else if (iy0 >= py) {
+      iy0 %= py;
+    }
+    const iy1 = iy0 + 1 === py ? 0 : iy0 + 1;
+
+    const sHash = Math.imul(s, 1442695041);
+    const x0H = Math.imul(ix0, 374761393) + sHash;
+    const x1H = Math.imul(ix1, 374761393) + sHash;
+    const y0H = Math.imul(iy0, 668265263);
+    const y1H = Math.imul(iy1, 668265263);
+
+    let n = (x0H + y0H) | 0;
+    n = Math.imul((n ^ (n >>> 13)) >>> 0, 1274126177) >>> 0;
+    const a = (n ^ (n >>> 16)) >>> 0;
+
+    n = (x1H + y0H) | 0;
+    n = Math.imul((n ^ (n >>> 13)) >>> 0, 1274126177) >>> 0;
+    const b = (n ^ (n >>> 16)) >>> 0;
+
+    n = (x0H + y1H) | 0;
+    n = Math.imul((n ^ (n >>> 13)) >>> 0, 1274126177) >>> 0;
+    const c = (n ^ (n >>> 16)) >>> 0;
+
+    n = (x1H + y1H) | 0;
+    n = Math.imul((n ^ (n >>> 13)) >>> 0, 1274126177) >>> 0;
+    const d = (n ^ (n >>> 16)) >>> 0;
+
+    sum += (a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy) * (amp * INV_U32);
     norm += amp;
     amp *= 0.5;
     px *= 2;
     py *= 2;
+    s += 37;
   }
   return sum / norm;
 }
@@ -130,34 +156,35 @@ function createNormalCanvasFromBump(bumpCanvas: HTMLCanvasElement, strength = 2.
   const outImg = outCtx.createImageData(size, size);
   const out = outImg.data;
 
-  const sampleH = (x: number, y: number): number => {
-    const wx = ((x % size) + size) % size;
-    const wy = ((y % size) + size) % size;
-    return srcData[(wy * size + wx) * 4] / 255;
-  };
+  const scale = strength / 255;
+  const last = size - 1;
 
   for (let y = 0; y < size; y++) {
+    const rowPrev = (y === 0 ? last : y - 1) * size;
+    const rowCurr = y * size;
+    const rowNext = (y === last ? 0 : y + 1) * size;
+
     for (let x = 0; x < size; x++) {
-      const tl = sampleH(x - 1, y - 1);
-      const t = sampleH(x, y - 1);
-      const tr = sampleH(x + 1, y - 1);
-      const l = sampleH(x - 1, y);
-      const r = sampleH(x + 1, y);
-      const bl = sampleH(x - 1, y + 1);
-      const b = sampleH(x, y + 1);
-      const br = sampleH(x + 1, y + 1);
+      const xPrev = x === 0 ? last : x - 1;
+      const xNext = x === last ? 0 : x + 1;
 
-      const dx = (tr + 2 * r + br - (tl + 2 * l + bl)) * strength;
-      const dy = (bl + 2 * b + br - (tl + 2 * t + tr)) * strength;
-      const nx = -dx;
-      const ny = -dy;
-      const nz = 1.0;
-      const invLen = 1 / Math.hypot(nx, ny, nz);
+      const tl = srcData[(rowPrev + xPrev) << 2];
+      const t = srcData[(rowPrev + x) << 2];
+      const tr = srcData[(rowPrev + xNext) << 2];
+      const l = srcData[(rowCurr + xPrev) << 2];
+      const r = srcData[(rowCurr + xNext) << 2];
+      const bl = srcData[(rowNext + xPrev) << 2];
+      const b = srcData[(rowNext + x) << 2];
+      const br = srcData[(rowNext + xNext) << 2];
 
-      const idx = (y * size + x) * 4;
-      out[idx] = Math.max(0, Math.min(255, Math.round((nx * invLen * 0.5 + 0.5) * 255)));
-      out[idx + 1] = Math.max(0, Math.min(255, Math.round((ny * invLen * 0.5 + 0.5) * 255)));
-      out[idx + 2] = Math.max(0, Math.min(255, Math.round((nz * invLen * 0.5 + 0.5) * 255)));
+      const nx = -(tr + (r << 1) + br - (tl + (l << 1) + bl)) * scale;
+      const ny = -(bl + (b << 1) + br - (tl + (t << 1) + tr)) * scale;
+      const invLen = 1 / Math.sqrt(nx * nx + ny * ny + 1.0);
+
+      const idx = (rowCurr + x) << 2;
+      out[idx] = ((nx * invLen * 0.5 + 0.5) * 255 + 0.5) | 0;
+      out[idx + 1] = ((ny * invLen * 0.5 + 0.5) * 255 + 0.5) | 0;
+      out[idx + 2] = ((invLen * 0.5 + 0.5) * 255 + 0.5) | 0;
       out[idx + 3] = 255;
     }
   }
@@ -1279,11 +1306,13 @@ function createWaterNormal(size: number): THREE.CanvasTexture {
   const [canvas, ctx] = createCanvas(size);
   const img = ctx.createImageData(size, size);
   const data = img.data;
+  const twoPiOverSize = (Math.PI * 2) / size;
 
   for (let y = 0; y < size; y++) {
+    const v = y * twoPiOverSize;
+    const row = y * size;
     for (let x = 0; x < size; x++) {
-      const u = (x / size) * Math.PI * 2;
-      const v = (y / size) * Math.PI * 2;
+      const u = x * twoPiOverSize;
       const dx =
         Math.cos(u * 4 + v * 2) * 0.35 +
         Math.cos(u * 9 - v * 5) * 0.2 +
@@ -1293,9 +1322,9 @@ function createWaterNormal(size: number): THREE.CanvasTexture {
         Math.sin(u * 7 - v * 10) * 0.2 +
         Math.cos(u * 12 - v * 13) * 0.12;
 
-      const idx = (y * size + x) * 4;
-      data[idx] = Math.floor((dx * 0.5 + 0.5) * 255);
-      data[idx + 1] = Math.floor((dy * 0.5 + 0.5) * 255);
+      const idx = (row + x) << 2;
+      data[idx] = ((dx * 0.5 + 0.5) * 255) | 0;
+      data[idx + 1] = ((dy * 0.5 + 0.5) * 255) | 0;
       data[idx + 2] = 240;
       data[idx + 3] = 255;
     }

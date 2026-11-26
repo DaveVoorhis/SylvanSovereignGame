@@ -144,6 +144,7 @@ export class TerrainMap {
   readonly riverAngle: number;
   readonly tributaryAngle: number;
   readonly resourceNodes: ResourceNode[] = [];
+  private readonly resourceNodeById = new Map<string, ResourceNode>();
   readonly trees: TreeSpot[] = [];
   readonly undergrowth: PropSpot[] = [];
   readonly rocks: PropSpot[] = [];
@@ -218,6 +219,8 @@ export class TerrainMap {
   private readonly walkGridSize: number;
   private readonly walkCache: Uint8Array;
   private readonly completedBridges: BridgeInstance[] = [];
+  private tmpAridity = 0;
+  private tmpPrairie = 0;
 
   constructor(config: WorldConfig) {
     this.size = config.worldSize;
@@ -496,7 +499,8 @@ export class TerrainMap {
         if (sAlpine > 14) continue;
         const sRiver = this.getExactRiverDistance(sx, sz);
         if (sRiver < 16) continue;
-        if (this.sampleAmorphousBiomes(sx, sz, sCoast, sAlpine, sRiver).aridity > 0.34) continue;
+        this.sampleAmorphousBiomesToScratch(sx, sz, sCoast, sAlpine, sRiver);
+        if (this.tmpAridity > 0.34) continue;
         let tooClose = false;
         for (const existing of ponds) {
           if (Math.hypot(sx - existing.x, sz - existing.z) < 48 * Math.sqrt(worldScale)) {
@@ -1122,7 +1126,7 @@ export class TerrainMap {
     const dz = z - pond.z;
     const lx = (dx * pond.cos + dz * pond.sin) / pond.scaleX;
     const lz = (-dx * pond.sin + dz * pond.cos) / pond.scaleZ;
-    return Math.hypot(lx, lz) - pond.radius;
+    return Math.sqrt(lx * lx + lz * lz) - pond.radius;
   }
 
   /** Exact signed distance from (x, z) to the nearest river/tributary/stream bank (no grid cap). */
@@ -1298,7 +1302,7 @@ export class TerrainMap {
       return { x: surfX, z: surfZ };
     }
 
-    const len = Math.hypot(fx, fz) || 1;
+    const len = Math.sqrt(fx * fx + fz * fz) || 1;
     fx /= len;
     fz /= len;
 
@@ -1330,13 +1334,13 @@ export class TerrainMap {
    * prairie openness) in a single pass so forests, prairies, and deserts weave organically
    * across the central landmass between the back mountains and front sea.
    */
-  private sampleAmorphousBiomes(
+  private sampleAmorphousBiomesToScratch(
     x: number,
     z: number,
     coastDist: number,
     alpineDepth: number,
     freshDist: number,
-  ): { aridity: number; prairie: number } {
+  ): void {
     // Two-scale organic domain warp completely dissolves geometric boundaries into amorphous regions
     const w1x =
       this.climateNoise.fbm(x * 0.0024 + this.climOffsetX, z * 0.0024 + this.climOffsetZ, 2) *
@@ -1378,7 +1382,12 @@ export class TerrainMap {
     let desertLobe = 0;
     for (let i = 0; i < this.desertLobes.length; i++) {
       const l = this.desertLobes[i];
-      const d = Math.hypot(wx - l.x, wz - l.z) / l.radius;
+      const dx = wx - l.x;
+      const dz = wz - l.z;
+      const dSq = dx * dx + dz * dz;
+      const maxR = l.radius * 1.08;
+      if (dSq >= maxR * maxR) continue;
+      const d = Math.sqrt(dSq) / l.radius;
       const m = (1 - smoothstep(0.28, 1.08, d)) * l.strength;
       if (m > desertLobe) desertLobe = m;
     }
@@ -1386,7 +1395,12 @@ export class TerrainMap {
     let prairieLobe = 0;
     for (let i = 0; i < this.prairieLobes.length; i++) {
       const l = this.prairieLobes[i];
-      const d = Math.hypot(wx - l.x, wz - l.z) / l.radius;
+      const dx = wx - l.x;
+      const dz = wz - l.z;
+      const dSq = dx * dx + dz * dz;
+      const maxR = l.radius * 1.08;
+      if (dSq >= maxR * maxR) continue;
+      const d = Math.sqrt(dSq) / l.radius;
       const m = (1 - smoothstep(0.28, 1.08, d)) * l.strength;
       if (m > prairieLobe) prairieLobe = m;
     }
@@ -1394,7 +1408,12 @@ export class TerrainMap {
     let forestLobe = 0;
     for (let i = 0; i < this.forestLobes.length; i++) {
       const l = this.forestLobes[i];
-      const d = Math.hypot(wx - l.x, wz - l.z) / l.radius;
+      const dx = wx - l.x;
+      const dz = wz - l.z;
+      const dSq = dx * dx + dz * dz;
+      const maxR = l.radius * 1.06;
+      if (dSq >= maxR * maxR) continue;
+      const d = Math.sqrt(dSq) / l.radius;
       const m = (1 - smoothstep(0.26, 1.06, d)) * l.strength;
       if (m > forestLobe) forestLobe = m;
     }
@@ -1425,7 +1444,8 @@ export class TerrainMap {
       aridity * 0.65;
     const prairie = Math.max(0, Math.min(1, rawPrairie - prairieCoastCool - alpineCool * 0.85));
 
-    return { aridity, prairie };
+    this.tmpAridity = aridity;
+    this.tmpPrairie = prairie;
   }
 
   /** Warmth / aridity index in [0, 1] defining amorphous sandy dune-sea desert regions. */
@@ -1433,7 +1453,8 @@ export class TerrainMap {
     const coastDist = this.getCoastSignedDistance(x, z);
     const alpineDepth = this.getAlpineDepthAt(x, z);
     const freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 56);
-    return this.sampleAmorphousBiomes(x, z, coastDist, alpineDepth, freshDist).aridity;
+    this.sampleAmorphousBiomesToScratch(x, z, coastDist, alpineDepth, freshDist);
+    return this.tmpAridity;
   }
 
   /** Openness index in [0, 1] defining amorphous flat treeless grassy prairie regions. */
@@ -1441,7 +1462,8 @@ export class TerrainMap {
     const coastDist = this.getCoastSignedDistance(x, z);
     const alpineDepth = this.getAlpineDepthAt(x, z);
     const freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 56);
-    return this.sampleAmorphousBiomes(x, z, coastDist, alpineDepth, freshDist).prairie;
+    this.sampleAmorphousBiomesToScratch(x, z, coastDist, alpineDepth, freshDist);
+    return this.tmpPrairie;
   }
 
   /** Continuous alpine massif envelope weight in [0, 1.65] across the back (-Z) mountain wall. */
@@ -1453,7 +1475,12 @@ export class TerrainMap {
     let peakBoost = 0;
     for (let i = 0; i < this.alpinePeaks.length; i++) {
       const p = this.alpinePeaks[i];
-      const d = Math.hypot(alongBack - p.along, alpineDepth - p.depth) / p.radius;
+      const da = alongBack - p.along;
+      const dd = alpineDepth - p.depth;
+      const dSq = da * da + dd * dd;
+      const maxR = p.radius * 1.05;
+      if (dSq >= maxR * maxR) continue;
+      const d = Math.sqrt(dSq) / p.radius;
       const m = 1 - smoothstep(0.05, 1.05, d);
       if (m > peakBoost) peakBoost = m;
     }
@@ -1462,7 +1489,7 @@ export class TerrainMap {
 
   /** Continuous world height in meters at any (x, z) coordinate out to infinity. */
   getHeightAt(x: number, z: number): number {
-    const radialDist = Math.hypot(x, z) / this.halfSize;
+    const radialDist = Math.sqrt(x * x + z * z) / this.halfSize;
     const coastDist = this.getCoastSignedDistance(x, z);
     const landMask = smoothstep(-6, 30, coastDist);
     const alpineDepth = this.getAlpineDepthAt(x, z);
@@ -1550,8 +1577,12 @@ export class TerrainMap {
       let spireProfile = 0;
       for (let i = 0; i < this.alpinePeaks.length; i++) {
         const p = this.alpinePeaks[i];
-        const d = Math.hypot(alongBack - p.along, alpineDepth - p.depth) / p.radius;
-        if (d < 1.04) {
+        const da = alongBack - p.along;
+        const dd = alpineDepth - p.depth;
+        const dSq = da * da + dd * dd;
+        const maxR = p.radius * 1.04;
+        if (dSq < maxR * maxR) {
+          const d = Math.sqrt(dSq) / p.radius;
           const m = (1 - smoothstep(0.04, 1.04, d)) * landMask;
           spireProfile += Math.pow(m, 1.38) * this.mountainPeakBoost * 0.72 * p.heightScale;
         }
@@ -1592,13 +1623,15 @@ export class TerrainMap {
     }
 
     // 2. Amorphous Interior Biomes: Arid Sand Dunes/Mesas & Flat Sunlit Prairies
-    const { aridity, prairie } = this.sampleAmorphousBiomes(
+    this.sampleAmorphousBiomesToScratch(
       x,
       z,
       coastDist,
       alpineDepth,
       freshDist,
     );
+    const aridity = this.tmpAridity;
+    const prairie = this.tmpPrairie;
     const alpineSuppress = 1 - smoothstep(-10, 26, alpineDepth);
 
     const desMask = smoothstep(0.45, 0.72, aridity) * landMask * alpineSuppress;
@@ -1619,7 +1652,9 @@ export class TerrainMap {
     const praFlat = smoothstep(0.46, 0.72, prairie) * landMask * alpineSuppress;
 
     // 3. Lowland Misty Fen Depression
-    const fenDist = Math.hypot(x - this.fenCenterX, z - this.fenCenterZ) / this.fenRadius;
+    const fdx = x - this.fenCenterX;
+    const fdz = z - this.fenCenterZ;
+    const fenDist = Math.sqrt(fdx * fdx + fdz * fdz) / this.fenRadius;
     const fenMask = (1 - smoothstep(0.2, 1.05, fenDist)) * landMask * alpineSuppress;
 
     const micro =
@@ -1692,7 +1727,7 @@ export class TerrainMap {
     const nx = hL - hR;
     const ny = 2 * eps;
     const nz = hD - hU;
-    const len = Math.hypot(nx, ny, nz) || 1;
+    const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
     return { x: nx / len, y: ny / len, z: nz / len };
   }
 
@@ -1701,12 +1736,11 @@ export class TerrainMap {
     return 1 - n.y;
   }
 
-  getMoistureAt(x: number, z: number): number {
-    const coastDist = this.getCoastSignedDistance(x, z);
-    const alpineDepth = this.getAlpineDepthAt(x, z);
-    const freshDist = Math.max(0, this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 68));
-    const riverBoost = Math.exp(-freshDist * 0.068) * 0.56;
-    const fenDist = Math.hypot(x - this.fenCenterX, z - this.fenCenterZ) / this.fenRadius;
+  private computeMoisture(x: number, z: number, freshDist: number, aridity: number): number {
+    const riverBoost = Math.exp(-Math.max(0, freshDist) * 0.068) * 0.56;
+    const fdx = x - this.fenCenterX;
+    const fdz = z - this.fenCenterZ;
+    const fenDist = Math.sqrt(fdx * fdx + fdz * fdz) / this.fenRadius;
     const fenBoost = (1 - smoothstep(0.2, 1.1, fenDist)) * 0.34;
     const noiseVal =
       (this.moistureNoise.fbm(
@@ -1716,15 +1750,17 @@ export class TerrainMap {
       ) +
         1) *
       0.5;
-    const aridity = this.getAridityAt(x, z);
     return Math.max(0, Math.min(1, noiseVal * 0.56 + riverBoost + fenBoost - aridity * 0.54));
   }
 
-  getFertilityAt(x: number, z: number): number {
-    const h = this.getHeightAt(x, z);
+  private computeFertility(
+    x: number,
+    z: number,
+    h: number,
+    moisture: number,
+    aridity: number,
+  ): number {
     if (h <= this.waterLevel) return 0;
-    const moisture = this.getMoistureAt(x, z);
-    const aridity = this.getAridityAt(x, z);
     const n =
       (this.fertilityNoise.fbm(
         x * 0.018 + this.fertOffsetX,
@@ -1737,6 +1773,26 @@ export class TerrainMap {
     return Math.max(0, Math.min(1, n * 0.5 + moisture * 0.54 - altitudePenalty - aridity * 0.42));
   }
 
+  getMoistureAt(x: number, z: number): number {
+    const coastDist = this.getCoastSignedDistance(x, z);
+    const alpineDepth = this.getAlpineDepthAt(x, z);
+    const freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 68);
+    this.sampleAmorphousBiomesToScratch(x, z, coastDist, alpineDepth, Math.min(freshDist, 56));
+    return this.computeMoisture(x, z, freshDist, this.tmpAridity);
+  }
+
+  getFertilityAt(x: number, z: number): number {
+    const h = this.getHeightAt(x, z);
+    if (h <= this.waterLevel) return 0;
+    const coastDist = this.getCoastSignedDistance(x, z);
+    const alpineDepth = this.getAlpineDepthAt(x, z);
+    const freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 68);
+    this.sampleAmorphousBiomesToScratch(x, z, coastDist, alpineDepth, Math.min(freshDist, 56));
+    const aridity = this.tmpAridity;
+    const moisture = this.computeMoisture(x, z, freshDist, aridity);
+    return this.computeFertility(x, z, h, moisture, aridity);
+  }
+
   /** Fast biome classification using a precomputed elevation and slope sample. */
   getBiomeAtSample(x: number, z: number, h: number, slope: number): BiomeType {
     if (h <= this.waterLevel + 0.05) return 'water';
@@ -1746,13 +1802,15 @@ export class TerrainMap {
 
     const alpineDepth = this.getAlpineDepthAt(x, z);
     const freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 56);
-    const { aridity, prairie } = this.sampleAmorphousBiomes(
+    this.sampleAmorphousBiomesToScratch(
       x,
       z,
       coastDist,
       alpineDepth,
       freshDist,
     );
+    const aridity = this.tmpAridity;
+    const prairie = this.tmpPrairie;
 
     // Keep arid desert sand dunes & sandstone mesas distinctly sandy rather than turning into gray alpine rock
     if (aridity > 0.48 && freshDist > 3.4 && h < 19.0 && alpineDepth < 20) {
@@ -1764,21 +1822,110 @@ export class TerrainMap {
 
     if (freshDist < 5.5 && h <= this.waterLevel + 1.05) return 'riverbank';
 
-    const moisture = this.getMoistureAt(x, z);
+    const moisture = this.computeMoisture(x, z, freshDist, aridity);
     if (moisture > 0.65 && h < 3.6 && prairie < 0.46) return 'moss_hollow';
 
     if (prairie > 0.5 && h < 5.0 && slope < 0.14) return 'prairie';
 
-    const fertility = this.getFertilityAt(x, z);
+    const fertility = this.computeFertility(x, z, h, moisture, aridity);
     if (fertility > 0.58 && h < 4.6 && prairie > 0.3) return 'meadow';
     return 'deep_woods';
   }
 
+  /**
+   * Exact biome classification given a precomputed elevation `h`, evaluating slope lazily
+   * only when elevation/climate alone cannot determine the biome (avoids 4x getHeightAt calls).
+   */
+  getBiomeAtKnownHeight(x: number, z: number, h: number): BiomeType {
+    if (h <= this.waterLevel + 0.05) return 'water';
+
+    const coastDist = this.getCoastSignedDistance(x, z);
+    if (coastDist < 20.0 && h < this.waterLevel + 2.6) return 'seashore';
+
+    const alpineDepth = this.getAlpineDepthAt(x, z);
+    const freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 56);
+    this.sampleAmorphousBiomesToScratch(x, z, coastDist, alpineDepth, freshDist);
+    const aridity = this.tmpAridity;
+    const prairie = this.tmpPrairie;
+
+    if (aridity > 0.48 && freshDist > 3.4 && h < 19.0 && alpineDepth < 20) {
+      return 'desert';
+    }
+
+    if (h > 13.5 || alpineDepth > 58) return 'alpine_crag';
+    if (h > 9.5) {
+      const slope = this.getSlopeAt(x, z);
+      return slope > 0.23 ? 'alpine_crag' : 'rocky_ridge';
+    }
+    if (h > 7.4 || (alpineDepth > 12 && h > 5.8)) return 'rocky_ridge';
+
+    const slope = this.getSlopeAt(x, z);
+    if (slope > 0.25) return 'rocky_ridge';
+
+    if (freshDist < 5.5 && h <= this.waterLevel + 1.05) return 'riverbank';
+
+    const moisture = this.computeMoisture(x, z, freshDist, aridity);
+    if (moisture > 0.65 && h < 3.6 && prairie < 0.46) return 'moss_hollow';
+
+    if (prairie > 0.5 && h < 5.0 && slope < 0.14) return 'prairie';
+
+    const fertility = this.computeFertility(x, z, h, moisture, aridity);
+    if (fertility > 0.58 && h < 4.6 && prairie > 0.3) return 'meadow';
+    return 'deep_woods';
+  }
+
+  /**
+   * Single-pass biome + climate query for horizon forest placement, reusing precomputed `h`
+   * and `coastDist` without repeating amorphous climate evaluation.
+   */
+  getHorizonBiomeAndClimate(
+    x: number,
+    z: number,
+    h: number,
+    coastDist: number,
+  ): { biome: BiomeType; aridity: number; prairie: number } {
+    const alpineDepth = this.getAlpineDepthAt(x, z);
+    const freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 56);
+    this.sampleAmorphousBiomesToScratch(x, z, coastDist, alpineDepth, freshDist);
+    const aridity = this.tmpAridity;
+    const prairie = this.tmpPrairie;
+
+    if (aridity > 0.48 && freshDist > 3.4 && h < 19.0 && alpineDepth < 20) {
+      return { biome: 'desert', aridity, prairie };
+    }
+    if (h > 13.5 || alpineDepth > 58) {
+      return { biome: 'alpine_crag', aridity, prairie };
+    }
+    if (aridity > 0.44 || prairie > 0.44) {
+      // Callers reject sites with aridity > 0.44 || prairie > 0.44, so no slope query needed
+      return { biome: prairie > 0.5 ? 'prairie' : 'deep_woods', aridity, prairie };
+    }
+    if (h > 9.5) {
+      const slope = this.getSlopeAt(x, z);
+      return { biome: slope > 0.23 ? 'alpine_crag' : 'rocky_ridge', aridity, prairie };
+    }
+    if (h > 7.4 || (alpineDepth > 12 && h > 5.8)) {
+      return { biome: 'rocky_ridge', aridity, prairie };
+    }
+    const slope = this.getSlopeAt(x, z);
+    if (slope > 0.25) return { biome: 'rocky_ridge', aridity, prairie };
+    if (freshDist < 5.5 && h <= this.waterLevel + 1.05) {
+      return { biome: 'riverbank', aridity, prairie };
+    }
+    const moisture = this.computeMoisture(x, z, freshDist, aridity);
+    if (moisture > 0.65 && h < 3.6 && prairie < 0.46) {
+      return { biome: 'moss_hollow', aridity, prairie };
+    }
+    const fertility = this.computeFertility(x, z, h, moisture, aridity);
+    if (fertility > 0.58 && h < 4.6 && prairie > 0.3) {
+      return { biome: 'meadow', aridity, prairie };
+    }
+    return { biome: 'deep_woods', aridity, prairie };
+  }
+
   getBiomeAt(x: number, z: number): BiomeType {
     const h = this.getHeightAt(x, z);
-    if (h <= this.waterLevel + 0.05) return 'water';
-    const slope = this.getSlopeAt(x, z);
-    return this.getBiomeAtSample(x, z, h, slope);
+    return this.getBiomeAtKnownHeight(x, z, h);
   }
 
   /** Classifies the natural environmental village adaptation at (x, z). */
@@ -2276,6 +2423,13 @@ export class TerrainMap {
     }
   }
 
+  /** O(1) lookup for a resource node by id (falls back to scan if mutated externally). */
+  getResourceNode(id: string | null): ResourceNode | undefined {
+    if (!id) return undefined;
+    const hit = this.resourceNodeById.get(id);
+    return hit ?? this.resourceNodes.find((n) => n.id === id);
+  }
+
   findNearestResource(
     origin: Vec2,
     types: readonly ResourceType[],
@@ -2364,14 +2518,16 @@ export class TerrainMap {
           continue;
         }
 
-        this.resourceNodes.push({
+        const node: ResourceNode = {
           id: `res_${idx++}`,
           type: spec.type,
           position: { x, z },
           amount: spec.max * rng.range(0.7, 1.0),
           maxAmount: spec.max,
           regenRate: spec.regen,
-        });
+        };
+        this.resourceNodes.push(node);
+        this.resourceNodeById.set(node.id, node);
         placed++;
       }
     }

@@ -809,6 +809,7 @@ export class CreatureRenderer {
     { readonly mantle: THREE.MeshStandardMaterial; readonly accent: THREE.MeshStandardMaterial }
   >();
   private readonly disposables: (THREE.BufferGeometry | THREE.Material)[] = [];
+  private readonly primGeoCache = new Map<string, THREE.BufferGeometry>();
 
   // Shared detail materials
   private readonly eyeMat: THREE.MeshPhysicalMaterial;
@@ -1630,6 +1631,43 @@ export class CreatureRenderer {
     return pair;
   }
 
+  private cachedGeo<T extends THREE.BufferGeometry>(key: string, create: () => T): T {
+    const hit = this.primGeoCache.get(key);
+    if (hit) return hit as T;
+    const geo = create();
+    this.primGeoCache.set(key, geo);
+    this.disposables.push(geo);
+    return geo;
+  }
+
+  private sphereGeo(r: number, ws: number, hs: number): THREE.SphereGeometry {
+    return this.cachedGeo(`S:${r}:${ws}:${hs}`, () => new THREE.SphereGeometry(r, ws, hs));
+  }
+
+  private cylGeo(rt: number, rb: number, h: number, rs: number): THREE.CylinderGeometry {
+    return this.cachedGeo(`Cy:${rt}:${rb}:${h}:${rs}`, () => new THREE.CylinderGeometry(rt, rb, h, rs));
+  }
+
+  private coneGeo(r: number, h: number, rs: number): THREE.ConeGeometry {
+    return this.cachedGeo(`Co:${r}:${h}:${rs}`, () => new THREE.ConeGeometry(r, h, rs));
+  }
+
+  private boxGeo(w: number, h: number, d: number): THREE.BoxGeometry {
+    return this.cachedGeo(`B:${w}:${h}:${d}`, () => new THREE.BoxGeometry(w, h, d));
+  }
+
+  private torusGeo(r: number, t: number, rs: number, ts: number): THREE.TorusGeometry {
+    return this.cachedGeo(`T:${r}:${t}:${rs}:${ts}`, () => new THREE.TorusGeometry(r, t, rs, ts));
+  }
+
+  private capsuleGeo(r: number, l: number, cs: number, rs: number): THREE.CapsuleGeometry {
+    return this.cachedGeo(`Ca:${r}:${l}:${cs}:${rs}`, () => new THREE.CapsuleGeometry(r, l, cs, rs));
+  }
+
+  private octaGeo(r: number, d: number): THREE.OctahedronGeometry {
+    return this.cachedGeo(`O:${r}:${d}`, () => new THREE.OctahedronGeometry(r, d));
+  }
+
   private syncCreatures(_selection: SelectionTarget): void {
     for (const c of this.world.creatures) {
       const currentAdaptation: VillageAdaptationId =
@@ -1727,7 +1765,7 @@ export class CreatureRenderer {
 
     // Soft plush chest/belly bib showing above the tunic collar
     const chestBib = addPart(
-      new THREE.Mesh(new THREE.SphereGeometry(0.21, 14, 12), mats.secondary),
+      new THREE.Mesh(this.sphereGeo(0.21, 14, 12), mats.secondary),
     );
     if (isSnake) {
       chestBib.scale.set(0.62, 0.92, 0.65);
@@ -1861,12 +1899,12 @@ export class CreatureRenderer {
       lPivot.position.set(-0.24, 0.65, -0.02);
       addPart(new THREE.Mesh(this.geo.wingLeft, mats.primary), lPivot);
       if (c.species === 'magpie') {
-        const scapL = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.115, 10, 8), mats.secondary), lPivot);
+        const scapL = addPart(new THREE.Mesh(this.sphereGeo(0.115, 10, 8), mats.secondary), lPivot);
         scapL.scale.set(1.25, 0.48, 0.92);
         scapL.position.set(-0.13, 0.028, -0.01);
       } else if (c.species === 'pigeon') {
         for (const zOff of [-0.04, -0.1]) {
-          const bar = addPart(new THREE.Mesh(new THREE.CapsuleGeometry(0.018, 0.18, 4, 6), mats.accent), lPivot);
+          const bar = addPart(new THREE.Mesh(this.capsuleGeo(0.018, 0.18, 4, 6), mats.accent), lPivot);
           bar.rotation.z = Math.PI / 2;
           bar.position.set(-0.22, 0.018, zOff);
         }
@@ -1878,12 +1916,12 @@ export class CreatureRenderer {
       rPivot.position.set(0.24, 0.65, -0.02);
       addPart(new THREE.Mesh(this.geo.wingRight, mats.primary), rPivot);
       if (c.species === 'magpie') {
-        const scapR = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.115, 10, 8), mats.secondary), rPivot);
+        const scapR = addPart(new THREE.Mesh(this.sphereGeo(0.115, 10, 8), mats.secondary), rPivot);
         scapR.scale.set(1.25, 0.48, 0.92);
         scapR.position.set(0.13, 0.028, -0.01);
       } else if (c.species === 'pigeon') {
         for (const zOff of [-0.04, -0.1]) {
-          const bar = addPart(new THREE.Mesh(new THREE.CapsuleGeometry(0.018, 0.18, 4, 6), mats.accent), rPivot);
+          const bar = addPart(new THREE.Mesh(this.capsuleGeo(0.018, 0.18, 4, 6), mats.accent), rPivot);
           bar.rotation.z = Math.PI / 2;
           bar.position.set(0.22, 0.018, zOff);
         }
@@ -1914,7 +1952,7 @@ export class CreatureRenderer {
     if (c.species === 'owl') {
       // Heart-shaped cream facial disc
       for (const sx of [-0.095, 0.095]) {
-        const disc = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.145, 14, 12), mats.secondary), headGroup);
+        const disc = addPart(new THREE.Mesh(this.sphereGeo(0.145, 14, 12), mats.secondary), headGroup);
         disc.scale.set(1.05, 1.12, 0.55);
         disc.position.set(sx, 0.01, 0.21);
       }
@@ -1923,23 +1961,23 @@ export class CreatureRenderer {
       buildCuteEye(0.1, 0.03, 0.27, 1.18, this.owlIrisMat);
 
       // Curved ivory scholar beak
-      const beak = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.058, 0.14, 8), mats.accent), headGroup);
+      const beak = addPart(new THREE.Mesh(this.coneGeo(0.058, 0.14, 8), mats.accent), headGroup);
       beak.rotation.x = Math.PI * 0.62;
       beak.position.set(0, -0.03, 0.31);
 
       // Tiny whimsical round brass spectacles!
       for (const sx of [-0.1, 0.1]) {
-        const frame = addPart(new THREE.Mesh(new THREE.TorusGeometry(0.088, 0.01, 8, 18), this.brassMat), headGroup);
+        const frame = addPart(new THREE.Mesh(this.torusGeo(0.088, 0.01, 8, 18), this.brassMat), headGroup);
         frame.position.set(sx, 0.03, 0.31);
       }
-      const bridge = addPart(new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.012, 0.012), this.brassMat), headGroup);
+      const bridge = addPart(new THREE.Mesh(this.boxGeo(0.05, 0.012, 0.012), this.brassMat), headGroup);
       bridge.position.set(0, 0.04, 0.31);
 
       // Feathered ear tufts (articulated!)
       for (const side of [-1, 1] as const) {
         const ePivot = new THREE.Group();
         ePivot.position.set(side * 0.16, 0.2, 0.04);
-        const tuft = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.062, 0.2, 8), mats.primary), ePivot);
+        const tuft = addPart(new THREE.Mesh(this.coneGeo(0.062, 0.2, 8), mats.primary), ePivot);
         tuft.position.y = 0.08;
         headGroup.add(ePivot);
         if (side === -1) {
@@ -1977,7 +2015,7 @@ export class CreatureRenderer {
       // Sculpted beak (longer corvid beak for crow/magpie, delicate cere-topped beak for pigeon, perky songbird beak for sparrow/robin)
       const beakLen = isCorvid ? 0.24 : isPigeon ? 0.17 : 0.15;
       const beakUpper = addPart(
-        new THREE.Mesh(new THREE.ConeGeometry(isCorvid ? 0.066 : isPigeon ? 0.052 : 0.058, beakLen, 10), isCorvid || isPigeon ? this.noseBlackMat : mats.accent),
+        new THREE.Mesh(this.coneGeo(isCorvid ? 0.066 : isPigeon ? 0.052 : 0.058, beakLen, 10), isCorvid || isPigeon ? this.noseBlackMat : mats.accent),
         headGroup,
       );
       beakUpper.rotation.x = Math.PI * 0.53;
@@ -1985,7 +2023,7 @@ export class CreatureRenderer {
 
       // Cute feather crown tuft
       for (let i = 0; i < 2; i++) {
-        const crest = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.032, 0.12, 7), mats.primary), headGroup);
+        const crest = addPart(new THREE.Mesh(this.coneGeo(0.032, 0.12, 7), mats.primary), headGroup);
         crest.position.set((i - 0.5) * 0.04, 0.26, 0.02 - i * 0.05);
         crest.rotation.x = -0.45 - i * 0.2;
       }
@@ -1995,18 +2033,18 @@ export class CreatureRenderer {
         chestBib.scale.set(1.18, 1.12, 1.05);
         chestBib.position.set(0, 0.56, 0.16);
       } else if (isCrow) {
-        const monocle = addPart(new THREE.Mesh(new THREE.TorusGeometry(0.068, 0.01, 8, 16), this.brassMat), headGroup);
+        const monocle = addPart(new THREE.Mesh(this.torusGeo(0.068, 0.01, 8, 16), this.brassMat), headGroup);
         monocle.position.set(0.125, 0.04, 0.265);
       } else if (isPigeon) {
         // Plump dove chest + shimmering iridescent emerald-violet neck ring + pale pigeon cere
         chestBib.scale.set(1.18, 1.06, 1.08);
         chestBib.position.set(0, 0.57, 0.16);
         const neckRing = addPart(
-          new THREE.Mesh(new THREE.TorusGeometry(0.17, 0.052, 10, 20), this.pigeonIridescentMat),
+          new THREE.Mesh(this.torusGeo(0.17, 0.052, 10, 20), this.pigeonIridescentMat),
         );
         neckRing.rotation.x = Math.PI / 2;
         neckRing.position.set(0, 0.77, 0.04);
-        const cere = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.036, 8, 6), mats.secondary), headGroup);
+        const cere = addPart(new THREE.Mesh(this.sphereGeo(0.036, 8, 6), mats.secondary), headGroup);
         cere.scale.set(1.25, 0.75, 0.85);
         cere.position.set(0, 0.025, 0.27);
       } else if (isMagpie) {
@@ -2024,7 +2062,7 @@ export class CreatureRenderer {
         addPart(new THREE.Mesh(this.geo.birdTail, mats.primary), tailGroup);
         if (isPigeon) {
           // Dark rock-dove terminal tail bar
-          const tailBand = addPart(new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.03, 0.07), mats.accent), tailGroup);
+          const tailBand = addPart(new THREE.Mesh(this.boxGeo(0.24, 0.03, 0.07), mats.accent), tailGroup);
           tailBand.position.set(0, 0.0, -0.24);
         }
       }
@@ -2034,7 +2072,7 @@ export class CreatureRenderer {
     } else if (c.species === 'rabbit') {
       // Fluffy cream cheek puffs & snout
       for (const sx of [-0.11, 0.11]) {
-        const cheek = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 10), mats.secondary), headGroup);
+        const cheek = addPart(new THREE.Mesh(this.sphereGeo(0.11, 12, 10), mats.secondary), headGroup);
         cheek.scale.set(1.05, 0.85, 0.9);
         cheek.position.set(sx, -0.06, 0.19);
       }
@@ -2051,11 +2089,11 @@ export class CreatureRenderer {
         const ePivot = new THREE.Group();
         ePivot.position.set(side * 0.1, 0.22, -0.01);
 
-        const outer = addPart(new THREE.Mesh(new THREE.CapsuleGeometry(0.068, 0.34, 8, 12), mats.primary), ePivot);
+        const outer = addPart(new THREE.Mesh(this.capsuleGeo(0.068, 0.34, 8, 12), mats.primary), ePivot);
         outer.scale.set(1.0, 1.0, 0.58);
         outer.position.y = 0.2;
 
-        const inner = addPart(new THREE.Mesh(new THREE.CapsuleGeometry(0.042, 0.26, 6, 10), this.pinkInnerMat), ePivot);
+        const inner = addPart(new THREE.Mesh(this.capsuleGeo(0.042, 0.26, 6, 10), this.pinkInnerMat), ePivot);
         inner.scale.set(1.0, 1.0, 0.4);
         inner.position.set(0, 0.19, 0.03);
 
@@ -2078,16 +2116,16 @@ export class CreatureRenderer {
       tail = tailGroup;
     } else if (c.species === 'fox') {
       // Sculpted tapered fox snout + cream lower cheeks
-      const snout = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.125, 0.3, 14), mats.primary), headGroup);
+      const snout = addPart(new THREE.Mesh(this.coneGeo(0.125, 0.3, 14), mats.primary), headGroup);
       snout.rotation.x = Math.PI / 2;
       snout.position.set(0, -0.03, 0.3);
-      const jaw = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.115, 12, 10), mats.secondary), headGroup);
+      const jaw = addPart(new THREE.Mesh(this.sphereGeo(0.115, 12, 10), mats.secondary), headGroup);
       jaw.scale.set(1.25, 0.65, 1.18);
       jaw.position.set(0, -0.09, 0.21);
 
       // Fluffy white fox cheek ruffs
       for (const sx of [-0.17, 0.17]) {
-        const ruff = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.085, 0.17, 8), mats.secondary), headGroup);
+        const ruff = addPart(new THREE.Mesh(this.coneGeo(0.085, 0.17, 8), mats.secondary), headGroup);
         ruff.rotation.z = sx > 0 ? -1.25 : 1.25;
         ruff.position.set(sx, -0.06, 0.11);
       }
@@ -2104,15 +2142,15 @@ export class CreatureRenderer {
         const ePivot = new THREE.Group();
         ePivot.position.set(side * 0.15, 0.2, 0.0);
 
-        const earBase = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.25, 10), mats.primary), ePivot);
+        const earBase = addPart(new THREE.Mesh(this.coneGeo(0.09, 0.25, 10), mats.primary), ePivot);
         earBase.scale.set(1.0, 1.0, 0.65);
         earBase.position.y = 0.11;
 
-        const earTip = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.052, 0.11, 10), mats.accent), ePivot);
+        const earTip = addPart(new THREE.Mesh(this.coneGeo(0.052, 0.11, 10), mats.accent), ePivot);
         earTip.scale.set(1.0, 1.0, 0.65);
         earTip.position.y = 0.19;
 
-        const earInner = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.052, 0.16, 8), mats.secondary), ePivot);
+        const earInner = addPart(new THREE.Mesh(this.coneGeo(0.052, 0.16, 8), mats.secondary), ePivot);
         earInner.scale.set(1.0, 1.0, 0.4);
         earInner.position.set(0, 0.09, 0.035);
 
@@ -2135,23 +2173,23 @@ export class CreatureRenderer {
       tail = tailGroup;
     } else if (c.species === 'badger') {
       // Iconic bold black-and-white badger striped head!
-      const blaze = addPart(new THREE.Mesh(new THREE.CapsuleGeometry(0.068, 0.26, 8, 10), mats.secondary), headGroup);
+      const blaze = addPart(new THREE.Mesh(this.capsuleGeo(0.068, 0.26, 8, 10), mats.secondary), headGroup);
       blaze.rotation.x = Math.PI * 0.38;
       blaze.position.set(0, 0.08, 0.18);
 
       for (const sx of [-0.145, 0.145]) {
         // Cream cheek stripe
-        const cheekStripe = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.115, 12, 10), mats.secondary), headGroup);
+        const cheekStripe = addPart(new THREE.Mesh(this.sphereGeo(0.115, 12, 10), mats.secondary), headGroup);
         cheekStripe.scale.set(0.95, 0.8, 1.12);
         cheekStripe.position.set(sx, -0.05, 0.15);
 
         // Bold charcoal eye-mask band
-        const mask = addPart(new THREE.Mesh(new THREE.CapsuleGeometry(0.055, 0.16, 6, 8), mats.accent), headGroup);
+        const mask = addPart(new THREE.Mesh(this.capsuleGeo(0.055, 0.16, 6, 8), mats.accent), headGroup);
         mask.rotation.x = Math.PI * 0.42;
         mask.position.set(sx * 0.72, 0.06, 0.18);
       }
 
-      const snout = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.078, 0.125, 0.22, 12), mats.secondary), headGroup);
+      const snout = addPart(new THREE.Mesh(this.cylGeo(0.078, 0.125, 0.22, 12), mats.secondary), headGroup);
       snout.rotation.x = Math.PI / 2;
       snout.position.set(0, -0.04, 0.28);
 
@@ -2166,9 +2204,9 @@ export class CreatureRenderer {
       for (const side of [-1, 1] as const) {
         const ePivot = new THREE.Group();
         ePivot.position.set(side * 0.19, 0.18, 0.02);
-        const rim = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.082, 10, 8), mats.secondary), ePivot);
+        const rim = addPart(new THREE.Mesh(this.sphereGeo(0.082, 10, 8), mats.secondary), ePivot);
         rim.scale.set(1.0, 1.0, 0.55);
-        const core = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.065, 10, 8), mats.accent), ePivot);
+        const core = addPart(new THREE.Mesh(this.sphereGeo(0.065, 10, 8), mats.accent), ePivot);
         core.scale.set(1.0, 1.0, 0.65);
         core.position.set(0, -0.012, 0.01);
         headGroup.add(ePivot);
@@ -2179,7 +2217,7 @@ export class CreatureRenderer {
       // Stout cuddly badger tail
       const tailGroup = new THREE.Group();
       tailGroup.position.set(0, 0.24, -0.32);
-      const stub = addPart(new THREE.Mesh(new THREE.CapsuleGeometry(0.085, 0.16, 6, 10), mats.primary), tailGroup);
+      const stub = addPart(new THREE.Mesh(this.capsuleGeo(0.085, 0.16, 6, 10), mats.primary), tailGroup);
       stub.rotation.x = -0.9;
       stub.position.set(0, 0.02, -0.08);
       bodyGroup.add(tailGroup);
@@ -2187,7 +2225,7 @@ export class CreatureRenderer {
     } else if (c.species === 'squirrel') {
       // Extra-chubby adorable nut cheeks!
       for (const sx of [-0.12, 0.12]) {
-        const cheek = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.108, 12, 10), mats.secondary), headGroup);
+        const cheek = addPart(new THREE.Mesh(this.sphereGeo(0.108, 12, 10), mats.secondary), headGroup);
         cheek.position.set(sx, -0.06, 0.18);
       }
       const nose = addPart(new THREE.Mesh(this.geo.nose, this.nosePinkMat), headGroup);
@@ -2202,13 +2240,13 @@ export class CreatureRenderer {
       for (const side of [-1, 1] as const) {
         const ePivot = new THREE.Group();
         ePivot.position.set(side * 0.15, 0.2, 0.01);
-        const ear = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.082, 12, 10), mats.primary), ePivot);
+        const ear = addPart(new THREE.Mesh(this.sphereGeo(0.082, 12, 10), mats.primary), ePivot);
         ear.scale.set(0.85, 1.15, 0.55);
         ear.position.y = 0.04;
-        const inner = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.052, 8, 8), this.pinkInnerMat), ePivot);
+        const inner = addPart(new THREE.Mesh(this.sphereGeo(0.052, 8, 8), this.pinkInnerMat), ePivot);
         inner.scale.set(0.8, 1.0, 0.4);
         inner.position.set(0, 0.035, 0.028);
-        const tuft = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.09, 6), mats.accent), ePivot);
+        const tuft = addPart(new THREE.Mesh(this.coneGeo(0.03, 0.09, 6), mats.accent), ePivot);
         tuft.position.y = 0.14;
         headGroup.add(ePivot);
         if (side === -1) {
@@ -2228,11 +2266,11 @@ export class CreatureRenderer {
       tail = tailGroup;
     } else if (c.species === 'hedgehog') {
       // Soft cream cuddly face mask & perky snout
-      const face = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 14), mats.secondary), headGroup);
+      const face = addPart(new THREE.Mesh(this.sphereGeo(0.22, 16, 14), mats.secondary), headGroup);
       face.scale.set(0.95, 0.92, 0.92);
       face.position.set(0, -0.02, 0.09);
 
-      const snout = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.088, 0.2, 12), mats.secondary), headGroup);
+      const snout = addPart(new THREE.Mesh(this.coneGeo(0.088, 0.2, 12), mats.secondary), headGroup);
       snout.rotation.x = Math.PI / 2;
       snout.position.set(0, -0.04, 0.3);
 
@@ -2246,7 +2284,7 @@ export class CreatureRenderer {
       for (const side of [-1, 1] as const) {
         const ePivot = new THREE.Group();
         ePivot.position.set(side * 0.18, 0.14, 0.06);
-        const ear = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.062, 10, 8), mats.secondary), ePivot);
+        const ear = addPart(new THREE.Mesh(this.sphereGeo(0.062, 10, 8), mats.secondary), ePivot);
         ear.scale.set(1.0, 1.0, 0.5);
         headGroup.add(ePivot);
         if (side === -1) leftEar = ePivot;
@@ -2258,28 +2296,28 @@ export class CreatureRenderer {
       quills.position.set(0, 0.72, -0.14);
 
       // Whimsical tiny leaf tucked in the hedgehog's quills!
-      const leaf = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), this.leafMat));
+      const leaf = addPart(new THREE.Mesh(this.sphereGeo(0.07, 8, 6), this.leafMat));
       leaf.scale.set(1.3, 0.28, 0.85);
       leaf.rotation.set(0.4, 0.6, 0.3);
       leaf.position.set(0.18, 0.96, -0.34);
     } else if (c.species === 'frog') {
       // Wide cute cream frog chin & smiling cheek puffs
-      const chin = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.25, 16, 12), mats.secondary), headGroup);
+      const chin = addPart(new THREE.Mesh(this.sphereGeo(0.25, 16, 12), mats.secondary), headGroup);
       chin.scale.set(1.18, 0.56, 1.02);
       chin.position.set(0, -0.1, 0.06);
 
       // Iconic perched frog eye domes on top of the head!
       for (const side of [-1, 1] as const) {
-        const dome = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.115, 14, 12), mats.primary), headGroup);
+        const dome = addPart(new THREE.Mesh(this.sphereGeo(0.115, 14, 12), mats.primary), headGroup);
         dome.position.set(side * 0.155, 0.17, 0.08);
         buildCuteEye(side * 0.165, 0.185, 0.155, 1.08, this.frogIrisMat);
       }
     } else if (c.species === 'bear') {
       // Broad honey-tan bear muzzle & friendly rounded jowls
-      const muzzle = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.115, 0.145, 0.2, 14), mats.secondary), headGroup);
+      const muzzle = addPart(new THREE.Mesh(this.cylGeo(0.115, 0.145, 0.2, 14), mats.secondary), headGroup);
       muzzle.rotation.x = Math.PI / 2;
       muzzle.position.set(0, -0.055, 0.27);
-      const muzzleTip = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.116, 12, 10), mats.secondary), headGroup);
+      const muzzleTip = addPart(new THREE.Mesh(this.sphereGeo(0.116, 12, 10), mats.secondary), headGroup);
       muzzleTip.scale.set(1.05, 0.86, 0.82);
       muzzleTip.position.set(0, -0.055, 0.35);
 
@@ -2295,9 +2333,9 @@ export class CreatureRenderer {
       for (const side of [-1, 1] as const) {
         const ePivot = new THREE.Group();
         ePivot.position.set(side * 0.22, 0.21, -0.01);
-        const outer = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.095, 12, 10), mats.primary), ePivot);
+        const outer = addPart(new THREE.Mesh(this.sphereGeo(0.095, 12, 10), mats.primary), ePivot);
         outer.scale.set(1.0, 1.0, 0.56);
-        const inner = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), mats.secondary), ePivot);
+        const inner = addPart(new THREE.Mesh(this.sphereGeo(0.06, 10, 8), mats.secondary), ePivot);
         inner.scale.set(1.0, 1.0, 0.42);
         inner.position.set(0, -0.005, 0.032);
         headGroup.add(ePivot);
@@ -2313,18 +2351,18 @@ export class CreatureRenderer {
       tail = tailGroup;
     } else if (c.species === 'wolf') {
       // Noble sculpted timber-wolf snout, charcoal nose bridge & frost-cream cheek ruffs
-      const snout = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.082, 0.135, 0.3, 14), mats.primary), headGroup);
+      const snout = addPart(new THREE.Mesh(this.cylGeo(0.082, 0.135, 0.3, 14), mats.primary), headGroup);
       snout.rotation.x = Math.PI / 2;
       snout.position.set(0, -0.035, 0.31);
-      const bridge = addPart(new THREE.Mesh(new THREE.CapsuleGeometry(0.042, 0.18, 6, 8), mats.accent), headGroup);
+      const bridge = addPart(new THREE.Mesh(this.capsuleGeo(0.042, 0.18, 6, 8), mats.accent), headGroup);
       bridge.rotation.x = Math.PI / 2;
       bridge.position.set(0, 0.025, 0.31);
-      const jaw = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.118, 12, 10), mats.secondary), headGroup);
+      const jaw = addPart(new THREE.Mesh(this.sphereGeo(0.118, 12, 10), mats.secondary), headGroup);
       jaw.scale.set(1.18, 0.64, 1.32);
       jaw.position.set(0, -0.095, 0.25);
 
       for (const sx of [-0.185, 0.185]) {
-        const ruff = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.095, 0.19, 8), mats.secondary), headGroup);
+        const ruff = addPart(new THREE.Mesh(this.coneGeo(0.095, 0.19, 8), mats.secondary), headGroup);
         ruff.rotation.z = sx > 0 ? -1.32 : 1.32;
         ruff.position.set(sx, -0.055, 0.1);
       }
@@ -2341,13 +2379,13 @@ export class CreatureRenderer {
       for (const side of [-1, 1] as const) {
         const ePivot = new THREE.Group();
         ePivot.position.set(side * 0.155, 0.21, -0.01);
-        const earBase = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.088, 0.24, 10), mats.primary), ePivot);
+        const earBase = addPart(new THREE.Mesh(this.coneGeo(0.088, 0.24, 10), mats.primary), ePivot);
         earBase.scale.set(1.0, 1.0, 0.64);
         earBase.position.y = 0.11;
-        const earTip = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.048, 0.1, 10), mats.accent), ePivot);
+        const earTip = addPart(new THREE.Mesh(this.coneGeo(0.048, 0.1, 10), mats.accent), ePivot);
         earTip.scale.set(1.0, 1.0, 0.64);
         earTip.position.y = 0.19;
-        const earInner = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.052, 0.15, 8), mats.secondary), ePivot);
+        const earInner = addPart(new THREE.Mesh(this.coneGeo(0.052, 0.15, 8), mats.secondary), ePivot);
         earInner.scale.set(1.0, 1.0, 0.42);
         earInner.position.set(0, 0.09, 0.034);
         headGroup.add(ePivot);
@@ -2370,17 +2408,17 @@ export class CreatureRenderer {
     } else if (c.species === 'cat') {
       // Soft cream feline whisker pads & dainty triangular pink nose
       for (const sx of [-0.078, 0.078]) {
-        const pad = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.086, 12, 10), mats.secondary), headGroup);
+        const pad = addPart(new THREE.Mesh(this.sphereGeo(0.086, 12, 10), mats.secondary), headGroup);
         pad.scale.set(1.08, 0.85, 0.95);
         pad.position.set(sx, -0.055, 0.22);
       }
-      const chin = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.072, 10, 8), mats.secondary), headGroup);
+      const chin = addPart(new THREE.Mesh(this.sphereGeo(0.072, 10, 8), mats.secondary), headGroup);
       chin.scale.set(1.1, 0.72, 0.9);
       chin.position.set(0, -0.1, 0.21);
 
       // Three subtle chestnut forehead tabby stripes
       for (const sx of [-0.058, 0, 0.058]) {
-        const stripe = addPart(new THREE.Mesh(new THREE.CapsuleGeometry(0.014, 0.09, 4, 6), mats.accent), headGroup);
+        const stripe = addPart(new THREE.Mesh(this.capsuleGeo(0.014, 0.09, 4, 6), mats.accent), headGroup);
         stripe.rotation.x = Math.PI * 0.34;
         stripe.position.set(sx, 0.155, 0.18 - Math.abs(sx) * 0.25);
       }
@@ -2398,10 +2436,10 @@ export class CreatureRenderer {
       for (const side of [-1, 1] as const) {
         const ePivot = new THREE.Group();
         ePivot.position.set(side * 0.155, 0.19, 0.01);
-        const outer = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.088, 0.21, 10), mats.primary), ePivot);
+        const outer = addPart(new THREE.Mesh(this.coneGeo(0.088, 0.21, 10), mats.primary), ePivot);
         outer.scale.set(1.0, 1.0, 0.56);
         outer.position.y = 0.095;
-        const inner = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.056, 0.15, 8), this.pinkInnerMat), ePivot);
+        const inner = addPart(new THREE.Mesh(this.coneGeo(0.056, 0.15, 8), this.pinkInnerMat), ePivot);
         inner.scale.set(1.0, 1.0, 0.38);
         inner.position.set(0, 0.082, 0.032);
         headGroup.add(ePivot);
@@ -2422,23 +2460,23 @@ export class CreatureRenderer {
       tail = tailGroup;
     } else if (c.species === 'raccoon') {
       // Pointed pale muzzle + iconic charcoal bandit mask + crisp cream brow/cheek trim
-      const snout = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.24, 12), mats.secondary), headGroup);
+      const snout = addPart(new THREE.Mesh(this.coneGeo(0.11, 0.24, 12), mats.secondary), headGroup);
       snout.rotation.x = Math.PI / 2;
       snout.position.set(0, -0.045, 0.28);
-      const noseBridge = addPart(new THREE.Mesh(new THREE.CapsuleGeometry(0.026, 0.14, 5, 8), mats.accent), headGroup);
+      const noseBridge = addPart(new THREE.Mesh(this.capsuleGeo(0.026, 0.14, 5, 8), mats.accent), headGroup);
       noseBridge.rotation.x = Math.PI * 0.44;
       noseBridge.position.set(0, 0.035, 0.26);
 
       for (const sx of [-0.125, 0.125]) {
         // Bold dark bandit eye patch
-        const mask = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.105, 12, 10), mats.accent), headGroup);
+        const mask = addPart(new THREE.Mesh(this.sphereGeo(0.105, 12, 10), mats.accent), headGroup);
         mask.scale.set(1.18, 0.78, 0.72);
         mask.position.set(sx, 0.045, 0.21);
         // Crisp cream cheek & brow border
-        const cheek = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.115, 12, 10), mats.secondary), headGroup);
+        const cheek = addPart(new THREE.Mesh(this.sphereGeo(0.115, 12, 10), mats.secondary), headGroup);
         cheek.scale.set(1.05, 0.75, 0.92);
         cheek.position.set(sx * 1.12, -0.065, 0.16);
-        const brow = addPart(new THREE.Mesh(new THREE.CapsuleGeometry(0.022, 0.09, 4, 6), mats.secondary), headGroup);
+        const brow = addPart(new THREE.Mesh(this.capsuleGeo(0.022, 0.09, 4, 6), mats.secondary), headGroup);
         brow.rotation.z = sx > 0 ? -1.35 : 1.35;
         brow.position.set(sx * 0.85, 0.125, 0.21);
       }
@@ -2455,9 +2493,9 @@ export class CreatureRenderer {
       for (const side of [-1, 1] as const) {
         const ePivot = new THREE.Group();
         ePivot.position.set(side * 0.185, 0.19, 0.01);
-        const rim = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.084, 10, 8), mats.secondary), ePivot);
+        const rim = addPart(new THREE.Mesh(this.sphereGeo(0.084, 10, 8), mats.secondary), ePivot);
         rim.scale.set(0.95, 1.05, 0.52);
-        const core = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.065, 10, 8), mats.accent), ePivot);
+        const core = addPart(new THREE.Mesh(this.sphereGeo(0.065, 10, 8), mats.accent), ePivot);
         core.scale.set(0.92, 1.0, 0.6);
         core.position.set(0, -0.01, 0.012);
         headGroup.add(ePivot);
@@ -2474,10 +2512,10 @@ export class CreatureRenderer {
       tail = tailGroup;
     } else if (c.species === 'weasel') {
       // Sleek agile mustelid muzzle, ivory chin & throat, fine whiskers
-      const snout = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.095, 0.22, 12), mats.primary), headGroup);
+      const snout = addPart(new THREE.Mesh(this.coneGeo(0.095, 0.22, 12), mats.primary), headGroup);
       snout.rotation.x = Math.PI / 2;
       snout.position.set(0, -0.025, 0.29);
-      const chin = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.1, 12, 10), mats.secondary), headGroup);
+      const chin = addPart(new THREE.Mesh(this.sphereGeo(0.1, 12, 10), mats.secondary), headGroup);
       chin.scale.set(1.05, 0.68, 1.25);
       chin.position.set(0, -0.085, 0.21);
 
@@ -2493,9 +2531,9 @@ export class CreatureRenderer {
       for (const side of [-1, 1] as const) {
         const ePivot = new THREE.Group();
         ePivot.position.set(side * 0.16, 0.16, 0.01);
-        const outer = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.068, 10, 8), mats.primary), ePivot);
+        const outer = addPart(new THREE.Mesh(this.sphereGeo(0.068, 10, 8), mats.primary), ePivot);
         outer.scale.set(0.95, 0.95, 0.48);
-        const inner = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.044, 8, 8), mats.secondary), ePivot);
+        const inner = addPart(new THREE.Mesh(this.sphereGeo(0.044, 8, 8), mats.secondary), ePivot);
         inner.scale.set(0.9, 0.9, 0.38);
         inner.position.set(0, -0.004, 0.02);
         headGroup.add(ePivot);
@@ -2512,18 +2550,18 @@ export class CreatureRenderer {
       tail = tailGroup;
     } else if (c.species === 'snake') {
       // Diamond-contoured tapered reptilian snout, subtle dorsal diamond markings, amber eyes & forked crimson tongue
-      const snout = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.145, 0.26, 12), mats.primary), headGroup);
+      const snout = addPart(new THREE.Mesh(this.coneGeo(0.145, 0.26, 12), mats.primary), headGroup);
       snout.rotation.x = Math.PI / 2;
       snout.scale.set(1.08, 1.0, 0.66);
       snout.position.set(0, -0.02, 0.31);
 
-      const lowerJaw = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), mats.secondary), headGroup);
+      const lowerJaw = addPart(new THREE.Mesh(this.sphereGeo(0.15, 12, 10), mats.secondary), headGroup);
       lowerJaw.scale.set(1.02, 0.42, 1.38);
       lowerJaw.position.set(0, -0.085, 0.16);
 
       // Subtle dark dorsal scale diamonds along the crown
       for (const zOff of [-0.08, 0.06, 0.19]) {
-        const diamond = addPart(new THREE.Mesh(new THREE.OctahedronGeometry(0.044, 0), mats.accent), headGroup);
+        const diamond = addPart(new THREE.Mesh(this.octaGeo(0.044, 0), mats.accent), headGroup);
         diamond.scale.set(0.95, 0.25, 1.25);
         diamond.position.set(0, 0.185 - Math.abs(zOff) * 0.12, zOff);
       }
@@ -2533,11 +2571,11 @@ export class CreatureRenderer {
       buildCuteEye(0.125, 0.04, 0.23, 0.98, this.snakeIrisMat);
 
       // Delicate forked crimson tongue peeking from the snout tip
-      const tongueStem = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.01, 0.12, 6), this.tongueMat), headGroup);
+      const tongueStem = addPart(new THREE.Mesh(this.cylGeo(0.008, 0.01, 0.12, 6), this.tongueMat), headGroup);
       tongueStem.rotation.x = Math.PI / 2 + 0.12;
       tongueStem.position.set(0, -0.055, 0.44);
       for (const side of [-1, 1] as const) {
-        const fork = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.007, 0.07, 5), this.tongueMat), headGroup);
+        const fork = addPart(new THREE.Mesh(this.cylGeo(0.005, 0.007, 0.07, 5), this.tongueMat), headGroup);
         fork.rotation.x = Math.PI / 2 + 0.18;
         fork.rotation.y = side * 0.42;
         fork.position.set(side * 0.018, -0.066, 0.52);
@@ -2557,14 +2595,14 @@ export class CreatureRenderer {
       shellRim.position.set(0, 0.54, -0.14);
 
       // Gentle extending turtle neck + calm rounded reptilian muzzle
-      const neck = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.115, 0.135, 0.22, 12), mats.primary));
+      const neck = addPart(new THREE.Mesh(this.cylGeo(0.115, 0.135, 0.22, 12), mats.primary));
       neck.rotation.x = 0.22;
       neck.position.set(0, 0.81, 0.08);
 
-      const snout = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.155, 14, 12), mats.primary), headGroup);
+      const snout = addPart(new THREE.Mesh(this.sphereGeo(0.155, 14, 12), mats.primary), headGroup);
       snout.scale.set(0.95, 0.78, 1.15);
       snout.position.set(0, -0.025, 0.2);
-      const jaw = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.135, 12, 10), mats.secondary), headGroup);
+      const jaw = addPart(new THREE.Mesh(this.sphereGeo(0.135, 12, 10), mats.secondary), headGroup);
       jaw.scale.set(0.96, 0.52, 1.08);
       jaw.position.set(0, -0.095, 0.18);
 
@@ -2574,7 +2612,7 @@ export class CreatureRenderer {
       // Tiny stubby turtle tail peeking beneath the carapace rim
       const tailGroup = new THREE.Group();
       tailGroup.position.set(0, 0.18, -0.3);
-      const stub = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.16, 8), mats.primary), tailGroup);
+      const stub = addPart(new THREE.Mesh(this.coneGeo(0.045, 0.16, 8), mats.primary), tailGroup);
       stub.rotation.x = -Math.PI * 0.58;
       stub.position.set(0, 0, -0.06);
       bodyGroup.add(tailGroup);
@@ -2583,7 +2621,7 @@ export class CreatureRenderer {
       // Mouse & Rat — charming oversized cupped pink-lined saucer ears, cute tapered snout, whiskers & curled tail!
       const isMouse = c.species === 'mouse';
       const snoutLen = isMouse ? 0.2 : 0.28;
-      const snout = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.095, snoutLen, 12), mats.secondary), headGroup);
+      const snout = addPart(new THREE.Mesh(this.coneGeo(0.095, snoutLen, 12), mats.secondary), headGroup);
       snout.rotation.x = Math.PI / 2;
       snout.position.set(0, -0.035, 0.24 + snoutLen * 0.3);
 
@@ -2600,11 +2638,11 @@ export class CreatureRenderer {
         const ePivot = new THREE.Group();
         ePivot.position.set(side * 0.18, 0.18, 0.0);
 
-        const outer = addPart(new THREE.Mesh(new THREE.SphereGeometry(earRadius, 14, 12), mats.primary), ePivot);
+        const outer = addPart(new THREE.Mesh(this.sphereGeo(earRadius, 14, 12), mats.primary), ePivot);
         outer.scale.set(1.0, 1.05, 0.36);
 
         const inner = addPart(
-          new THREE.Mesh(new THREE.SphereGeometry(earRadius * 0.74, 12, 10), this.pinkInnerMat),
+          new THREE.Mesh(this.sphereGeo(earRadius * 0.74, 12, 10), this.pinkInnerMat),
           ePivot,
         );
         inner.scale.set(1.0, 1.05, 0.3);
@@ -2633,39 +2671,39 @@ export class CreatureRenderer {
       // Crooked star-trimmed wizard hat + golden band
       const hat = addPart(new THREE.Mesh(this.geo.wizardHat, mats.cloak), headGroup);
       hat.position.set(0, 0.2, 0.0);
-      const hatBand = addPart(new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.022, 8, 18), this.brassMat), headGroup);
+      const hatBand = addPart(new THREE.Mesh(this.torusGeo(0.18, 0.022, 8, 18), this.brassMat), headGroup);
       hatBand.rotation.x = Math.PI / 2;
       hatBand.position.set(0, 0.24, 0.0);
 
       // Gnarled crystal-topped mystic staff
       if (!isBird && !isSnake && rightArm) {
-        const staff = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.028, 1.05, 8), this.woodMat), rightArm);
+        const staff = addPart(new THREE.Mesh(this.cylGeo(0.022, 0.028, 1.05, 8), this.woodMat), rightArm);
         staff.position.set(0.04, 0.05, 0.14);
         staff.rotation.x = 0.18;
-        const orb = addPart(new THREE.Mesh(new THREE.OctahedronGeometry(0.085, 1), this.crystalGlowMat), rightArm);
+        const orb = addPart(new THREE.Mesh(this.octaGeo(0.085, 1), this.crystalGlowMat), rightArm);
         orb.position.set(0.04, 0.62, 0.24);
       }
     } else if (c.role === 'merchant') {
       // Traveler's leather backpack + cozy rolled bedroll + tiny glowing brass lantern!
       const backZ = isTurtle ? -0.45 : isBear ? -0.34 : -0.29;
-      const pack = addPart(new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.36, 0.22), this.leatherMat));
+      const pack = addPart(new THREE.Mesh(this.boxGeo(0.32, 0.36, 0.22), this.leatherMat));
       pack.position.set(0, isTurtle ? 0.62 : 0.56, backZ);
-      const roll = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.36, 12), mats.scarf));
+      const roll = addPart(new THREE.Mesh(this.cylGeo(0.075, 0.075, 0.36, 12), mats.scarf));
       roll.rotation.z = Math.PI / 2;
       roll.position.set(0, isTurtle ? 0.83 : 0.77, backZ);
-      const lantern = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.04, 0.12, 8), this.lanternGlowMat));
+      const lantern = addPart(new THREE.Mesh(this.cylGeo(0.05, 0.04, 0.12, 8), this.lanternGlowMat));
       lantern.position.set(0.2, isTurtle ? 0.5 : 0.44, backZ - 0.05);
-      const cap = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.068, 0.06, 8), this.brassMat));
+      const cap = addPart(new THREE.Mesh(this.coneGeo(0.068, 0.06, 8), this.brassMat));
       cap.position.set(0.2, isTurtle ? 0.58 : 0.52, backZ - 0.05);
     } else if (c.role === 'forager') {
       // Wicker foraging basket on the back brimming with woodland berries!
       const backZ = isTurtle ? -0.46 : isBear ? -0.35 : -0.3;
-      const basket = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.12, 0.24, 12), this.woodMat));
+      const basket = addPart(new THREE.Mesh(this.cylGeo(0.16, 0.12, 0.24, 12), this.woodMat));
       basket.position.set(0, isTurtle ? 0.58 : 0.52, backZ);
       for (let i = 0; i < 4; i++) {
         const a = (i / 4) * Math.PI * 2;
         const berry = addPart(
-          new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 6), i % 2 === 0 ? this.berryRedMat : this.berryBlueMat),
+          new THREE.Mesh(this.sphereGeo(0.055, 8, 6), i % 2 === 0 ? this.berryRedMat : this.berryBlueMat),
         );
         berry.position.set(Math.cos(a) * 0.065, isTurtle ? 0.71 : 0.65, backZ + Math.sin(a) * 0.065);
       }
@@ -2684,27 +2722,27 @@ export class CreatureRenderer {
         helm.scale.setScalar(0.92);
       }
       if (!isBird && !isSnake && leftArm) {
-        const shield = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.04, 16), this.woodMat), leftArm);
+        const shield = addPart(new THREE.Mesh(this.cylGeo(0.18, 0.18, 0.04, 16), this.woodMat), leftArm);
         shield.rotation.z = Math.PI / 2;
         shield.position.set(-0.08, -0.18, 0.08);
-        const boss = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), this.brassMat), leftArm);
+        const boss = addPart(new THREE.Mesh(this.sphereGeo(0.06, 10, 8), this.brassMat), leftArm);
         boss.position.set(-0.11, -0.18, 0.08);
       }
       if (!isBird && !isSnake && rightArm) {
-        const spear = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.02, 0.95, 8), this.woodMat), rightArm);
+        const spear = addPart(new THREE.Mesh(this.cylGeo(0.018, 0.02, 0.95, 8), this.woodMat), rightArm);
         spear.position.set(0.04, 0.02, 0.12);
         spear.rotation.x = 0.22;
-        const tip = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.042, 0.15, 6), this.brassMat), rightArm);
+        const tip = addPart(new THREE.Mesh(this.coneGeo(0.042, 0.15, 6), this.brassMat), rightArm);
         tip.position.set(0.04, 0.54, 0.24);
         tip.rotation.x = 0.22;
       }
     } else if (c.role === 'artisan') {
       // Jaunty tilted woodland artist beret + colorful berry-dye pouch!
-      const beret = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.2, 14, 10), mats.scarf), headGroup);
+      const beret = addPart(new THREE.Mesh(this.sphereGeo(0.2, 14, 10), mats.scarf), headGroup);
       beret.scale.set(1.18, 0.42, 1.12);
       beret.rotation.z = -0.26;
       beret.position.set(0.05, 0.24, -0.02);
-      const pom = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.036, 8, 6), this.brassMat), headGroup);
+      const pom = addPart(new THREE.Mesh(this.sphereGeo(0.036, 8, 6), this.brassMat), headGroup);
       pom.position.set(0.08, 0.32, -0.02);
     }
 
@@ -2713,16 +2751,16 @@ export class CreatureRenderer {
     if (c.role === 'builder' && !isBird && !isSnake && rightArm) {
       idleBuilderMallet = new THREE.Group();
       idleBuilderMallet.name = 'idle_builder_mallet';
-      const handle = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.026, 0.36, 8), this.woodMat), idleBuilderMallet);
+      const handle = addPart(new THREE.Mesh(this.cylGeo(0.022, 0.026, 0.36, 8), this.woodMat), idleBuilderMallet);
       handle.rotation.x = Math.PI / 2;
       handle.position.set(0, -0.23, 0.17);
-      const collar = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.04, 8), this.brassMat), idleBuilderMallet);
+      const collar = addPart(new THREE.Mesh(this.cylGeo(0.028, 0.028, 0.04, 8), this.brassMat), idleBuilderMallet);
       collar.rotation.x = Math.PI / 2;
       collar.position.set(0, -0.23, 0.28);
-      const malletHead = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.18, 12), this.leatherMat), idleBuilderMallet);
+      const malletHead = addPart(new THREE.Mesh(this.cylGeo(0.06, 0.06, 0.18, 12), this.leatherMat), idleBuilderMallet);
       malletHead.position.set(0, -0.23, 0.32);
       for (const endY of [-0.072, 0.072]) {
-        const band = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.063, 0.063, 0.018, 12), this.brassMat), idleBuilderMallet);
+        const band = addPart(new THREE.Mesh(this.cylGeo(0.063, 0.063, 0.018, 12), this.brassMat), idleBuilderMallet);
         band.position.set(0, -0.23 + endY, 0.32);
       }
       rightArm.add(idleBuilderMallet);
@@ -2742,13 +2780,13 @@ export class CreatureRenderer {
 
     const axe = new THREE.Group();
     axe.name = 'tool_axe';
-    const axeHaft = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.029, 0.58, 8), this.woodMat), axe);
+    const axeHaft = addPart(new THREE.Mesh(this.cylGeo(0.024, 0.029, 0.58, 8), this.woodMat), axe);
     axeHaft.rotation.x = Math.PI / 2;
     axeHaft.position.set(0, 0, 0.24);
-    const axeGrip = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.031, 0.031, 0.14, 8), this.leatherMat), axe);
+    const axeGrip = addPart(new THREE.Mesh(this.cylGeo(0.031, 0.031, 0.14, 8), this.leatherMat), axe);
     axeGrip.rotation.x = Math.PI / 2;
     axeGrip.position.set(0, 0, 0.04);
-    const axeCollar = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.045, 8), this.brassMat), axe);
+    const axeCollar = addPart(new THREE.Mesh(this.cylGeo(0.03, 0.03, 0.045, 8), this.brassMat), axe);
     axeCollar.rotation.x = Math.PI / 2;
     axeCollar.position.set(0, 0, 0.38);
     const axeBlade = addPart(new THREE.Mesh(this.geo.axeHead, this.steelMat), axe);
@@ -2758,18 +2796,18 @@ export class CreatureRenderer {
 
     const spade = new THREE.Group();
     spade.name = 'tool_spade';
-    const spadeShaft = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.026, 0.56, 8), this.woodMat), spade);
+    const spadeShaft = addPart(new THREE.Mesh(this.cylGeo(0.024, 0.026, 0.56, 8), this.woodMat), spade);
     spadeShaft.rotation.x = Math.PI / 2;
     spadeShaft.position.set(0, 0, 0.23);
-    const spadeCollar = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.031, 0.031, 0.04, 8), this.brassMat), spade);
+    const spadeCollar = addPart(new THREE.Mesh(this.cylGeo(0.031, 0.031, 0.04, 8), this.brassMat), spade);
     spadeCollar.rotation.x = Math.PI / 2;
     spadeCollar.position.set(0, 0, 0.45);
     // D-grip handle at the butt end of the spade shaft
-    const dGripBar = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.12, 8), this.leatherMat), spade);
+    const dGripBar = addPart(new THREE.Mesh(this.cylGeo(0.016, 0.016, 0.12, 8), this.leatherMat), spade);
     dGripBar.rotation.z = Math.PI / 2;
     dGripBar.position.set(0, 0, -0.09);
     for (const side of [-1, 1] as const) {
-      const strut = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.013, 0.075, 6), this.woodMat), spade);
+      const strut = addPart(new THREE.Mesh(this.cylGeo(0.012, 0.013, 0.075, 6), this.woodMat), spade);
       strut.rotation.x = Math.PI / 2;
       strut.rotation.y = side * 0.42;
       strut.position.set(side * 0.035, 0, -0.06);
@@ -2781,10 +2819,10 @@ export class CreatureRenderer {
 
     const trowel = new THREE.Group();
     trowel.name = 'tool_trowel';
-    const trowelHandle = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.028, 0.2, 8), this.woodMat), trowel);
+    const trowelHandle = addPart(new THREE.Mesh(this.cylGeo(0.024, 0.028, 0.2, 8), this.woodMat), trowel);
     trowelHandle.rotation.x = Math.PI / 2;
     trowelHandle.position.set(0, 0, 0.07);
-    const trowelFerrule = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.027, 0.025, 0.035, 8), this.brassMat), trowel);
+    const trowelFerrule = addPart(new THREE.Mesh(this.cylGeo(0.027, 0.025, 0.035, 8), this.brassMat), trowel);
     trowelFerrule.rotation.x = Math.PI / 2;
     trowelFerrule.position.set(0, 0, 0.17);
     const trowelBlade = addPart(new THREE.Mesh(this.geo.trowelBlade, this.steelMat), trowel);
@@ -2794,13 +2832,13 @@ export class CreatureRenderer {
 
     const hammer = new THREE.Group();
     hammer.name = 'tool_hammer';
-    const hamHandle = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.023, 0.028, 0.42, 8), this.woodMat), hammer);
+    const hamHandle = addPart(new THREE.Mesh(this.cylGeo(0.023, 0.028, 0.42, 8), this.woodMat), hammer);
     hamHandle.rotation.x = Math.PI / 2;
     hamHandle.position.set(0, 0, 0.17);
-    const hamGrip = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.12, 8), this.leatherMat), hammer);
+    const hamGrip = addPart(new THREE.Mesh(this.cylGeo(0.03, 0.03, 0.12, 8), this.leatherMat), hammer);
     hamGrip.rotation.x = Math.PI / 2;
     hamGrip.position.set(0, 0, 0.03);
-    const hamCollar = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.036, 8), this.brassMat), hammer);
+    const hamCollar = addPart(new THREE.Mesh(this.cylGeo(0.028, 0.028, 0.036, 8), this.brassMat), hammer);
     hamCollar.rotation.x = Math.PI / 2;
     hamCollar.position.set(0, 0, 0.31);
     const hamHead = addPart(new THREE.Mesh(this.geo.hammerHead, this.steelMat), hammer);
@@ -2813,12 +2851,12 @@ export class CreatureRenderer {
     // 6c. Emigrating pioneer pack (leather satchel + rolled cloak bedroll, shown during village-founding treks)
     const pioneerPack = new THREE.Group();
     const pBackZ = isTurtle ? -0.45 : isBear ? -0.34 : -0.29;
-    const pBag = addPart(new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.34, 0.2), this.leatherMat), pioneerPack);
+    const pBag = addPart(new THREE.Mesh(this.boxGeo(0.3, 0.34, 0.2), this.leatherMat), pioneerPack);
     pBag.position.set(0, isTurtle ? 0.62 : 0.56, pBackZ);
-    const pRoll = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.34, 10), mats.scarf), pioneerPack);
+    const pRoll = addPart(new THREE.Mesh(this.cylGeo(0.07, 0.07, 0.34, 10), mats.scarf), pioneerPack);
     pRoll.rotation.z = Math.PI / 2;
     pRoll.position.set(0, isTurtle ? 0.82 : 0.76, pBackZ);
-    const pLantern = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.038, 0.11, 8), this.lanternGlowMat), pioneerPack);
+    const pLantern = addPart(new THREE.Mesh(this.cylGeo(0.045, 0.038, 0.11, 8), this.lanternGlowMat), pioneerPack);
     pLantern.position.set(-0.18, isTurtle ? 0.5 : 0.44, pBackZ - 0.05);
     pioneerPack.visible = false;
     bodyGroup.add(pioneerPack);
@@ -2830,18 +2868,18 @@ export class CreatureRenderer {
       if (!hasRoleHat && !isFrog) {
         const rainHat = addPart(new THREE.Mesh(this.geo.reedHat, this.reedWeaveMat), headGroup);
         rainHat.position.set(0, 0.17, -0.01);
-        const tie = addPart(new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.02, 6, 16), adaptMats.mantle), headGroup);
+        const tie = addPart(new THREE.Mesh(this.torusGeo(0.19, 0.02, 6, 16), adaptMats.mantle), headGroup);
         tie.rotation.x = Math.PI / 2;
         tie.position.set(0, 0.21, -0.01);
       }
     } else if (adaptation === 'coastal_harbor') {
       // Waxed sea-teal mariner storm-hat & brass harbor medallion clasp
-      const clasp = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 6), this.brassMat));
+      const clasp = addPart(new THREE.Mesh(this.sphereGeo(0.055, 8, 6), this.brassMat));
       clasp.position.set(0, 0.72, 0.27);
       if (!hasRoleHat && !isFrog) {
         const marinerHat = addPart(new THREE.Mesh(this.geo.strawHat, adaptMats.mantle), headGroup);
         marinerHat.position.set(0, 0.18, -0.01);
-        const band = addPart(new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.024, 6, 18), adaptMats.accent), headGroup);
+        const band = addPart(new THREE.Mesh(this.torusGeo(0.24, 0.024, 6, 18), adaptMats.accent), headGroup);
         band.rotation.x = Math.PI / 2;
         band.position.set(0, 0.23, -0.01);
       }
@@ -2854,16 +2892,16 @@ export class CreatureRenderer {
       if (!hasRoleHat && !isFrog && c.species !== 'rabbit') {
         const sunHat = addPart(new THREE.Mesh(this.geo.strawHat, this.strawWeaveMat), headGroup);
         sunHat.position.set(0, 0.18, -0.01);
-        const ribbon = addPart(new THREE.Mesh(new THREE.TorusGeometry(0.245, 0.022, 6, 18), adaptMats.mantle), headGroup);
+        const ribbon = addPart(new THREE.Mesh(this.torusGeo(0.245, 0.022, 6, 18), adaptMats.mantle), headGroup);
         ribbon.rotation.x = Math.PI / 2;
         ribbon.position.set(0, 0.23, -0.01);
       }
     } else if (adaptation === 'forest_canopy') {
       // Glowing woodland fairy-lantern charm clipped to the belt for deep-canopy trails
-      const charm = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.052, 8, 6), this.lanternGlowMat));
+      const charm = addPart(new THREE.Mesh(this.sphereGeo(0.052, 8, 6), this.lanternGlowMat));
       charm.position.set(0.26, 0.43, 0.14);
       if (!hasRoleHat && !isFrog) {
-        const leafCrest = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6), adaptMats.accent), headGroup);
+        const leafCrest = addPart(new THREE.Mesh(this.sphereGeo(0.13, 8, 6), adaptMats.accent), headGroup);
         leafCrest.scale.set(1.25, 0.32, 1.35);
         leafCrest.position.set(0, 0.26, -0.04);
         leafCrest.rotation.x = -0.18;
@@ -2874,7 +2912,7 @@ export class CreatureRenderer {
       scarf.scale.set(0.95, 0.65, 0.95);
       scarf.position.set(0, 0.78, 0.02);
       if (!hasRoleHat && !isFrog) {
-        const wrap = addPart(new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.036, 8, 18), adaptMats.accent), headGroup);
+        const wrap = addPart(new THREE.Mesh(this.torusGeo(0.24, 0.036, 8, 18), adaptMats.accent), headGroup);
         wrap.rotation.x = Math.PI / 2 + 0.12;
         wrap.position.set(0, 0.16, 0);
       }
@@ -2882,7 +2920,7 @@ export class CreatureRenderer {
 
     // Subtle natural individual touch: some creatures tuck a tiny woodland leaf sprig behind an ear
     if (seed > 0.72 && c.role !== 'mystic' && c.role !== 'guard') {
-      const sprig = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.042, 8, 6), this.leafMat), headGroup);
+      const sprig = addPart(new THREE.Mesh(this.sphereGeo(0.042, 8, 6), this.leafMat), headGroup);
       sprig.scale.set(1.25, 0.38, 0.85);
       sprig.rotation.set(0.3, 0.4, 0.5);
       sprig.position.set(-0.18, 0.18, 0.12);
@@ -2943,6 +2981,7 @@ export class CreatureRenderer {
       d.dispose();
     }
     this.disposables.length = 0;
+    this.primGeoCache.clear();
     this.speciesMats.clear();
     this.adaptationMats.clear();
   }

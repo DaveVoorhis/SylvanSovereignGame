@@ -392,6 +392,7 @@ export class FloraRenderer {
   private readonly wildflowerGroup = new THREE.Group();
   private readonly lilyGroup = new THREE.Group();
   private readonly clearableTreeGroups: ClearableTreeGroup[] = [];
+  private readonly zeroMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
   private proceduralPines: ProceduralPineForestResult | null = null;
   private readonly disposables: (THREE.BufferGeometry | THREE.Material)[] = [];
   private readonly foliageUniforms: FoliageUniforms;
@@ -654,7 +655,10 @@ export class FloraRenderer {
     if (pines.length > 0) {
       this.proceduralPines = buildProceduralPineForest(
         pines,
-        (x, z) => world.terrain.getBiomeAt(x, z),
+        (x, z, y) =>
+          y !== undefined
+            ? world.terrain.getBiomeAtKnownHeight(x, z, y)
+            : world.terrain.getBiomeAt(x, z),
         (x, z) => world.terrain.getCoastSignedDistance(x, z),
         pineBarkMat,
         this.pineFoliageMat,
@@ -710,7 +714,7 @@ export class FloraRenderer {
       const cragRockSpots: Array<{ spot: (typeof world.terrain.rocks)[number]; biome: string }> = [];
 
       for (const r of world.terrain.rocks) {
-        const rockBiome = world.terrain.getBiomeAt(r.x, r.z);
+        const rockBiome = world.terrain.getBiomeAtKnownHeight(r.x, r.z, r.y);
         if (rockBiome === 'alpine_crag' || rockBiome === 'rocky_ridge' || rockBiome === 'desert') {
           cragRockSpots.push({ spot: r, biome: rockBiome });
         } else {
@@ -926,7 +930,7 @@ export class FloraRenderer {
         const fz = Math.sin(a) * r;
         const fy = world.terrain.getHeightAt(fx, fz);
         if (fy < world.terrain.waterLevel + 0.35 || fy > 7.2) continue;
-        const biome = world.terrain.getBiomeAt(fx, fz);
+        const biome = world.terrain.getBiomeAtKnownHeight(fx, fz, fy);
         if (
           biome === 'water' ||
           biome === 'desert' ||
@@ -1075,7 +1079,7 @@ export class FloraRenderer {
         const gz = Math.sin(a) * r;
         const gy = world.terrain.getHeightAt(gx, gz);
         if (gy < world.terrain.waterLevel + 0.28 || gy > 9.5) continue;
-        const gBiome = world.terrain.getBiomeAt(gx, gz);
+        const gBiome = world.terrain.getBiomeAtKnownHeight(gx, gz, gy);
         if (gBiome !== 'prairie' && gBiome !== 'meadow') continue;
 
         dummy.position.set(gx, gy - 0.04, gz);
@@ -1103,7 +1107,7 @@ export class FloraRenderer {
         const gz = Math.sin(a) * r;
         const gy = world.terrain.getHeightAt(gx, gz);
         if (gy < world.terrain.waterLevel + 0.25 || gy > 11.5) continue;
-        const gBiome = world.terrain.getBiomeAt(gx, gz);
+        const gBiome = world.terrain.getBiomeAtKnownHeight(gx, gz, gy);
         if (gBiome === 'alpine_crag' || gBiome === 'water' || gBiome === 'desert') continue;
         if (gBiome === 'seashore' && rng.chance(0.92)) continue;
         if (gBiome === 'rocky_ridge' && rng.chance(0.75)) continue;
@@ -1180,19 +1184,21 @@ export class FloraRenderer {
       const z = Math.sin(a) * r;
       const y = this.world.terrain.getHeightAt(x, z);
       if (y < this.world.terrain.waterLevel + 0.45 || y > 24.0) continue;
-      if (this.world.terrain.getCoastSignedDistance(x, z) < 18) continue;
-      const hBiome = this.world.terrain.getBiomeAt(x, z);
+      const coastDist = this.world.terrain.getCoastSignedDistance(x, z);
+      if (coastDist < 18) continue;
+      const { biome: hBiome, aridity, prairie } = this.world.terrain.getHorizonBiomeAndClimate(
+        x,
+        z,
+        y,
+        coastDist,
+      );
       if (
         hBiome === 'desert' ||
         hBiome === 'prairie' ||
         hBiome === 'alpine_crag' ||
-        hBiome === 'water'
-      ) {
-        continue;
-      }
-      if (
-        this.world.terrain.getAridityAt(x, z) > 0.44 ||
-        this.world.terrain.getPrairieWeightAt(x, z) > 0.44
+        hBiome === 'water' ||
+        aridity > 0.44 ||
+        prairie > 0.44
       ) {
         continue;
       }
@@ -1266,23 +1272,42 @@ export class FloraRenderer {
   }
 
   private clearTreesNearBuildings(): void {
-    const zeroMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
+    const zeroMatrix = this.zeroMatrix;
+    const settlements = this.world.settlements;
+    const bridges = this.world.bridges;
+    // Precompute exact per-settlement bounding-circle clearance so distant trees skip building loops in O(1)
+    const settleMaxDistSq = new Float64Array(settlements.length);
+    for (let s = 0; s < settlements.length; s++) {
+      const settlement = settlements[s];
+      let maxReach = 7.5;
+      for (let j = 0; j < settlement.buildings.length; j++) {
+        const b = settlement.buildings[j];
+        const dx = b.position.x - settlement.center.x;
+        const dz = b.position.z - settlement.center.z;
+        const reach = Math.sqrt(dx * dx + dz * dz) + BUILDING_CATALOG[b.type].footprintRadius + 1.45;
+        if (reach > maxReach) maxReach = reach;
+      }
+      settleMaxDistSq[s] = maxReach * maxReach;
+    }
+
     const isTreeBlocked = (tree: TreeSpot): boolean => {
-      for (const settlement of this.world.settlements) {
-        if (Math.hypot(tree.x - settlement.center.x, tree.z - settlement.center.z) < 7.5) {
-          return true;
-        }
-        for (const b of settlement.buildings) {
+      for (let s = 0; s < settlements.length; s++) {
+        const settlement = settlements[s];
+        const sdx = tree.x - settlement.center.x;
+        const sdz = tree.z - settlement.center.z;
+        const sDistSq = sdx * sdx + sdz * sdz;
+        if (sDistSq > settleMaxDistSq[s]) continue;
+        if (sDistSq < 56.25) return true; // 7.5 * 7.5
+        for (let j = 0; j < settlement.buildings.length; j++) {
+          const b = settlement.buildings[j];
           const clearDist = BUILDING_CATALOG[b.type].footprintRadius + 1.45;
-          if (Math.hypot(tree.x - b.position.x, tree.z - b.position.z) < clearDist) {
-            return true;
-          }
+          const bdx = tree.x - b.position.x;
+          const bdz = tree.z - b.position.z;
+          if (bdx * bdx + bdz * bdz < clearDist * clearDist) return true;
         }
       }
-      for (const br of this.world.bridges) {
-        if (isPointNearBridge(br, tree.x, tree.z, 1.8)) {
-          return true;
-        }
+      for (let i = 0; i < bridges.length; i++) {
+        if (isPointNearBridge(bridges[i], tree.x, tree.z, 1.8)) return true;
       }
       return false;
     };

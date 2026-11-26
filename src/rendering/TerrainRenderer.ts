@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { Season } from '@core/Types';
+import type { BiomeType, Season } from '@core/Types';
 import type { WorldState } from '@simulation/WorldState';
 import type { TextureLibrary } from './ProceduralTextures';
 import {
@@ -184,6 +184,9 @@ export class TerrainRenderer {
   private readonly terrainMaterial: THREE.MeshStandardMaterial;
   private readonly terrainUniforms: TerrainShaderUniforms;
   private lastSeason: Season | null = null;
+  private readonly vertexBiomes: BiomeType[];
+  private readonly vertexCoastDist: Float32Array;
+  private vertexCacheBuilt = false;
 
   constructor(
     scene: THREE.Scene,
@@ -201,6 +204,8 @@ export class TerrainRenderer {
     const pos = geo.attributes.position as THREE.BufferAttribute;
     const uv = geo.attributes.uv as THREE.BufferAttribute;
     const colors = new Float32Array(pos.count * 3);
+    this.vertexBiomes = new Array<BiomeType>(pos.count);
+    this.vertexCoastDist = new Float32Array(pos.count);
     for (let i = 0; i < pos.count; i++) {
       const ux = pos.getX(i); // -1..1
       const uz = pos.getZ(i); // -1..1
@@ -364,8 +369,17 @@ export class TerrainRenderer {
       const ny = norm.getY(i);
       const slope = Math.max(0, 1 - ny);
 
-      const biome = this.world.terrain.getBiomeAtSample(x, z, y, slope);
-      const coastDist = this.world.terrain.getCoastSignedDistance(x, z);
+      let biome: BiomeType;
+      let coastDist: number;
+      if (this.vertexCacheBuilt) {
+        biome = this.vertexBiomes[i];
+        coastDist = this.vertexCoastDist[i];
+      } else {
+        biome = this.world.terrain.getBiomeAtSample(x, z, y, slope);
+        coastDist = this.world.terrain.getCoastSignedDistance(x, z);
+        this.vertexBiomes[i] = biome;
+        this.vertexCoastDist[i] = coastDist;
+      }
 
       if (biome === 'water') {
         const bedDepth = THREE.MathUtils.clamp((waterLevel - y) / 1.8, 0, 1);
@@ -446,7 +460,7 @@ export class TerrainRenderer {
       }
 
       // Harmonize distant terrain beyond the playable continent
-      const radialDist = Math.hypot(x, z);
+      const radialDist = Math.sqrt(x * x + z * z);
       const distantMix = THREE.MathUtils.smoothstep(radialDist, halfSize * 1.02, halfSize * 2.5);
       if (distantMix > 0 && y < 28.0 && coastDist > 8) {
         const distTint =
@@ -466,6 +480,7 @@ export class TerrainRenderer {
       c.multiplyScalar(shade);
       colAttr.setXYZ(i, c.r, c.g, c.b);
     }
+    this.vertexCacheBuilt = true;
     colAttr.needsUpdate = true;
   }
 

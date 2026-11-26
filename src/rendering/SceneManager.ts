@@ -74,6 +74,42 @@ export class SceneManager {
   private floraRenderer!: FloraRenderer;
   private settlementRenderer!: SettlementRenderer;
   private creatureRenderer!: CreatureRenderer;
+  private loadedTextureResolution = 0;
+  private readonly dofParamsScratch: {
+    focusDistance: number;
+    focusRange: number;
+    maxBlur: number;
+    horizonFadeStart: number;
+    horizonFadeEnd: number;
+    worldHorizonStart: number;
+    worldHorizonEnd: number;
+    horizonColor: THREE.Color;
+    isPov: boolean;
+    sunDirection: THREE.Vector3;
+    sunColor: THREE.Color;
+    daylight: number;
+    waterLevel: number;
+    fogDensity: number;
+    aoStrength: number;
+    mistStrength: number;
+  } = {
+    focusDistance: 30,
+    focusRange: 42,
+    maxBlur: 0.0018,
+    horizonFadeStart: 2400,
+    horizonFadeEnd: 5800,
+    worldHorizonStart: 6000,
+    worldHorizonEnd: 7000,
+    horizonColor: new THREE.Color(),
+    isPov: false,
+    sunDirection: new THREE.Vector3(0, 1, 0),
+    sunColor: new THREE.Color(),
+    daylight: 1,
+    waterLevel: 0,
+    fogDensity: 0.00058,
+    aoStrength: 0.88,
+    mistStrength: 0.34,
+  };
 
   private quality: QualityPreset = 'high';
   private selection: SelectionTarget = null;
@@ -177,7 +213,7 @@ export class SceneManager {
 
   rebuildWorldScene(newWorld: WorldState): void {
     this.povCreatureId = null;
-    this.disposeWorldScene();
+    this.disposeWorldScene(true);
     this.world = newWorld;
     this.buildWorldScene(newWorld);
     this.focusFoundingVillage(newWorld, false);
@@ -189,7 +225,7 @@ export class SceneManager {
     immediateFocus = false,
   ): Promise<void> {
     this.povCreatureId = null;
-    this.disposeWorldScene();
+    this.disposeWorldScene(true);
     this.world = newWorld;
     await this.buildWorldSceneAsync(newWorld, onProgress, immediateFocus);
   }
@@ -202,9 +238,15 @@ export class SceneManager {
     const q = QUALITY_PRESETS[this.quality];
     this.cameraController.setWorldSize(world.config.worldSize);
 
-    onProgress?.(30, 'Mixing moss, granite, bark & timber pigments…');
-    await nextPaintFrame();
-    this.textures = createTextureLibrary(q.textureResolution);
+    if (!this.textures || this.loadedTextureResolution !== q.textureResolution) {
+      this.textures?.dispose();
+      onProgress?.(30, 'Mixing moss, granite, bark & timber pigments…');
+      await nextPaintFrame();
+      this.textures = createTextureLibrary(q.textureResolution);
+      this.loadedTextureResolution = q.textureResolution;
+    } else {
+      onProgress?.(36, 'Reusing handcrafted forest pigments…');
+    }
 
     onProgress?.(44, 'Raising the sky dome & brewing drifting clouds…');
     await nextPaintFrame();
@@ -291,24 +333,24 @@ export class SceneManager {
       const horizonFadeEnd = isPov
         ? 1350
         : Math.max(horizonFadeStart + 2000, Math.min(worldExtent * 0.92, Math.max(5800, focusDistance * 5.8)));
-      this.dofPass.updateParams({
-        focusDistance,
-        focusRange: isPov ? 26 : Math.max(42, focusDistance * (0.95 + overviewFactor * 1.1)),
-        maxBlur: isPov ? 0.0058 : 0.0018 * (1 - overviewFactor * 0.92),
-        horizonFadeStart,
-        horizonFadeEnd,
-        worldHorizonStart: worldExtent * 0.86,
-        worldHorizonEnd: worldExtent * 0.97,
-        horizonColor: sky.fogColor,
-        isPov,
-        sunDirection: sky.sunDirection,
-        sunColor: sky.sunColor,
-        daylight: sky.daylight,
-        waterLevel: this.world.terrain.waterLevel,
-        fogDensity: sky.fogDensity,
-        aoStrength: this.quality === 'balanced' ? 0.65 : 0.88,
-        mistStrength: mistStrength * (1 - overviewFactor * 0.65),
-      });
+      const p = this.dofParamsScratch;
+      p.focusDistance = focusDistance;
+      p.focusRange = isPov ? 26 : Math.max(42, focusDistance * (0.95 + overviewFactor * 1.1));
+      p.maxBlur = isPov ? 0.0058 : 0.0018 * (1 - overviewFactor * 0.92);
+      p.horizonFadeStart = horizonFadeStart;
+      p.horizonFadeEnd = horizonFadeEnd;
+      p.worldHorizonStart = worldExtent * 0.86;
+      p.worldHorizonEnd = worldExtent * 0.97;
+      p.horizonColor = sky.fogColor;
+      p.isPov = isPov;
+      p.sunDirection = sky.sunDirection;
+      p.sunColor = sky.sunColor;
+      p.daylight = sky.daylight;
+      p.waterLevel = this.world.terrain.waterLevel;
+      p.fogDensity = sky.fogDensity;
+      p.aoStrength = this.quality === 'balanced' ? 0.65 : 0.88;
+      p.mistStrength = mistStrength * (1 - overviewFactor * 0.65);
+      this.dofPass.updateParams(p);
     }
 
     if (this.composer) {
@@ -328,7 +370,11 @@ export class SceneManager {
   private buildWorldScene(world: WorldState): void {
     const q = QUALITY_PRESETS[this.quality];
     this.cameraController.setWorldSize(world.config.worldSize);
-    this.textures = createTextureLibrary(q.textureResolution);
+    if (!this.textures || this.loadedTextureResolution !== q.textureResolution) {
+      this.textures?.dispose();
+      this.textures = createTextureLibrary(q.textureResolution);
+      this.loadedTextureResolution = q.textureResolution;
+    }
     this.atmosphere = new AtmosphereSystem(
       this.scene,
       this.renderer,
@@ -451,7 +497,7 @@ export class SceneManager {
     this.bloomPass?.setSize(w, h);
   }
 
-  private disposeWorldScene(): void {
+  private disposeWorldScene(preserveTextures = false): void {
     for (const unsub of this.unsubscribes) unsub();
     this.unsubscribes.length = 0;
 
@@ -460,7 +506,10 @@ export class SceneManager {
     this.floraRenderer?.dispose();
     this.settlementRenderer?.dispose();
     this.creatureRenderer?.dispose();
-    this.textures?.dispose();
+    if (!preserveTextures) {
+      this.textures?.dispose();
+      this.loadedTextureResolution = 0;
+    }
 
     while (this.scene.children.length > 0) {
       this.scene.remove(this.scene.children[0]);
