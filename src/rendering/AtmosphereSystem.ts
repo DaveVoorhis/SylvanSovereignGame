@@ -48,6 +48,12 @@ export interface DivineBeamVisual {
   readonly dispose: () => void;
 }
 
+export interface DivineDepthUniforms {
+  uSceneDepth: { value: THREE.Texture | null };
+  uResolution: { value: THREE.Vector2 };
+  uHasSceneDepth: { value: number };
+}
+
 /**
  * Creates GPU-animated particle attributes for ascending column embers and shockwave stardust
  * erupting outward along the expanding supernatural influence wave.
@@ -102,17 +108,24 @@ export function createDivineBeamVisual(
   ringGeo: THREE.BufferGeometry,
   sharedWallGeo?: THREE.CylinderGeometry,
   sharedHaloGeo?: THREE.TorusGeometry,
+  sharedDepthUniforms?: DivineDepthUniforms,
 ): DivineBeamVisual {
   const group = new THREE.Group();
   group.position.set(effect.position.x, groundY, effect.position.z);
 
   const palette = deriveStainedGlassPalette(effect.colorHex);
   const ownedGeos: THREE.BufferGeometry[] = [];
+  const depthUniforms: DivineDepthUniforms = sharedDepthUniforms ?? {
+    uSceneDepth: { value: null },
+    uResolution: { value: new THREE.Vector2(1, 1) },
+    uHasSceneDepth: { value: 0.0 },
+  };
 
   const outerMat = new THREE.ShaderMaterial({
     vertexShader: DIVINE_BEAM_VERTEX_SHADER,
     fragmentShader: DIVINE_BEAM_FRAGMENT_SHADER,
     uniforms: {
+      ...depthUniforms,
       uColor: { value: palette.primary.clone() },
       uGlassB: { value: palette.jewelB.clone() },
       uGlassC: { value: palette.jewelC.clone() },
@@ -136,6 +149,7 @@ export function createDivineBeamVisual(
     vertexShader: DIVINE_BEAM_VERTEX_SHADER,
     fragmentShader: DIVINE_BEAM_FRAGMENT_SHADER,
     uniforms: {
+      ...depthUniforms,
       uColor: { value: palette.primary.clone() },
       uGlassB: { value: palette.jewelB.clone() },
       uGlassC: { value: palette.jewelC.clone() },
@@ -160,6 +174,7 @@ export function createDivineBeamVisual(
     vertexShader: DIVINE_RING_VERTEX_SHADER,
     fragmentShader: DIVINE_RING_FRAGMENT_SHADER,
     uniforms: {
+      ...depthUniforms,
       uColor: { value: palette.primary.clone() },
       uGlassB: { value: palette.jewelB.clone() },
       uGlassC: { value: palette.jewelC.clone() },
@@ -193,6 +208,7 @@ export function createDivineBeamVisual(
     vertexShader: DIVINE_WALL_VERTEX_SHADER,
     fragmentShader: DIVINE_WALL_FRAGMENT_SHADER,
     uniforms: {
+      ...depthUniforms,
       uColor: { value: palette.primary.clone() },
       uGlassB: { value: palette.jewelB.clone() },
       uGlassC: { value: palette.jewelC.clone() },
@@ -222,6 +238,7 @@ export function createDivineBeamVisual(
     vertexShader: DIVINE_HALO_VERTEX_SHADER,
     fragmentShader: DIVINE_HALO_FRAGMENT_SHADER,
     uniforms: {
+      ...depthUniforms,
       uColor: { value: palette.primary.clone() },
       uGlassB: { value: palette.jewelB.clone() },
       uGlassC: { value: palette.jewelC.clone() },
@@ -257,6 +274,7 @@ export function createDivineBeamVisual(
     vertexShader: DIVINE_MOTES_VERTEX_SHADER,
     fragmentShader: DIVINE_MOTES_FRAGMENT_SHADER,
     uniforms: {
+      ...depthUniforms,
       uColor: { value: palette.primary.clone() },
       uGlassB: { value: palette.jewelB.clone() },
       uGlassC: { value: palette.jewelC.clone() },
@@ -332,6 +350,9 @@ const DIVINE_BEAM_VERTEX_SHADER = /* glsl */ `
 `;
 
 const DIVINE_BEAM_FRAGMENT_SHADER = /* glsl */ `
+  uniform sampler2D uSceneDepth;
+  uniform vec2 uResolution;
+  uniform float uHasSceneDepth;
   uniform vec3 uColor;
   uniform vec3 uGlassB;
   uniform vec3 uGlassC;
@@ -352,6 +373,10 @@ const DIVINE_BEAM_FRAGMENT_SHADER = /* glsl */ `
   }
 
   void main() {
+    if (uHasSceneDepth > 0.5) {
+      float sceneDepth = texture2D(uSceneDepth, gl_FragCoord.xy / uResolution).x;
+      if (gl_FragCoord.z > sceneDepth) discard;
+    }
     vec3 viewDir = normalize(cameraPosition - vWorldPos);
     // Soft cylindrical edge falloff so the heavenly beam feels volumetric, never hard-edged
     float facing = abs(dot(normalize(vWorldNormal), viewDir));
@@ -386,6 +411,9 @@ const DIVINE_RING_VERTEX_SHADER = /* glsl */ `
 `;
 
 const DIVINE_RING_FRAGMENT_SHADER = /* glsl */ `
+  uniform sampler2D uSceneDepth;
+  uniform vec2 uResolution;
+  uniform float uHasSceneDepth;
   uniform vec3 uColor;
   uniform vec3 uGlassB;
   uniform vec3 uGlassC;
@@ -404,6 +432,10 @@ const DIVINE_RING_FRAGMENT_SHADER = /* glsl */ `
   }
 
   void main() {
+    if (uHasSceneDepth > 0.5) {
+      float sceneDepth = texture2D(uSceneDepth, gl_FragCoord.xy / uResolution).x;
+      if (gl_FragCoord.z > sceneDepth + 0.000015) discard;
+    }
     float r = length(vLocalPos);
     if (r > 1.0) discard;
 
@@ -551,6 +583,9 @@ const DIVINE_WALL_VERTEX_SHADER = /* glsl */ `
 `;
 
 const DIVINE_WALL_FRAGMENT_SHADER = /* glsl */ `
+  uniform sampler2D uSceneDepth;
+  uniform vec2 uResolution;
+  uniform float uHasSceneDepth;
   uniform vec3 uColor;
   uniform vec3 uGlassB;
   uniform vec3 uGlassC;
@@ -570,6 +605,10 @@ const DIVINE_WALL_FRAGMENT_SHADER = /* glsl */ `
   }
 
   void main() {
+    if (uHasSceneDepth > 0.5) {
+      float sceneDepth = texture2D(uSceneDepth, gl_FragCoord.xy / uResolution).x;
+      if (gl_FragCoord.z > sceneDepth) discard;
+    }
     vec3 viewDir = normalize(cameraPosition - vWorldPos);
     float grazing = 1.0 - abs(dot(normalize(vWorldNormal), viewDir));
     // Sheer through the center, softly gleaming along grazing atmospheric edges
@@ -613,6 +652,9 @@ const DIVINE_HALO_VERTEX_SHADER = /* glsl */ `
 `;
 
 const DIVINE_HALO_FRAGMENT_SHADER = /* glsl */ `
+  uniform sampler2D uSceneDepth;
+  uniform vec2 uResolution;
+  uniform float uHasSceneDepth;
   uniform vec3 uColor;
   uniform vec3 uGlassB;
   uniform vec3 uGlassC;
@@ -630,6 +672,10 @@ const DIVINE_HALO_FRAGMENT_SHADER = /* glsl */ `
   }
 
   void main() {
+    if (uHasSceneDepth > 0.5) {
+      float sceneDepth = texture2D(uSceneDepth, gl_FragCoord.xy / uResolution).x;
+      if (gl_FragCoord.z > sceneDepth) discard;
+    }
     // Orbiting polychromatic cathedral jewels & delicate gilded beads along the armillary halo
     float beads = pow(0.5 + 0.5 * sin(vUv.x * 75.3982 - uTime * 4.2), 2.2);
     float pulse = 0.62 + 0.38 * sin(vUv.x * 18.8495 + uTime * 2.6);
@@ -683,6 +729,9 @@ const DIVINE_MOTES_VERTEX_SHADER = /* glsl */ `
 `;
 
 const DIVINE_MOTES_FRAGMENT_SHADER = /* glsl */ `
+  uniform sampler2D uSceneDepth;
+  uniform vec2 uResolution;
+  uniform float uHasSceneDepth;
   uniform vec3 uColor;
   uniform vec3 uGlassB;
   uniform vec3 uGlassC;
@@ -700,6 +749,10 @@ const DIVINE_MOTES_FRAGMENT_SHADER = /* glsl */ `
   }
 
   void main() {
+    if (uHasSceneDepth > 0.5) {
+      float sceneDepth = texture2D(uSceneDepth, gl_FragCoord.xy / uResolution).x;
+      if (gl_FragCoord.z > sceneDepth) discard;
+    }
     vec2 p = gl_PointCoord - vec2(0.5);
     float d = length(p);
     if (d > 0.5) discard;
@@ -728,32 +781,148 @@ const SKY_VERTEX_SHADER = /* glsl */ `
 const SKY_FRAGMENT_SHADER = /* glsl */ `
   uniform vec3 uTopColor;
   uniform vec3 uHorizonColor;
+  uniform vec3 uGroundColor;
   uniform vec3 uSunDirection;
   uniform vec3 uSunColor;
   uniform float uStarIntensity;
+  uniform float uCloudTime;
+  uniform float uCloudCoverage;
+  uniform float uDaylight;
+  uniform float uGroundHemisphere;
   varying vec3 vWorldDirection;
 
-  float hash(vec3 p) {
+  float hash31(vec3 p) {
     p = fract(p * 0.3183099 + 0.1);
     p *= 17.0;
     return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
   }
 
+  float hash21(vec2 p) {
+    p = fract(p * vec2(127.1, 311.7));
+    p += dot(p, p + 34.53);
+    return fract(p.x * p.y);
+  }
+
+  float noise2(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i);
+    float b = hash21(i + vec2(1.0, 0.0));
+    float c = hash21(i + vec2(0.0, 1.0));
+    float d = hash21(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+  }
+
+  float fbm5(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    mat2 rot = mat2(0.80, 0.60, -0.60, 0.80);
+    for (int i = 0; i < 5; i++) {
+      v += a * noise2(p);
+      p = rot * p * 2.03 + vec2(13.7, 9.2);
+      a *= 0.5;
+    }
+    return v;
+  }
+
   void main() {
     vec3 dir = normalize(vWorldDirection);
+    vec3 sunDir = normalize(uSunDirection);
+
+    // Below-horizon matte ground hemisphere for PMREM IBL bounce only;
+    // on the visible sky dome, extend exact uHorizonColor downward so far misty seas
+    // viewed from high mountain elevation merge invisibly with zero gray band.
+    if (dir.y < 0.0) {
+      if (uGroundHemisphere > 0.5) {
+        float gT = smoothstep(0.0, -0.35, dir.y);
+        vec3 belowCol = mix(uHorizonColor, uGroundColor, gT);
+        gl_FragColor = vec4(belowCol, 1.0);
+      } else {
+        gl_FragColor = vec4(uHorizonColor, 1.0);
+      }
+      return;
+    }
+
     float h = clamp(dir.y, 0.0, 1.0);
-    // Soft luminous atmospheric horizon band fading cleanly into the zenith
-    vec3 sky = mix(uHorizonColor, uTopColor, pow(h, 0.58));
 
-    float sunDot = max(dot(dir, normalize(uSunDirection)), 0.0);
-    float sunGlow = pow(sunDot, 12.0) * 0.42 + pow(sunDot, 220.0) * 1.45;
-    sky += uSunColor * sunGlow;
+    // 1. Rayleigh-like zenith-to-horizon gradient with subtle horizon airglow
+    vec3 sky = mix(uHorizonColor, uTopColor, pow(h, 0.52));
+    float horizonBand = exp(-h * 7.5) * smoothstep(0.0, 0.04, h);
+    sky = mix(sky, uHorizonColor * 1.05, horizonBand * 0.35);
 
-    if (uStarIntensity > 0.01 && dir.y > 0.08) {
-      vec3 starCell = floor(dir * 210.0);
-      float starVal = hash(starCell);
-      if (starVal > 0.994) {
-        sky += vec3(0.85, 0.92, 1.0) * uStarIntensity * smoothstep(0.08, 0.45, dir.y);
+    // 2. Physically-inspired Mie forward scattering & crisp solar disc
+    float sunCos = dot(dir, sunDir);
+    float sunDot = max(sunCos, 0.0);
+    float sunElev = clamp(sunDir.y * 2.2 + 0.2, 0.0, 1.0);
+    float mieWide = pow(sunDot, 5.0) * 0.20 * (0.4 + 0.6 * (1.0 - h));
+    float mieTight = pow(sunDot, 36.0) * 0.32;
+    float sunDisc = smoothstep(0.99945, 0.99982, sunCos) * 2.6 * smoothstep(-0.04, 0.06, sunDir.y);
+    float sunAtten = mix(1.0, 0.22, smoothstep(0.55, 0.92, uCloudCoverage));
+    float horizonClear = smoothstep(0.0, 0.035, h);
+    sky += uSunColor * (mieWide + mieTight) * sunElev * sunAtten * horizonClear;
+    sky += uSunColor * sunDisc * sunAtten * smoothstep(0.0, 0.012, h);
+
+    // 3. Night stars & subtle Milky Way dust band
+    if (uStarIntensity > 0.01 && dir.y > 0.05) {
+      vec3 starCell = floor(dir * 260.0);
+      float starVal = hash31(starCell);
+      if (starVal > 0.9955) {
+        float twinkle = 0.72 + 0.28 * sin(uCloudTime * 2.4 + starVal * 900.0);
+        vec3 starTint = mix(vec3(0.84, 0.90, 1.0), vec3(1.0, 0.93, 0.80), fract(starVal * 47.0));
+        sky += starTint * uStarIntensity * twinkle * smoothstep(0.05, 0.38, dir.y) * (1.0 - uCloudCoverage * 0.85);
+      }
+      // Subtle galactic band
+      float mwBand = exp(-pow(dot(dir, normalize(vec3(0.35, 0.55, -0.75))), 2.0) * 14.0);
+      float mwNoise = fbm5(dir.xz * 4.2 + vec2(dir.y * 2.5));
+      sky += vec3(0.06, 0.075, 0.11) * mwBand * mwNoise * uStarIntensity * smoothstep(0.08, 0.4, dir.y) * (1.0 - uCloudCoverage * 0.8);
+    }
+
+    // 4. Multi-layer drifting volumetric-lit clouds (high wispy cirrus + sculpted cumulus deck)
+    if (dir.y > 0.015) {
+      float cloudFade = smoothstep(0.015, 0.20, dir.y);
+      vec2 windOffset = vec2(uCloudTime * 0.011, uCloudTime * 0.0045);
+
+      // Layer A: High-altitude wispy cirrus streaks
+      vec2 cirrusUv = (dir.xz / (dir.y + 0.24)) * vec2(0.55, 1.35) + windOffset * 0.65;
+      float cirrus = fbm5(cirrusUv + vec2(fbm5(cirrusUv * 1.6) * 0.45));
+      float cirrusAlpha = smoothstep(0.58, 0.84, cirrus) * 0.26 * cloudFade;
+      vec3 cirrusCol = mix(uHorizonColor * 0.92, mix(vec3(0.95, 0.96, 0.98), uSunColor, 0.35), uDaylight);
+      sky = mix(sky, cirrusCol, cirrusAlpha);
+
+      // Layer B: Sculpted fair-weather cumulus & storm cloud deck with directional sun lighting
+      vec2 cloudUv = (dir.xz / (dir.y + 0.18)) * 0.42 + windOffset;
+      float warp = fbm5(cloudUv * 1.45 + vec2(3.1, -1.7));
+      float densRaw = fbm5(cloudUv + vec2(warp * 0.32, -warp * 0.22));
+      float threshold = mix(0.64, 0.32, clamp(uCloudCoverage, 0.0, 1.0));
+      float density = smoothstep(threshold, threshold + 0.26, densRaw);
+
+      if (density > 0.005) {
+        // Directional offset sample toward sun for bright tops & cool shaded bottoms
+        vec2 sunStep = normalize(sunDir.xz + vec2(0.0001)) * 0.095;
+        float densSun = fbm5(cloudUv + sunStep + vec2(warp * 0.32, -warp * 0.22));
+        float litTop = clamp((densRaw - densSun) * 3.4 + 0.56, 0.0, 1.0);
+        float thickness = clamp(density * (0.55 + uCloudCoverage * 0.55), 0.0, 1.0);
+
+        vec3 dayLit = mix(vec3(0.92, 0.93, 0.95), uSunColor * 1.08, 0.34);
+        vec3 dayShade = mix(uTopColor * 0.52 + vec3(0.18, 0.21, 0.25), vec3(0.24, 0.28, 0.33), uCloudCoverage * 0.65);
+        vec3 nightLit = vec3(0.13, 0.16, 0.22);
+        vec3 nightShade = vec3(0.04, 0.055, 0.085);
+
+        vec3 litCol = mix(nightLit, dayLit, uDaylight);
+        vec3 shadeCol = mix(nightShade, dayShade, uDaylight);
+        vec3 cloudCol = mix(shadeCol, litCol, litTop * (1.0 - thickness * 0.32));
+
+        // Silver-lining Mie forward scattering through thin cloud edges near the sun
+        float silverLining = pow(sunDot, 10.0) * (1.0 - thickness * 0.7) * uDaylight * 0.55;
+        cloudCol += uSunColor * silverLining;
+
+        // Atmospheric perspective blends distant clouds softly toward the horizon haze
+        float horizBlend = smoothstep(0.24, 0.02, dir.y);
+        cloudCol = mix(cloudCol, uHorizonColor, horizBlend * 0.72);
+
+        float finalCloudAlpha = clamp(density * (0.76 + uCloudCoverage * 0.20) * cloudFade, 0.0, 0.94);
+        sky = mix(sky, cloudCol, finalCloudAlpha);
       }
     }
 
@@ -762,23 +931,29 @@ const SKY_FRAGMENT_SHADER = /* glsl */ `
 `;
 
 /**
- * Manages photorealistic-storybook atmospheric lighting, infinite-horizon sky dome,
- * seasonal & day/night transitions, volumetric horizon haze, softly glowing fireflies,
- * dreamy blossom/pollen/snow weather particles, and divine intervention light beams.
+ * Manages naturalistic photographic atmospheric lighting, infinite-horizon sky dome
+ * with drifting clouds, camera-adaptive shadow frustum, seasonal & day/night transitions,
+ * weather particles, fireflies, and divine intervention light beams.
  */
 export class AtmosphereSystem {
   readonly sunLight: THREE.DirectionalLight;
   readonly hemiLight: THREE.HemisphereLight;
   readonly ambientLight: THREE.AmbientLight;
   readonly fog: THREE.FogExp2;
+  readonly divineOverlayScene = new THREE.Scene();
 
   private readonly skyMesh: THREE.Mesh;
   private readonly skyUniforms: {
     uTopColor: { value: THREE.Color };
     uHorizonColor: { value: THREE.Color };
+    uGroundColor: { value: THREE.Color };
     uSunDirection: { value: THREE.Vector3 };
     uSunColor: { value: THREE.Color };
     uStarIntensity: { value: number };
+    uCloudTime: { value: number };
+    uCloudCoverage: { value: number };
+    uDaylight: { value: number };
+    uGroundHemisphere: { value: number };
   };
 
   private readonly weatherPoints: THREE.Points;
@@ -790,6 +965,12 @@ export class AtmosphereSystem {
   private readonly fireflyMat: THREE.PointsMaterial;
 
   private readonly divineGroup = new THREE.Group();
+  private readonly divineLightGroup = new THREE.Group();
+  private readonly divineDepthUniforms: DivineDepthUniforms = {
+    uSceneDepth: { value: null },
+    uResolution: { value: new THREE.Vector2(1, 1) },
+    uHasSceneDepth: { value: 0.0 },
+  };
   private readonly activeBeams: ActiveBeamMesh[] = [];
   private readonly beamOuterGeo: THREE.CylinderGeometry;
   private readonly beamInnerGeo: THREE.CylinderGeometry;
@@ -797,14 +978,22 @@ export class AtmosphereSystem {
   private readonly beamWallGeo: THREE.CylinderGeometry;
   private readonly beamHaloGeo: THREE.TorusGeometry;
   private readonly pmremGenerator: THREE.PMREMGenerator;
-  private envScene: THREE.Scene;
+  private readonly envScene: THREE.Scene;
+  private readonly envDomeGeo: THREE.SphereGeometry;
+  private readonly envSkyMat: THREE.ShaderMaterial;
   private envRenderTarget: THREE.WebGLRenderTarget | null = null;
   private envRefreshTimer = 0;
+
   private readonly lightDirState = new THREE.Vector3(0.5, 0.7, 0.4).normalize();
   private currentDaylight = 1.0;
   private currentWindStrength = 0.25;
   private currentIsWinter = false;
-  private readonly shadowTexelStep: number;
+  private currentCloudTime = 0;
+  private currentCloudCoverage = 0.38;
+  private currentRainWetness = 0.0;
+  private readonly shadowMapSize: number;
+  private currentShadowExtent = 120;
+  private lastAppliedShadowExtent = 120;
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -812,19 +1001,25 @@ export class AtmosphereSystem {
     shadowMapSize: number,
     softParticleTex?: THREE.Texture,
   ) {
-    this.fog = new THREE.FogExp2(0xc4dac9, 0.00068);
+    this.shadowMapSize = Math.max(256, shadowMapSize);
+    this.fog = new THREE.FogExp2(0xc4d3cc, 0.00062);
     this.scene.fog = this.fog;
 
-    // Infinite-horizon Procedural Sky Dome (tracks camera XZ each frame)
+    // Infinite-horizon Procedural Sky Dome with drifting clouds & ground bounce
     this.skyUniforms = {
-      uTopColor: { value: new THREE.Color(0x2e64a3) },
-      uHorizonColor: { value: new THREE.Color(0xc7dccb) },
+      uTopColor: { value: new THREE.Color(0x285a94) },
+      uHorizonColor: { value: new THREE.Color(0xc4d3cc) },
+      uGroundColor: { value: new THREE.Color(0x2c3624) },
       uSunDirection: { value: new THREE.Vector3(0.5, 0.7, 0.4).normalize() },
-      uSunColor: { value: new THREE.Color(0xfff1cf) },
+      uSunColor: { value: new THREE.Color(0xfff1d8) },
       uStarIntensity: { value: 0 },
+      uCloudTime: { value: 0 },
+      uCloudCoverage: { value: 0.38 },
+      uDaylight: { value: 1.0 },
+      uGroundHemisphere: { value: 0.0 },
     };
 
-    const skyGeo = new THREE.SphereGeometry(5800, 32, 20);
+    const skyGeo = new THREE.SphereGeometry(12500, 36, 22);
     const skyMat = new THREE.ShaderMaterial({
       vertexShader: SKY_VERTEX_SHADER,
       fragmentShader: SKY_FRAGMENT_SHADER,
@@ -836,38 +1031,47 @@ export class AtmosphereSystem {
     this.skyMesh.frustumCulled = false;
     this.scene.add(this.skyMesh);
 
-    // PMREM environment generator for realistic PBR reflections
+    // PMREM environment generator with true sky + clouds above and earthy matte ground below
     this.pmremGenerator = new THREE.PMREMGenerator(renderer);
     this.pmremGenerator.compileEquirectangularShader();
     this.envScene = new THREE.Scene();
-    const envDome = new THREE.Mesh(
-      new THREE.SphereGeometry(40, 16, 12),
-      skyMat,
-    );
+    this.envDomeGeo = new THREE.SphereGeometry(40, 20, 14);
+    this.envSkyMat = new THREE.ShaderMaterial({
+      vertexShader: SKY_VERTEX_SHADER,
+      fragmentShader: SKY_FRAGMENT_SHADER,
+      uniforms: {
+        ...this.skyUniforms,
+        uGroundHemisphere: { value: 1.0 },
+      },
+      side: THREE.BackSide,
+      depthWrite: false,
+    });
+    const envDome = new THREE.Mesh(this.envDomeGeo, this.envSkyMat);
     this.envScene.add(envDome);
 
-    // Key Sun / Moon Directional Light with crisp soft shadows
-    this.sunLight = new THREE.DirectionalLight(0xfff3d8, 2.8);
+    // Key Sun / Moon Directional Light with camera-distance-adaptive crisp soft shadows
+    this.sunLight = new THREE.DirectionalLight(0xfff3de, 3.15);
     this.sunLight.castShadow = true;
-    this.sunLight.shadow.mapSize.set(shadowMapSize, shadowMapSize);
+    this.sunLight.shadow.mapSize.set(this.shadowMapSize, this.shadowMapSize);
     this.sunLight.shadow.camera.near = 10;
     this.sunLight.shadow.camera.far = 880;
-    const d = 175;
-    this.shadowTexelStep = (d * 2) / Math.max(256, shadowMapSize);
+    const d = this.currentShadowExtent;
     this.sunLight.shadow.camera.left = -d;
     this.sunLight.shadow.camera.right = d;
     this.sunLight.shadow.camera.top = d;
     this.sunLight.shadow.camera.bottom = -d;
-    this.sunLight.shadow.bias = -0.00035;
-    this.sunLight.shadow.normalBias = 0.03;
+    this.sunLight.shadow.bias = -0.00028;
+    this.sunLight.shadow.normalBias = 0.024;
+    this.sunLight.shadow.radius = 2.4;
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
 
-    // Canopy bounce hemisphere light
-    this.hemiLight = new THREE.HemisphereLight(0xaad1f0, 0x3a522c, 0.9);
+    // Physically grounded sky-to-earth hemisphere bounce light
+    this.hemiLight = new THREE.HemisphereLight(0xaac8e6, 0x323d28, 0.72);
     this.scene.add(this.hemiLight);
 
-    this.ambientLight = new THREE.AmbientLight(0x2c3b32, 0.28);
+    // Minimal fill ambient so cast shadows retain real natural depth
+    this.ambientLight = new THREE.AmbientLight(0x28322c, 0.07);
     this.scene.add(this.ambientLight);
 
     // Weather particles distributed in a wide circular canopy
@@ -884,10 +1088,10 @@ export class AtmosphereSystem {
     weatherGeo.setAttribute('position', new THREE.BufferAttribute(this.weatherPositions, 3));
     this.weatherMat = new THREE.PointsMaterial({
       color: 0xffffff,
-      size: 0.45,
+      size: 0.42,
       map: softParticleTex ?? null,
       transparent: true,
-      opacity: 0.65,
+      opacity: 0.6,
       alphaTest: 0.01,
       depthWrite: false,
     });
@@ -895,7 +1099,7 @@ export class AtmosphereSystem {
     this.weatherPoints.frustumCulled = false;
     this.scene.add(this.weatherPoints);
 
-    // Soft glowing golden fireflies hovering above moss and water
+    // Soft glowing golden fireflies hovering above moss and water at dusk/night
     const fireflyCount = 260;
     this.fireflyBase = new Float32Array(fireflyCount * 3);
     const fireflyPos = new Float32Array(fireflyCount * 3);
@@ -903,7 +1107,7 @@ export class AtmosphereSystem {
       const a = Math.random() * Math.PI * 2;
       const r = Math.sqrt(Math.random()) * 96;
       const fx = Math.cos(a) * r;
-      const fy = 1.4 + Math.random() * 6.8;
+      const fy = 1.2 + Math.random() * 6.2;
       const fz = Math.sin(a) * r;
       this.fireflyBase[i * 3] = fx;
       this.fireflyBase[i * 3 + 1] = fy;
@@ -915,8 +1119,8 @@ export class AtmosphereSystem {
     const fireflyGeo = new THREE.BufferGeometry();
     fireflyGeo.setAttribute('position', new THREE.BufferAttribute(fireflyPos, 3));
     this.fireflyMat = new THREE.PointsMaterial({
-      color: 0xffe885,
-      size: 0.72,
+      color: 0xffdf7a,
+      size: 0.54,
       map: softParticleTex ?? null,
       transparent: true,
       opacity: 0.0,
@@ -938,8 +1142,16 @@ export class AtmosphereSystem {
     this.beamHaloGeo = new THREE.TorusGeometry(1.0, 0.036, 10, 64);
     this.beamHaloGeo.rotateX(Math.PI / 2);
 
-    this.scene.add(this.divineGroup);
+    this.divineOverlayScene.add(this.divineGroup);
+    this.scene.add(this.divineLightGroup);
     this.refreshEnvironmentMap();
+  }
+
+  syncDivineDepthUniforms(depthTex: THREE.Texture | null, width: number, height: number): boolean {
+    this.divineDepthUniforms.uSceneDepth.value = depthTex;
+    this.divineDepthUniforms.uResolution.value.set(Math.max(1, width), Math.max(1, height));
+    this.divineDepthUniforms.uHasSceneDepth.value = depthTex ? 1.0 : 0.0;
+    return this.activeBeams.length > 0;
   }
 
   spawnDivineVisual(effect: DivineEffectVisual, groundY: number): void {
@@ -951,7 +1163,13 @@ export class AtmosphereSystem {
       this.beamRingGeo,
       this.beamWallGeo,
       this.beamHaloGeo,
+      this.divineDepthUniforms,
     );
+    // Keep local supernatural illumination inside the main scene while rendering additive beam
+    // visuals in the post-fog overlay pass so distant horizon mist never splits foreground beams.
+    visual.group.remove(visual.glowLight);
+    visual.glowLight.position.set(effect.position.x, groundY + 6.8, effect.position.z);
+    this.divineLightGroup.add(visual.glowLight);
     this.divineGroup.add(visual.group);
     this.activeBeams.push({
       id: effect.id,
@@ -965,11 +1183,17 @@ export class AtmosphereSystem {
   update(world: WorldState, dt: number, camera?: THREE.Camera, focusTarget?: THREE.Vector3): void {
     let focusX = 0;
     let focusZ = 0;
+    let focusDist = 75;
     if (camera) {
       // Keep the sky dome centered on the viewer so the sky sits mathematically at infinity
       this.skyMesh.position.set(camera.position.x, 0, camera.position.z);
       focusX = focusTarget ? focusTarget.x : camera.position.x;
       focusZ = focusTarget ? focusTarget.z : camera.position.z;
+      if (focusTarget) {
+        focusDist = camera.position.distanceTo(focusTarget);
+      } else {
+        focusDist = Math.max(25, camera.position.y * 1.4);
+      }
     }
     // Keep ambient weather particles & fireflies centered on the observer's region across the larger world
     this.weatherPoints.position.set(focusX, 0, focusZ);
@@ -981,12 +1205,30 @@ export class AtmosphereSystem {
     const sunX = Math.cos(angle) * 0.85;
     const sunZ = 0.42;
 
-    const daylight = THREE.MathUtils.clamp((sunY + 0.16) / 0.55, 0, 1);
-    const goldenHour = THREE.MathUtils.clamp(1 - Math.abs(sunY - 0.1) * 4.5, 0, 1);
+    const daylight = THREE.MathUtils.clamp((sunY + 0.14) / 0.52, 0, 1);
+    const goldenHour = THREE.MathUtils.clamp(1 - Math.abs(sunY - 0.1) * 4.4, 0, 1);
 
     const lightDir = new THREE.Vector3(sunX, Math.max(0.18, Math.abs(sunY)), sunZ).normalize();
-    // Anchor shadow frustum to camera focus snapped to shadow texel increments (crisp shadows everywhere!)
-    const snap = this.shadowTexelStep * 4;
+
+    // Camera-distance-adaptive shadow frustum: crisp ~2–4 cm/texel shadows close-up, wide coverage at overview
+    const targetExtent = THREE.MathUtils.clamp(focusDist * 1.15 + 16, 42, 205);
+    this.currentShadowExtent += (targetExtent - this.currentShadowExtent) * Math.min(1, dt * 4.5);
+    if (Math.abs(this.currentShadowExtent - this.lastAppliedShadowExtent) > 0.6) {
+      const d = this.currentShadowExtent;
+      this.sunLight.shadow.camera.left = -d;
+      this.sunLight.shadow.camera.right = d;
+      this.sunLight.shadow.camera.top = d;
+      this.sunLight.shadow.camera.bottom = -d;
+      this.sunLight.shadow.camera.updateProjectionMatrix();
+      const extentScale = d / 120;
+      this.sunLight.shadow.bias = -0.00024 * Math.max(0.65, extentScale);
+      this.sunLight.shadow.normalBias = 0.022 * Math.max(0.65, extentScale);
+      this.lastAppliedShadowExtent = d;
+    }
+
+    // Anchor shadow frustum to camera focus snapped to shadow texel increments (eliminates shadow shimmer)
+    const texelStep = (this.lastAppliedShadowExtent * 2) / this.shadowMapSize;
+    const snap = texelStep * 4;
     const shadowFocusX = Math.round(focusX / snap) * snap;
     const shadowFocusZ = Math.round(focusZ / snap) * snap;
     this.sunLight.target.position.set(shadowFocusX, 0, shadowFocusZ);
@@ -994,6 +1236,7 @@ export class AtmosphereSystem {
     this.lightDirState.copy(lightDir);
     this.currentDaylight = daylight;
     this.currentIsWinter = world.season === 'winter';
+
     const targetWind =
       world.weather === 'storm'
         ? 1.0
@@ -1001,71 +1244,112 @@ export class AtmosphereSystem {
           ? 0.58
           : 0.24;
     this.currentWindStrength += (targetWind - this.currentWindStrength) * Math.min(1, dt * 2.0);
-    this.skyUniforms.uSunDirection.value.set(sunX, sunY, sunZ).normalize();
+    this.currentCloudTime += dt * (0.65 + this.currentWindStrength * 1.15);
 
-    // Sky & fog colors across day, dusk, night, and weather
-    const topDay = new THREE.Color(world.season === 'winter' ? 0x5c7c9c : 0x2a619e);
-    const topNight = new THREE.Color(0x070d1a);
+    const targetCoverage =
+      world.weather === 'storm'
+        ? 0.90
+        : world.weather === 'rain'
+          ? 0.78
+          : world.weather === 'snow'
+            ? 0.74
+            : world.weather === 'mist'
+              ? 0.58
+              : world.weather === 'sunbeams'
+                ? 0.40
+                : 0.36;
+    this.currentCloudCoverage += (targetCoverage - this.currentCloudCoverage) * Math.min(1, dt * 0.45);
+
+    const targetWetness = world.weather === 'storm' ? 1.0 : world.weather === 'rain' ? 0.85 : 0.0;
+    const wetRate = targetWetness > this.currentRainWetness ? 0.16 : 0.04;
+    this.currentRainWetness += (targetWetness - this.currentRainWetness) * Math.min(1, dt * wetRate);
+
+    this.skyUniforms.uSunDirection.value.set(sunX, sunY, sunZ).normalize();
+    this.skyUniforms.uCloudTime.value = this.currentCloudTime;
+    this.skyUniforms.uCloudCoverage.value = this.currentCloudCoverage;
+    this.skyUniforms.uDaylight.value = daylight;
+
+    // Naturalistic photographic sky & fog colors across day, golden hour, night, and weather
+    const topDay = new THREE.Color(
+      world.weather === 'storm'
+        ? 0x3b4854
+        : world.weather === 'rain'
+          ? 0x4f6170
+          : world.season === 'winter'
+            ? 0x526e8a
+            : 0x265890,
+    );
+    const topNight = new THREE.Color(0x060b16);
     const horizDay = new THREE.Color(
       world.weather === 'storm'
-        ? 0x56626a
-        : world.season === 'autumn'
-          ? 0xd8cdb8
-          : 0xc8dece,
+        ? 0x505b63
+        : world.weather === 'rain'
+          ? 0x86949c
+          : world.season === 'autumn'
+            ? 0xcfc4b0
+            : world.season === 'winter'
+              ? 0xc8d2da
+              : 0xc2d2cb,
     );
-    const horizGold = new THREE.Color(0xf09c59);
-    const horizNight = new THREE.Color(0x132033);
+    const horizGold = new THREE.Color(0xe2955c);
+    const horizNight = new THREE.Color(0x111c2c);
 
     this.skyUniforms.uTopColor.value.copy(topNight).lerp(topDay, daylight);
     this.skyUniforms.uHorizonColor.value
       .copy(horizNight)
       .lerp(horizDay, daylight)
-      .lerp(horizGold, goldenHour * 0.72);
+      .lerp(horizGold, goldenHour * 0.65);
+    this.skyUniforms.uGroundColor.value
+      .setHex(world.season === 'winter' ? 0x545d64 : world.season === 'autumn' ? 0x383222 : 0x283320)
+      .multiplyScalar(0.25 + daylight * 0.75);
     this.skyUniforms.uSunColor.value
-      .setHex(0xfff4d6)
-      .lerp(new THREE.Color(0xff944d), goldenHour * 0.85);
-    this.skyUniforms.uStarIntensity.value = THREE.MathUtils.clamp(1 - daylight * 1.6, 0, 1);
+      .setHex(0xfff3dc)
+      .lerp(new THREE.Color(0xf5924d), goldenHour * 0.82);
+    this.skyUniforms.uStarIntensity.value = THREE.MathUtils.clamp(1 - daylight * 1.65, 0, 1);
 
-    // Directional light intensity & color
-    const stormDim = world.weather === 'storm' ? 0.52 : world.weather === 'rain' ? 0.72 : 1.0;
-    const moonTint = new THREE.Color(0x6d92c4);
-    const sunTint = new THREE.Color(0xfff1d2).lerp(new THREE.Color(0xffa057), goldenHour * 0.78);
+    // Directional light intensity & color (crisp sunlit vs cool shaded contrast)
+    const stormDim = world.weather === 'storm' ? 0.45 : world.weather === 'rain' ? 0.66 : 1.0;
+    const moonTint = new THREE.Color(0x6486b8);
+    const sunTint = new THREE.Color(0xfff1d6).lerp(new THREE.Color(0xf79954), goldenHour * 0.78);
     this.sunLight.color.copy(moonTint).lerp(sunTint, daylight);
-    this.sunLight.intensity = (0.48 + daylight * 2.75) * stormDim;
+    this.sunLight.intensity = (0.38 + daylight * 3.15) * stormDim;
 
-    this.hemiLight.intensity = (0.3 + daylight * 0.74) * stormDim;
+    this.hemiLight.intensity = (0.22 + daylight * 0.62) * (0.68 + stormDim * 0.32);
     this.hemiLight.color.copy(this.skyUniforms.uHorizonColor.value);
-    this.hemiLight.groundColor.setHex(world.season === 'winter' ? 0x62707a : 0x384d2a);
+    this.hemiLight.groundColor.setHex(
+      world.season === 'winter' ? 0x58626b : world.season === 'autumn' ? 0x3d3625 : 0x2e3b24,
+    );
+    this.ambientLight.intensity = 0.05 + daylight * 0.04;
 
     this.fog.color.copy(this.skyUniforms.uHorizonColor.value);
     const baseFog =
       world.weather === 'mist'
-        ? 0.0056
+        ? 0.0046
         : world.weather === 'storm'
-          ? 0.0042
+          ? 0.0038
           : world.weather === 'rain'
-            ? 0.0028
-            : 0.00068;
+            ? 0.0024
+            : 0.00058;
     // Relax atmospheric haze smoothly when zoomed high out to the country-map Overview
     const camY = camera ? camera.position.y : 30;
     const altitudeClear = 1 - THREE.MathUtils.smoothstep(camY, 120, 620) * 0.74;
     const targetFog = baseFog * altitudeClear;
     this.fog.density += (targetFog - this.fog.density) * Math.min(1, dt * 1.8);
 
-    // Periodically refresh PMREM environment map for accurate sky reflections on water/stone
+    // Periodically refresh PMREM environment map for accurate sky/cloud/ground reflections
     this.envRefreshTimer -= dt;
     if (this.envRefreshTimer <= 0) {
-      this.envRefreshTimer = 3.0;
+      this.envRefreshTimer = 3.5;
       this.refreshEnvironmentMap();
     }
 
     // 2. Weather particles
     this.updateWeatherParticles(world, dt);
 
-    // 3. Soft glowing fireflies (present softly at dusk/golden hour and radiant at night!)
-    const nightAmt = Math.max(1 - daylight, goldenHour * 0.35);
-    const twinkle = 0.82 + Math.sin(world.elapsedSeconds * 3.1) * 0.18;
-    this.fireflyMat.opacity = Math.max(0, nightAmt * 0.92 * twinkle - (world.weather === 'storm' ? 0.5 : 0));
+    // 3. Soft glowing fireflies (present softly at dusk/golden hour and radiant at night)
+    const nightAmt = Math.max(1 - daylight, goldenHour * 0.25);
+    const twinkle = 0.80 + Math.sin(world.elapsedSeconds * 3.1) * 0.20;
+    this.fireflyMat.opacity = Math.max(0, nightAmt * 0.82 * twinkle - (world.weather === 'storm' ? 0.5 : 0));
     if (this.fireflyMat.opacity > 0.02) {
       const posAttr = this.fireflyPoints.geometry.getAttribute('position') as THREE.BufferAttribute;
       const t = world.elapsedSeconds;
@@ -1091,6 +1375,7 @@ export class AtmosphereSystem {
       const pct = age / beam.duration;
       if (pct >= 1) {
         this.divineGroup.remove(v.group);
+        this.divineLightGroup.remove(v.glowLight);
         v.dispose();
         this.activeBeams.splice(i, 1);
         continue;
@@ -1150,32 +1435,32 @@ export class AtmosphereSystem {
     const posAttr = this.weatherPoints.geometry.getAttribute('position') as THREE.BufferAttribute;
     let fallSpeed = 1.2;
     let windX = 0.6;
-    let targetOpacity = 0.28;
+    let targetOpacity = 0.22;
 
     if (world.weather === 'rain' || world.weather === 'storm') {
       fallSpeed = world.weather === 'storm' ? 28 : 18;
       windX = world.weather === 'storm' ? 7 : 2.5;
-      this.weatherMat.color.setHex(0xbcd3e6);
-      this.weatherMat.size = 0.28;
-      targetOpacity = 0.65;
+      this.weatherMat.color.setHex(0xb8cad8);
+      this.weatherMat.size = 0.24;
+      targetOpacity = 0.56;
     } else if (world.weather === 'snow') {
-      fallSpeed = 3.2;
+      fallSpeed = 3.0;
       windX = 1.4;
-      this.weatherMat.color.setHex(0xf4f9ff);
-      this.weatherMat.size = 0.52;
-      targetOpacity = 0.82;
+      this.weatherMat.color.setHex(0xedf2f7);
+      this.weatherMat.size = 0.44;
+      targetOpacity = 0.78;
     } else if (world.weather === 'blossom') {
-      fallSpeed = 1.8;
+      fallSpeed = 1.6;
       windX = 1.8;
-      this.weatherMat.color.setHex(0xffc9dc);
-      this.weatherMat.size = 0.54;
-      targetOpacity = 0.8;
+      this.weatherMat.color.setHex(0xf2cad4);
+      this.weatherMat.size = 0.42;
+      targetOpacity = 0.72;
     } else {
-      fallSpeed = 0.42;
-      windX = 0.5;
-      this.weatherMat.color.setHex(0xfff2c2);
-      this.weatherMat.size = 0.38;
-      targetOpacity = world.weather === 'sunbeams' ? 0.55 : 0.24;
+      fallSpeed = 0.36;
+      windX = 0.45;
+      this.weatherMat.color.setHex(0xf5e8be);
+      this.weatherMat.size = 0.28;
+      targetOpacity = world.weather === 'sunbeams' ? 0.38 : 0.14;
     }
 
     this.weatherMat.opacity += (targetOpacity - this.weatherMat.opacity) * Math.min(1, dt * 2.5);
@@ -1221,18 +1506,24 @@ export class AtmosphereSystem {
       daylight: this.currentDaylight,
       windStrength: this.currentWindStrength,
       isWinter: this.currentIsWinter,
+      cloudTime: this.currentCloudTime,
+      cloudCoverage: this.currentCloudCoverage,
+      rainWetness: this.currentRainWetness,
     };
   }
 
   dispose(): void {
     this.skyMesh.geometry.dispose();
     (this.skyMesh.material as THREE.Material).dispose();
+    this.envDomeGeo.dispose();
+    this.envSkyMat.dispose();
     this.weatherPoints.geometry.dispose();
     this.weatherMat.dispose();
     this.fireflyPoints.geometry.dispose();
     this.fireflyMat.dispose();
     for (const beam of this.activeBeams) {
       this.divineGroup.remove(beam.visual.group);
+      this.divineLightGroup.remove(beam.visual.glowLight);
       beam.visual.dispose();
     }
     this.activeBeams.length = 0;

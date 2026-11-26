@@ -4,7 +4,8 @@ import { BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
 import { getBuildingStage, type BuildingInstance, type Settlement } from '@simulation/settlements/Settlement';
 import { sampleBridgeDeckY, type BridgeInstance } from '@simulation/terrain/Bridge';
 import type { WorldState } from '@simulation/WorldState';
-import type { TextureLibrary } from './ProceduralTextures';
+import type { PbrTextureSet, TextureLibrary } from './ProceduralTextures';
+import type { SkyLightingState } from './WaterShader';
 import {
   HearthFire,
   createChimneySmokeGeometry,
@@ -12,6 +13,111 @@ import {
   createOvenFireMaterial,
   createSharedFlameGeometry,
 } from './FireEffect';
+
+interface ArchWeatheringUniforms {
+  readonly uRainWetness: { value: number };
+  readonly uWinter: { value: number };
+}
+
+function makeNormalOrBump(
+  tex: PbrTextureSet | undefined,
+  fallbackBump: THREE.Texture | null,
+  normalScale: number,
+  bumpScale: number,
+): Partial<THREE.MeshStandardMaterialParameters> {
+  if (tex?.normalMap) {
+    return {
+      normalMap: tex.normalMap,
+      normalScale: new THREE.Vector2(normalScale, normalScale),
+    };
+  }
+  return {
+    bumpMap: tex?.bumpMap ?? fallbackBump,
+    bumpScale,
+  };
+}
+
+/**
+ * Injects world-space architectural weathering onto cottage/stone/roof materials:
+ * macro surface mottling (breaking uniform surfaces), upward-facing moss/lichen patina,
+ * eave underside shadow depth, rain wetness darkening + specular sheen, and winter roof snow.
+ */
+function applyArchitecturalWeathering(
+  mat: THREE.MeshStandardMaterial,
+  uniforms: ArchWeatheringUniforms,
+  opts: { moss?: number; snow?: number; mottle?: number; rainDarken?: number } = {},
+): void {
+  const mossAmt = opts.moss ?? 0.18;
+  const snowAmt = opts.snow ?? 0.45;
+  const mottleAmt = opts.mottle ?? 0.15;
+  const rainDarken = opts.rainDarken ?? 0.24;
+  const cacheKey = `arch_weather_${mossAmt.toFixed(2)}_${snowAmt.toFixed(2)}_${mottleAmt.toFixed(2)}`;
+  mat.customProgramCacheKey = () => cacheKey;
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uRainWetness = uniforms.uRainWetness;
+    shader.uniforms.uWinter = uniforms.uWinter;
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        /* glsl */ `#include <common>
+        varying vec3 vArchWorldPos;
+        varying vec3 vArchWorldNormal;`,
+      )
+      .replace(
+        '#include <project_vertex>',
+        /* glsl */ `#include <project_vertex>
+        vec4 archWp = modelMatrix * vec4(transformed, 1.0);
+        vArchWorldPos = archWp.xyz;
+        vArchWorldNormal = normalize(mat3(modelMatrix) * objectNormal);`,
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        /* glsl */ `#include <common>
+        uniform float uRainWetness;
+        uniform float uWinter;
+        varying vec3 vArchWorldPos;
+        varying vec3 vArchWorldNormal;
+        float archHash2(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+        }
+        float archNoise2(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(archHash2(i), archHash2(i + vec2(1.0, 0.0)), f.x),
+            mix(archHash2(i + vec2(0.0, 1.0)), archHash2(i + vec2(1.0, 1.0)), f.x),
+            f.y
+          );
+        }`,
+      )
+      .replace(
+        '#include <color_fragment>',
+        /* glsl */ `#include <color_fragment>
+        float archN1 = archNoise2(vArchWorldPos.xz * 0.42 + vec2(vArchWorldPos.y * 0.55));
+        float archN2 = archNoise2(vArchWorldPos.xz * 1.45 - vec2(vArchWorldPos.y * 0.95));
+        float archFbm = archN1 * 0.65 + archN2 * 0.35;
+        float archUp = vArchWorldNormal.y;
+        float archEaveShade = mix(1.0, 0.80, smoothstep(0.15, -0.55, archUp));
+        diffuseColor.rgb *= (1.0 - ${(mottleAmt * 0.5).toFixed(3)} + archFbm * ${mottleAmt.toFixed(3)}) * archEaveShade;
+        float archMossMask = smoothstep(0.42, 0.88, archUp) * smoothstep(0.42, 0.82, archFbm) * ${mossAmt.toFixed(3)} * (1.0 - uWinter * 0.75);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.18, 0.24, 0.11), archMossMask);
+        float archWet = uRainWetness * smoothstep(-0.25, 0.55, archUp);
+        diffuseColor.rgb *= (1.0 - archWet * ${rainDarken.toFixed(3)});
+        float archSnowMask = uWinter * smoothstep(0.46, 0.86, archUp) * smoothstep(0.28, 0.72, archFbm + 0.18) * ${snowAmt.toFixed(3)};
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.89, 0.93), archSnowMask);`,
+      )
+      .replace(
+        '#include <roughnessmap_fragment>',
+        /* glsl */ `#include <roughnessmap_fragment>
+        float archWetR = uRainWetness * smoothstep(-0.25, 0.55, vArchWorldNormal.y);
+        roughnessFactor = mix(roughnessFactor, min(roughnessFactor, 0.24), archWetR * 0.78);`,
+      );
+  };
+}
 
 interface StagedPart {
   readonly obj: THREE.Object3D;
@@ -305,145 +411,160 @@ export class SettlementRenderer {
   private readonly hearths: RenderedHearth[] = [];
   private readonly settlementFlags = new Set<string>();
   private readonly extraDisposables: (THREE.BufferGeometry | THREE.Material)[] = [];
+  private readonly archUniforms: ArchWeatheringUniforms = {
+    uRainWetness: { value: 0 },
+    uWinter: { value: 0 },
+  };
+  private readonly windowDayColor = new THREE.Color(0x32404a);
+  private readonly windowNightColor = new THREE.Color(0xffe094);
 
   constructor(
     scene: THREE.Scene,
     private readonly world: WorldState,
     textures: TextureLibrary,
   ) {
+    const plasterTex = textures.plaster;
+    const slateTex = textures.slateRoof ?? textures.stone;
+    const rockTex = textures.rock ?? textures.stone;
+    const fabricNormalProps: Partial<THREE.MeshStandardMaterialParameters> = textures.fabricNormal
+      ? { normalMap: textures.fabricNormal, normalScale: new THREE.Vector2(0.45, 0.45) }
+      : { bumpMap: textures.fabricBump, bumpScale: 0.04 };
+
     this.timberMat = new THREE.MeshStandardMaterial({
+      color: 0xe6dccb,
       map: textures.timber.map,
-      bumpMap: textures.timber.bumpMap,
-      bumpScale: 0.14,
+      ...makeNormalOrBump(textures.timber, null, 0.72, 0.14),
       roughnessMap: textures.timber.roughnessMap,
-      roughness: 0.84,
+      roughness: 0.86,
     });
     this.darkTimberMat = new THREE.MeshStandardMaterial({
-      color: 0x4b321e,
+      color: 0x4a3423,
       map: textures.timber.map,
-      bumpMap: textures.timber.bumpMap,
-      bumpScale: 0.12,
-      roughness: 0.88,
+      ...makeNormalOrBump(textures.timber, null, 0.68, 0.12),
+      roughnessMap: textures.timber.roughnessMap,
+      roughness: 0.9,
     });
     this.plasterMat = new THREE.MeshStandardMaterial({
-      color: 0xf0e6d2,
-      roughness: 0.9,
-      bumpMap: textures.fabricBump,
-      bumpScale: 0.03,
-    });
-    this.warmPlasterMat = new THREE.MeshStandardMaterial({
-      color: 0xe9d3b0,
-      roughness: 0.9,
-      bumpMap: textures.fabricBump,
-      bumpScale: 0.035,
-    });
-    this.thatchMat = new THREE.MeshStandardMaterial({
-      map: textures.thatch.map,
-      bumpMap: textures.thatch.bumpMap,
-      bumpScale: 0.2,
-      roughnessMap: textures.thatch.roughnessMap,
+      color: plasterTex ? 0xf2ece0 : 0xece2cf,
+      map: plasterTex?.map ?? null,
+      ...makeNormalOrBump(plasterTex, textures.fabricBump, 0.45, 0.035),
+      roughnessMap: plasterTex?.roughnessMap ?? null,
       roughness: 0.92,
     });
+    this.warmPlasterMat = new THREE.MeshStandardMaterial({
+      color: plasterTex ? 0xe5d2b2 : 0xe0c8a4,
+      map: plasterTex?.map ?? null,
+      ...makeNormalOrBump(plasterTex, textures.fabricBump, 0.48, 0.04),
+      roughnessMap: plasterTex?.roughnessMap ?? null,
+      roughness: 0.92,
+    });
+    this.thatchMat = new THREE.MeshStandardMaterial({
+      color: 0xdfd5be,
+      map: textures.thatch.map,
+      ...makeNormalOrBump(textures.thatch, null, 0.88, 0.2),
+      roughnessMap: textures.thatch.roughnessMap,
+      roughness: 0.94,
+    });
     this.slateRoofMat = new THREE.MeshStandardMaterial({
-      color: 0x4c5d6d,
-      map: textures.stone.map,
-      bumpMap: textures.stone.bumpMap,
-      bumpScale: 0.16,
-      roughness: 0.78,
-      metalness: 0.08,
+      color: textures.slateRoof ? 0xc2cbd2 : 0x52606c,
+      map: slateTex.map,
+      ...makeNormalOrBump(slateTex, null, 0.82, 0.16),
+      roughnessMap: slateTex.roughnessMap,
+      roughness: 0.74,
+      metalness: 0.06,
     });
     this.verdigrisMat = new THREE.MeshStandardMaterial({
-      color: 0x4e9185,
-      roughness: 0.46,
-      metalness: 0.35,
-      bumpMap: textures.fabricBump,
-      bumpScale: 0.04,
+      color: 0x558378,
+      roughness: 0.52,
+      metalness: 0.38,
+      ...makeNormalOrBump(plasterTex, textures.fabricBump, 0.35, 0.04),
     });
     this.brickMat = new THREE.MeshStandardMaterial({
-      color: 0xa6523a,
+      color: 0x944d39,
       map: textures.stone.map,
-      bumpMap: textures.stone.bumpMap,
-      bumpScale: 0.16,
-      roughness: 0.88,
+      ...makeNormalOrBump(textures.stone, null, 0.74, 0.16),
+      roughnessMap: textures.stone.roughnessMap,
+      roughness: 0.9,
     });
     this.glassMat = new THREE.MeshStandardMaterial({
-      color: 0xdff6ff,
-      emissive: 0x26544f,
-      emissiveIntensity: 0.22,
-      roughness: 0.12,
-      metalness: 0.18,
-      transparent: true,
-      opacity: 0.44,
-    });
-    this.fountainWaterMat = new THREE.MeshStandardMaterial({
-      color: 0x3895ab,
-      emissive: 0x103b4a,
-      emissiveIntensity: 0.2,
-      roughness: 0.07,
+      color: 0xcfe2e8,
+      emissive: 0x0e1d22,
+      emissiveIntensity: 0.04,
+      roughness: 0.08,
       metalness: 0.24,
       transparent: true,
-      opacity: 0.78,
+      opacity: 0.42,
+    });
+    this.fountainWaterMat = new THREE.MeshStandardMaterial({
+      color: 0x2b6d78,
+      emissive: 0x071a20,
+      emissiveIntensity: 0.04,
+      roughness: 0.05,
+      metalness: 0.18,
+      transparent: true,
+      opacity: 0.76,
     });
     this.fountainStreamMat = new THREE.MeshStandardMaterial({
-      color: 0xd9f4ff,
-      emissive: 0x3b8ca5,
-      emissiveIntensity: 0.18,
-      roughness: 0.08,
-      metalness: 0.12,
+      color: 0xdceef5,
+      emissive: 0x183c48,
+      emissiveIntensity: 0.05,
+      roughness: 0.06,
+      metalness: 0.08,
       transparent: true,
-      opacity: 0.6,
+      opacity: 0.56,
       depthWrite: false,
     });
     this.fountainSprayMat = createFountainSprayMaterial();
     this.canvasSailMat = new THREE.MeshStandardMaterial({
-      color: 0xf7efe0,
-      roughness: 0.86,
-      bumpMap: textures.fabricBump,
-      bumpScale: 0.04,
+      color: 0xe8decb,
+      roughness: 0.9,
+      ...fabricNormalProps,
       side: THREE.DoubleSide,
     });
     this.stoneMat = new THREE.MeshStandardMaterial({
+      color: 0xdcd7cd,
       map: textures.stone.map,
-      bumpMap: textures.stone.bumpMap,
-      bumpScale: 0.18,
+      ...makeNormalOrBump(textures.stone, null, 0.84, 0.18),
       roughnessMap: textures.stone.roughnessMap,
-      roughness: 0.88,
+      roughness: 0.9,
     });
     this.windowMat = new THREE.MeshStandardMaterial({
-      color: 0xffe094,
-      emissive: 0xffa036,
-      emissiveIntensity: 1.35,
-      roughness: 0.3,
+      color: 0x32404a,
+      emissive: 0xff9b32,
+      emissiveIntensity: 0.08,
+      roughness: 0.14,
+      metalness: 0.28,
     });
     this.shrineCrystalMat = new THREE.MeshStandardMaterial({
-      color: 0x98ffe5,
-      emissive: 0x4de0bc,
-      emissiveIntensity: 1.65,
-      roughness: 0.16,
-      metalness: 0.22,
+      color: 0x8de0cf,
+      emissive: 0x38b89b,
+      emissiveIntensity: 0.92,
+      roughness: 0.14,
+      metalness: 0.18,
     });
     this.brassMat = new THREE.MeshStandardMaterial({
-      color: 0xe6bf5e,
-      roughness: 0.3,
-      metalness: 0.78,
+      color: 0xcfa755,
+      roughness: 0.32,
+      metalness: 0.82,
     });
     this.doorMat = new THREE.MeshStandardMaterial({
-      color: 0x6b3e22,
+      color: 0x623b22,
       map: textures.timber.map,
-      roughness: 0.8,
-    });
-    this.mossLeafMat = new THREE.MeshStandardMaterial({
-      color: 0x4e8538,
+      ...makeNormalOrBump(textures.timber, null, 0.65, 0.12),
+      roughnessMap: textures.timber.roughnessMap,
       roughness: 0.82,
     });
-    this.flowerPinkMat = new THREE.MeshStandardMaterial({ color: 0xf48fb1, roughness: 0.55 });
-    this.flowerGoldMat = new THREE.MeshStandardMaterial({ color: 0xffd54f, roughness: 0.55 });
-    this.flowerBlueMat = new THREE.MeshStandardMaterial({ color: 0x82b1ff, roughness: 0.55 });
+    this.mossLeafMat = new THREE.MeshStandardMaterial({
+      color: 0x466b32,
+      roughness: 0.86,
+    });
+    this.flowerPinkMat = new THREE.MeshStandardMaterial({ color: 0xd47d96, roughness: 0.68 });
+    this.flowerGoldMat = new THREE.MeshStandardMaterial({ color: 0xdbb44a, roughness: 0.68 });
+    this.flowerBlueMat = new THREE.MeshStandardMaterial({ color: 0x6e90c9, roughness: 0.68 });
     this.charredLogMat = new THREE.MeshStandardMaterial({
       color: 0x261a14,
       map: textures.timber.map,
-      bumpMap: textures.timber.bumpMap,
-      bumpScale: 0.18,
+      ...makeNormalOrBump(textures.timber, null, 0.78, 0.18),
       emissive: 0x3b0e02,
       emissiveIntensity: 0.35,
       roughness: 0.94,
@@ -451,77 +572,90 @@ export class SettlementRenderer {
     this.ovenFireMat = createOvenFireMaterial();
     this.chimneySmokeMat = createChimneySmokeMaterial();
     this.potteryMat = new THREE.MeshStandardMaterial({
-      color: 0xc26942,
-      roughness: 0.48,
+      color: 0xb05f3c,
+      roughness: 0.52,
     });
     this.earthPadMat = new THREE.MeshStandardMaterial({
-      color: 0x6b4f35,
-      map: textures.stone.map,
-      bumpMap: textures.stone.bumpMap,
-      bumpScale: 0.14,
+      color: 0x644b34,
+      map: textures.forestFloor.map,
+      ...makeNormalOrBump(textures.forestFloor, textures.stone.bumpMap, 0.65, 0.14),
       roughness: 0.96,
       polygonOffset: true,
       polygonOffsetFactor: 2,
       polygonOffsetUnits: 2,
     });
     this.ropeMat = new THREE.MeshStandardMaterial({
-      color: 0xcab48c,
-      roughness: 0.92,
+      color: 0xbca782,
+      roughness: 0.94,
     });
     this.driftwoodMat = new THREE.MeshStandardMaterial({
-      color: 0x6f6052,
+      color: 0x6c6054,
       map: textures.timber.map,
-      bumpMap: textures.timber.bumpMap,
-      bumpScale: 0.16,
-      roughness: 0.9,
+      ...makeNormalOrBump(textures.timber, null, 0.72, 0.16),
+      roughness: 0.92,
     });
     this.tealTrimMat = new THREE.MeshStandardMaterial({
-      color: 0x2e757c,
-      roughness: 0.72,
-      bumpMap: textures.fabricBump,
-      bumpScale: 0.04,
+      color: 0x32696f,
+      roughness: 0.76,
+      ...fabricNormalProps,
     });
     this.mossRoofMat = new THREE.MeshStandardMaterial({
-      color: 0x467036,
+      color: 0x496537,
       map: textures.thatch.map,
-      bumpMap: textures.thatch.bumpMap,
-      bumpScale: 0.22,
+      ...makeNormalOrBump(textures.thatch, null, 0.85, 0.22),
       roughness: 0.94,
     });
     this.terracottaPlasterMat = new THREE.MeshStandardMaterial({
-      color: 0xe9bf88,
-      roughness: 0.88,
-      bumpMap: textures.fabricBump,
-      bumpScale: 0.04,
+      color: plasterTex ? 0xe0b886 : 0xdcb27e,
+      map: plasterTex?.map ?? null,
+      ...makeNormalOrBump(plasterTex, textures.fabricBump, 0.48, 0.04),
+      roughnessMap: plasterTex?.roughnessMap ?? null,
+      roughness: 0.9,
     });
     this.terracottaRoofMat = new THREE.MeshStandardMaterial({
-      color: 0xc65b36,
-      map: textures.stone.map,
-      bumpMap: textures.stone.bumpMap,
-      bumpScale: 0.18,
-      roughness: 0.8,
+      color: textures.slateRoof ? 0xc86b48 : 0xb25434,
+      map: slateTex.map,
+      ...makeNormalOrBump(slateTex, null, 0.8, 0.18),
+      roughnessMap: slateTex.roughnessMap,
+      roughness: 0.82,
     });
     this.ochreCanvasMat = new THREE.MeshStandardMaterial({
-      color: 0xf2c972,
-      roughness: 0.85,
-      bumpMap: textures.fabricBump,
-      bumpScale: 0.045,
+      color: 0xddb76a,
+      roughness: 0.88,
+      ...fabricNormalProps,
       side: THREE.DoubleSide,
     });
     this.goldenThatchMat = new THREE.MeshStandardMaterial({
-      color: 0xe6c16a,
+      color: 0xd6b56d,
       map: textures.thatch.map,
-      bumpMap: textures.thatch.bumpMap,
-      bumpScale: 0.2,
-      roughness: 0.9,
+      ...makeNormalOrBump(textures.thatch, null, 0.85, 0.2),
+      roughnessMap: textures.thatch.roughnessMap,
+      roughness: 0.92,
     });
     this.graniteMat = new THREE.MeshStandardMaterial({
-      color: 0x7b8589,
-      map: textures.stone.map,
-      bumpMap: textures.stone.bumpMap,
-      bumpScale: 0.22,
-      roughness: 0.9,
+      color: textures.rock ? 0xc0c4c2 : 0x7a8184,
+      map: rockTex.map,
+      ...makeNormalOrBump(rockTex, null, 0.88, 0.22),
+      roughnessMap: rockTex.roughnessMap,
+      roughness: 0.92,
     });
+
+    // Apply shared procedural weathering (mottling, moss patina, rain sheen, winter roof snow)
+    applyArchitecturalWeathering(this.timberMat, this.archUniforms, { moss: 0.14, snow: 0.35, mottle: 0.14 });
+    applyArchitecturalWeathering(this.darkTimberMat, this.archUniforms, { moss: 0.12, snow: 0.35, mottle: 0.12 });
+    applyArchitecturalWeathering(this.plasterMat, this.archUniforms, { moss: 0.16, snow: 0.22, mottle: 0.18 });
+    applyArchitecturalWeathering(this.warmPlasterMat, this.archUniforms, { moss: 0.15, snow: 0.22, mottle: 0.18 });
+    applyArchitecturalWeathering(this.thatchMat, this.archUniforms, { moss: 0.28, snow: 0.68, mottle: 0.16 });
+    applyArchitecturalWeathering(this.slateRoofMat, this.archUniforms, { moss: 0.22, snow: 0.72, mottle: 0.14 });
+    applyArchitecturalWeathering(this.verdigrisMat, this.archUniforms, { moss: 0.1, snow: 0.55, mottle: 0.16 });
+    applyArchitecturalWeathering(this.brickMat, this.archUniforms, { moss: 0.2, snow: 0.4, mottle: 0.16 });
+    applyArchitecturalWeathering(this.stoneMat, this.archUniforms, { moss: 0.26, snow: 0.52, mottle: 0.16 });
+    applyArchitecturalWeathering(this.driftwoodMat, this.archUniforms, { moss: 0.18, snow: 0.35, mottle: 0.14 });
+    applyArchitecturalWeathering(this.mossRoofMat, this.archUniforms, { moss: 0.32, snow: 0.68, mottle: 0.16 });
+    applyArchitecturalWeathering(this.terracottaPlasterMat, this.archUniforms, { moss: 0.14, snow: 0.22, mottle: 0.18 });
+    applyArchitecturalWeathering(this.terracottaRoofMat, this.archUniforms, { moss: 0.18, snow: 0.68, mottle: 0.14 });
+    applyArchitecturalWeathering(this.goldenThatchMat, this.archUniforms, { moss: 0.24, snow: 0.68, mottle: 0.16 });
+    applyArchitecturalWeathering(this.graniteMat, this.archUniforms, { moss: 0.26, snow: 0.55, mottle: 0.16 });
 
     // Bell-curved fairytale thatch cottage roof (LatheGeometry wound bottom-to-top for outward normals)
     const bellPts = [
@@ -584,7 +718,7 @@ export class SettlementRenderer {
     this.syncAll();
   }
 
-  update(dt: number): void {
+  update(dt: number, sky?: SkyLightingState): void {
     this.syncAll();
 
     const t = this.world.elapsedSeconds;
@@ -594,10 +728,17 @@ export class SettlementRenderer {
     const sunY = Math.sin(sunAngle);
     const sunX = Math.cos(sunAngle) * 0.85;
     const daylight = THREE.MathUtils.clamp((sunY + 0.16) / 0.55, 0, 1);
-    const nightGlow = THREE.MathUtils.clamp(1 - (sunY + 0.1) * 2.2, 0.24, 2.35);
-    this.windowMat.emissiveIntensity = nightGlow * 1.45;
-    this.fountainWaterMat.emissiveIntensity = 0.12 + nightGlow * 0.16;
-    this.fountainStreamMat.emissiveIntensity = 0.12 + daylight * 0.14 + nightGlow * 0.12;
+    const nightGlow = THREE.MathUtils.clamp(1 - (sunY + 0.1) * 2.2, 0.0, 2.2);
+    const windowWarmth = THREE.MathUtils.clamp(1 - daylight * 1.15, 0, 1);
+    this.windowMat.color.copy(this.windowDayColor).lerp(this.windowNightColor, windowWarmth);
+    this.windowMat.emissiveIntensity = 0.04 + windowWarmth * (0.45 + nightGlow * 0.85);
+    this.fountainWaterMat.emissiveIntensity = 0.03 + nightGlow * 0.04;
+    this.fountainStreamMat.emissiveIntensity = 0.04 + daylight * 0.05 + nightGlow * 0.03;
+
+    this.archUniforms.uRainWetness.value =
+      sky?.rainWetness ??
+      (this.world.weather === 'storm' ? 1.0 : this.world.weather === 'rain' ? 0.78 : 0.0);
+    this.archUniforms.uWinter.value = (sky?.isWinter ?? this.world.season === 'winter') ? 1 : 0;
     this.fountainSprayMat.uniforms.uTime.value = t;
     this.fountainSprayMat.uniforms.uDaylight.value = daylight;
     this.ovenFireMat.uniforms.uTime.value = t;

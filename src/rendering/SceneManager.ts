@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { Pass } from 'three/examples/jsm/postprocessing/Pass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { QUALITY_PRESETS, type QualityPreset } from '@core/Config';
@@ -16,10 +17,46 @@ import { SettlementRenderer } from './SettlementRenderer';
 import { TerrainRenderer } from './TerrainRenderer';
 
 /**
- * Orchestrates the high-resolution storybook Three.js WebGL2 pipeline:
- * ACES Filmic tone mapping, PCF soft shadows, hardware-depth Distance Focus Blur
- * with infinite-horizon fade, optional subtle UnrealBloomPass, procedural PBR textures,
- * raycast entity inspection, and sub-renderers.
+ * Renders supernatural divine beam columns, shockwave rings, halos, and stardust AFTER
+ * DistanceFocusBlurPass (so far-horizon mist behind a foreground beam never erases it)
+ * while sampling the untouched scene depth buffer for exact mountain/building occlusion.
+ */
+class DivineOverlayPass extends Pass {
+  constructor(
+    private readonly getAtmosphere: () => AtmosphereSystem | undefined,
+    private readonly camera: THREE.PerspectiveCamera,
+  ) {
+    super();
+    this.needsSwap = false;
+  }
+
+  override render(
+    renderer: THREE.WebGLRenderer,
+    writeBuffer: THREE.WebGLRenderTarget,
+    readBuffer: THREE.WebGLRenderTarget,
+  ): void {
+    const atmosphere = this.getAtmosphere();
+    if (!atmosphere) return;
+    const hasBeams = atmosphere.syncDivineDepthUniforms(
+      writeBuffer.depthTexture ?? null,
+      readBuffer.width,
+      readBuffer.height,
+    );
+    if (!hasBeams) return;
+    const prevAutoClear = renderer.autoClear;
+    renderer.autoClear = false;
+    renderer.setRenderTarget(this.renderToScreen ? null : readBuffer);
+    renderer.clearDepth();
+    renderer.render(atmosphere.divineOverlayScene, this.camera);
+    renderer.autoClear = prevAutoClear;
+  }
+}
+
+/**
+ * Orchestrates the naturalistic photographic Three.js WebGL2 pipeline:
+ * AgX filmic tone mapping, camera-adaptive PCF soft shadows, depth-reconstructed
+ * contact AO + valley mist + Mie in-scattering + optical DOF, subtle HDR bloom,
+ * procedural PBR + normal-mapped textures, raycast inspection, and sub-renderers.
  */
 export class SceneManager {
   readonly renderer: THREE.WebGLRenderer;
@@ -64,8 +101,8 @@ export class SceneManager {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.pixelRatioCap));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.1;
+    this.renderer.toneMapping = THREE.AgXToneMapping;
+    this.renderer.toneMappingExposure = 1.04;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -74,7 +111,7 @@ export class SceneManager {
       46,
       window.innerWidth / window.innerHeight,
       0.22,
-      7200,
+      16000,
     );
     this.cameraController = new CameraController(this.camera, canvas);
 
@@ -154,22 +191,48 @@ export class SceneManager {
     const sky = this.atmosphere.getSkyLightingState();
     this.terrainRenderer.update(dt, sky);
     this.floraRenderer.update(dt, sky);
-    this.settlementRenderer.update(dt);
+    this.settlementRenderer.update(dt, sky);
     this.creatureRenderer.update(dt, this.selection, this.povCreatureId);
 
     if (this.dofPass) {
       const isPov = this.cameraController.isInCreaturePov();
       const focusDistance = this.cameraController.getFocusDistance();
-      // Keep high-altitude country-map Overview crisp while preserving dreamy DOF up close
-      const overviewFactor = isPov ? 0 : THREE.MathUtils.smoothstep(focusDistance, 200, 680);
+      // Adapt camera near plane with zoom distance so zoomed-out overviews get ~25x better depth precision
+      const targetNear = isPov ? 0.22 : THREE.MathUtils.clamp(focusDistance * 0.012, 0.22, 6.0);
+      if (Math.abs(this.camera.near - targetNear) > 0.02) {
+        this.camera.near = targetNear;
+        this.camera.updateProjectionMatrix();
+      }
+
+      const overviewFactor = isPov ? 0 : THREE.MathUtils.smoothstep(focusDistance, 160, 560);
+      const mistStrength =
+        this.world.weather === 'mist'
+          ? 0.92
+          : this.world.weather === 'rain' || this.world.weather === 'storm'
+            ? 0.62
+            : 0.34 + (1 - sky.daylight) * 0.22;
+      const worldExtent = this.world.config.worldSize * 6.5;
+      const horizonFadeStart = isPov ? 420 : Math.max(2400, focusDistance * 3.0);
+      const horizonFadeEnd = isPov
+        ? 1350
+        : Math.max(horizonFadeStart + 2000, Math.min(worldExtent * 0.92, Math.max(5800, focusDistance * 5.8)));
       this.dofPass.updateParams({
         focusDistance,
-        focusRange: isPov ? 28 : Math.max(32, focusDistance * (0.72 + overviewFactor * 0.85)),
-        maxBlur: isPov ? 0.011 : 0.0125 * (1 - overviewFactor * 0.82),
-        horizonFadeStart: isPov ? 320 : Math.max(760, focusDistance * 1.65),
-        horizonFadeEnd: isPov ? 920 : Math.max(2100, focusDistance * 3.15),
+        focusRange: isPov ? 26 : Math.max(42, focusDistance * (0.95 + overviewFactor * 1.1)),
+        maxBlur: isPov ? 0.0058 : 0.0018 * (1 - overviewFactor * 0.92),
+        horizonFadeStart,
+        horizonFadeEnd,
+        worldHorizonStart: worldExtent * 0.86,
+        worldHorizonEnd: worldExtent * 0.97,
         horizonColor: sky.fogColor,
         isPov,
+        sunDirection: sky.sunDirection,
+        sunColor: sky.sunColor,
+        daylight: sky.daylight,
+        waterLevel: this.world.terrain.waterLevel,
+        fogDensity: sky.fogDensity,
+        aoStrength: this.quality === 'balanced' ? 0.65 : 0.88,
+        mistStrength: mistStrength * (1 - overviewFactor * 0.65),
       });
     }
 
@@ -177,6 +240,13 @@ export class SceneManager {
       this.composer.render();
     } else {
       this.renderer.render(this.scene, this.camera);
+      const hasBeams = this.atmosphere.syncDivineDepthUniforms(null, window.innerWidth, window.innerHeight);
+      if (hasBeams) {
+        const prevAutoClear = this.renderer.autoClear;
+        this.renderer.autoClear = false;
+        this.renderer.render(this.atmosphere.divineOverlayScene, this.camera);
+        this.renderer.autoClear = prevAutoClear;
+      }
     }
   }
 
@@ -240,14 +310,16 @@ export class SceneManager {
 
     const dof = new DistanceFocusBlurPass(this.camera, q.dofTaps);
     composer.addPass(dof);
+    composer.addPass(new DivineOverlayPass(() => this.atmosphere, this.camera));
 
     let bloom: UnrealBloomPass | null = null;
     if (q.enableBloom) {
+      // Restrained physical HDR bloom so only bright glints, flames, fireflies, and beams glow
       bloom = new UnrealBloomPass(
         new THREE.Vector2(window.innerWidth, window.innerHeight),
-        0.28,
-        0.65,
-        0.9,
+        0.14,
+        0.45,
+        1.05,
       );
       composer.addPass(bloom);
     }

@@ -73,9 +73,8 @@ interface SharedGeometries {
   readonly buckle: THREE.BufferGeometry;
   readonly head: THREE.BufferGeometry;
   readonly eye: THREE.BufferGeometry;
-  readonly catchlightBig: THREE.BufferGeometry;
-  readonly catchlightSmall: THREE.BufferGeometry;
-  readonly blush: THREE.BufferGeometry;
+  readonly eyeRim: THREE.BufferGeometry;
+  readonly selectionBead: THREE.BufferGeometry;
   readonly nose: THREE.BufferGeometry;
   readonly whisker: THREE.BufferGeometry;
   readonly arm: THREE.BufferGeometry;
@@ -561,10 +560,9 @@ function createSharedGeometries(): SharedGeometries {
     belt,
     buckle,
     head: new THREE.SphereGeometry(0.265, 24, 18),
-    eye: new THREE.SphereGeometry(0.054, 14, 12),
-    catchlightBig: new THREE.SphereGeometry(0.018, 8, 8),
-    catchlightSmall: new THREE.SphereGeometry(0.01, 6, 6),
-    blush: new THREE.SphereGeometry(0.055, 10, 8),
+    eye: new THREE.SphereGeometry(0.054, 16, 14),
+    eyeRim: new THREE.TorusGeometry(0.055, 0.011, 8, 18),
+    selectionBead: new THREE.SphereGeometry(0.018, 8, 8),
     nose: new THREE.SphereGeometry(0.036, 10, 8),
     whisker: new THREE.CylinderGeometry(0.004, 0.002, 0.22, 4),
     arm,
@@ -615,9 +613,9 @@ export class CreatureRenderer {
   private readonly disposables: (THREE.BufferGeometry | THREE.Material)[] = [];
 
   // Shared detail materials
-  private readonly eyeMat: THREE.MeshStandardMaterial;
-  private readonly catchlightMat: THREE.MeshBasicMaterial;
-  private readonly blushMat: THREE.MeshStandardMaterial;
+  private readonly eyeMat: THREE.MeshPhysicalMaterial;
+  private readonly eyelidRimMat: THREE.MeshStandardMaterial;
+  private readonly warmIrisMat: THREE.MeshPhysicalMaterial;
   private readonly pinkInnerMat: THREE.MeshStandardMaterial;
   private readonly noseBlackMat: THREE.MeshStandardMaterial;
   private readonly nosePinkMat: THREE.MeshStandardMaterial;
@@ -645,83 +643,114 @@ export class CreatureRenderer {
     this.geo = createSharedGeometries();
     this.disposables.push(...Object.values(this.geo));
 
-    this.eyeMat = new THREE.MeshStandardMaterial({
-      color: 0x0e1015,
+    const fabricDetail: Partial<THREE.MeshStandardMaterialParameters> = textures?.fabricNormal
+      ? { normalMap: textures.fabricNormal, normalScale: new THREE.Vector2(0.48, 0.48) }
+      : { bumpMap: textures?.fabricBump ?? null, bumpScale: 0.045 };
+
+    // Wet clearcoated animal cornea/pupil that catches real PMREM sky & sun reflections
+    this.eyeMat = new THREE.MeshPhysicalMaterial({
+      color: 0x08090c,
+      roughness: 0.035,
+      metalness: 0.04,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.02,
+      reflectivity: 1.0,
+      envMapIntensity: 2.35,
+    });
+    this.eyelidRimMat = new THREE.MeshStandardMaterial({
+      color: 0x1d1715,
+      roughness: 0.78,
+    });
+    this.warmIrisMat = new THREE.MeshPhysicalMaterial({
+      color: 0x3a2213,
       roughness: 0.08,
-      metalness: 0.12,
+      clearcoat: 0.95,
+      clearcoatRoughness: 0.03,
+      envMapIntensity: 1.85,
     });
-    this.catchlightMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    this.blushMat = new THREE.MeshStandardMaterial({
-      color: 0xf497a0,
-      roughness: 0.9,
-      transparent: true,
-      opacity: 0.62,
-    });
-    this.pinkInnerMat = new THREE.MeshStandardMaterial({
-      color: 0xebaba9,
+    this.pinkInnerMat = new THREE.MeshPhysicalMaterial({
+      color: 0xcfa09c,
       roughness: 0.88,
+      sheen: 0.45,
+      sheenRoughness: 0.72,
+      sheenColor: new THREE.Color(0xe6c8c4),
     });
-    this.noseBlackMat = new THREE.MeshStandardMaterial({
-      color: 0x181517,
-      roughness: 0.18,
-      metalness: 0.1,
+    this.noseBlackMat = new THREE.MeshPhysicalMaterial({
+      color: 0x161314,
+      roughness: 0.22,
+      metalness: 0.04,
+      clearcoat: 0.65,
+      clearcoatRoughness: 0.16,
     });
-    this.nosePinkMat = new THREE.MeshStandardMaterial({
-      color: 0xe88a92,
-      roughness: 0.35,
+    this.nosePinkMat = new THREE.MeshPhysicalMaterial({
+      color: 0xc97b80,
+      roughness: 0.34,
+      clearcoat: 0.52,
+      clearcoatRoughness: 0.22,
     });
     this.whiskerMat = new THREE.MeshStandardMaterial({
-      color: 0xf0ebe2,
-      roughness: 0.7,
+      color: 0xe6dfd3,
+      roughness: 0.68,
     });
     this.leatherMat = new THREE.MeshStandardMaterial({
-      color: 0x5c3a21,
-      roughness: 0.78,
-      bumpMap: textures?.fabricBump ?? null,
-      bumpScale: 0.04,
+      color: 0x523520,
+      roughness: 0.72,
+      ...fabricDetail,
     });
     this.brassMat = new THREE.MeshStandardMaterial({
-      color: 0xe6be5c,
-      roughness: 0.28,
-      metalness: 0.78,
+      color: 0xcfa652,
+      roughness: 0.3,
+      metalness: 0.82,
     });
     this.woodMat = new THREE.MeshStandardMaterial({
-      color: 0x875c38,
-      roughness: 0.84,
+      color: 0x7d5737,
+      roughness: 0.86,
+      bumpMap: textures?.fabricBump ?? null,
+      bumpScale: 0.025,
     });
     this.leafMat = new THREE.MeshStandardMaterial({
-      color: 0x5d9c3f,
-      roughness: 0.74,
+      color: 0x4b7834,
+      roughness: 0.78,
     });
-    this.berryRedMat = new THREE.MeshStandardMaterial({
-      color: 0xd9383a,
-      roughness: 0.35,
+    this.berryRedMat = new THREE.MeshPhysicalMaterial({
+      color: 0xa82e30,
+      roughness: 0.34,
+      clearcoat: 0.38,
+      clearcoatRoughness: 0.24,
     });
-    this.berryBlueMat = new THREE.MeshStandardMaterial({
-      color: 0x4558a8,
+    this.berryBlueMat = new THREE.MeshPhysicalMaterial({
+      color: 0x3a4a82,
       roughness: 0.38,
+      clearcoat: 0.32,
+      clearcoatRoughness: 0.28,
     });
     this.crystalGlowMat = new THREE.MeshStandardMaterial({
-      color: 0x99ffe6,
-      emissive: 0x4de0bc,
-      emissiveIntensity: 1.5,
-      roughness: 0.18,
+      color: 0x8de0cf,
+      emissive: 0x38b89b,
+      emissiveIntensity: 0.92,
+      roughness: 0.16,
     });
     this.lanternGlowMat = new THREE.MeshStandardMaterial({
-      color: 0xffe49e,
-      emissive: 0xffa63d,
-      emissiveIntensity: 1.65,
-      roughness: 0.25,
+      color: 0xf7d88a,
+      emissive: 0xee962e,
+      emissiveIntensity: 0.95,
+      roughness: 0.24,
     });
-    this.owlIrisMat = new THREE.MeshStandardMaterial({
-      color: 0xf4b632,
-      emissive: 0x5c3605,
-      emissiveIntensity: 0.28,
-      roughness: 0.22,
+    this.owlIrisMat = new THREE.MeshPhysicalMaterial({
+      color: 0xd99b24,
+      emissive: 0x3d2204,
+      emissiveIntensity: 0.14,
+      roughness: 0.09,
+      clearcoat: 0.95,
+      clearcoatRoughness: 0.03,
+      envMapIntensity: 1.8,
     });
-    this.frogIrisMat = new THREE.MeshStandardMaterial({
-      color: 0xf0c948,
-      roughness: 0.22,
+    this.frogIrisMat = new THREE.MeshPhysicalMaterial({
+      color: 0xc8a436,
+      roughness: 0.09,
+      clearcoat: 0.95,
+      clearcoatRoughness: 0.03,
+      envMapIntensity: 1.8,
     });
     this.selectionMat = new THREE.MeshBasicMaterial({
       color: 0xffe57f,
@@ -730,27 +759,29 @@ export class CreatureRenderer {
       opacity: 0.88,
     });
     this.steelMat = new THREE.MeshStandardMaterial({
-      color: 0xc2ccd6,
-      roughness: 0.32,
-      metalness: 0.78,
+      color: 0xb6c0ca,
+      roughness: 0.3,
+      metalness: 0.82,
     });
-    this.reedWeaveMat = new THREE.MeshStandardMaterial({
-      color: 0xa99e6d,
+    this.reedWeaveMat = new THREE.MeshPhysicalMaterial({
+      color: 0x9c9264,
+      roughness: 0.92,
+      sheen: 0.25,
+      sheenRoughness: 0.82,
+      ...fabricDetail,
+    });
+    this.strawWeaveMat = new THREE.MeshPhysicalMaterial({
+      color: 0xcfb260,
       roughness: 0.9,
-      bumpMap: textures?.fabricBump ?? null,
-      bumpScale: 0.06,
-    });
-    this.strawWeaveMat = new THREE.MeshStandardMaterial({
-      color: 0xe6c465,
-      roughness: 0.88,
-      bumpMap: textures?.fabricBump ?? null,
-      bumpScale: 0.06,
+      sheen: 0.28,
+      sheenRoughness: 0.8,
+      ...fabricDetail,
     });
 
     this.disposables.push(
       this.eyeMat,
-      this.catchlightMat,
-      this.blushMat,
+      this.eyelidRimMat,
+      this.warmIrisMat,
       this.pinkInnerMat,
       this.noseBlackMat,
       this.nosePinkMat,
@@ -942,8 +973,8 @@ export class CreatureRenderer {
         const hopWave = Math.abs(Math.sin(phase));
         bobY = hopWave * 0.38;
         tiltX = Math.sin(phase) * 0.16;
-        // Charming cartoon squash-and-stretch on hop launch/landing
-        squashY = 0.92 + hopWave * 0.15;
+        // Subtle natural posture compression on hop launch/landing
+        squashY = 0.96 + hopWave * 0.06;
       } else if (isBird) {
         bobY = isAirborne ? Math.sin(phase * 1.5) * 0.18 : Math.abs(Math.sin(phase)) * 0.1;
         tiltX = isAirborne ? 0.24 : Math.sin(phase) * 0.06;
@@ -1044,7 +1075,7 @@ export class CreatureRenderer {
         } else if (activeStage === 'foundation') {
           // Crouched stone-laying & mortar troweling
           const sweep = Math.sin(t * 8.5 + seed);
-          squashY = 0.89 + Math.abs(sweep) * 0.04;
+          squashY = 0.94 + Math.abs(sweep) * 0.025;
           tiltX = 0.34;
           headPitch = 0.28;
           if (!isBird && rig.rightArm && rig.leftArm) {
@@ -1088,7 +1119,7 @@ export class CreatureRenderer {
         // Joyful bouncy hops and playful ear/head wiggles for frolicking litters of young!
         const hop = Math.abs(Math.sin(t * 7.2 + seed));
         bobY += hop * 0.16;
-        squashY = 0.92 + hop * 0.14;
+        squashY = 0.96 + hop * 0.06;
         headRoll = Math.sin(t * 6.5 + seed) * 0.24;
         headPitch = -0.08 + Math.sin(t * 5.0 + seed) * 0.14;
       } else if (c.activity === 'celebrating' && c.isDancingAtCelebration) {
@@ -1096,7 +1127,7 @@ export class CreatureRenderer {
         const beat = Math.abs(Math.sin(t * 6.4 + seed));
         const sway = Math.sin(t * 3.2 + seed);
         bobY += beat * 0.18;
-        squashY = 0.91 + beat * 0.16;
+        squashY = 0.96 + beat * 0.06;
         tiltZ += sway * 0.18;
         headRoll = sway * 0.26;
         headPitch = -0.1 + beat * 0.14;
@@ -1121,7 +1152,7 @@ export class CreatureRenderer {
         headPitch = 0.12 + Math.sin(t * 3.1 + seed) * 0.08;
         if (c.activity === 'nesting') {
           bobY = -0.06;
-          squashY = 0.92 + Math.sin(t * 2.8 + seed) * 0.03;
+          squashY = 0.96 + Math.sin(t * 2.8 + seed) * 0.02;
         }
       } else if (c.activity === 'fighting') {
         const lunge = Math.sin(t * 15 + seed);
@@ -1146,7 +1177,7 @@ export class CreatureRenderer {
       } else if (c.activity === 'resting') {
         bobY = -0.11;
         tiltX = 0.2;
-        squashY = 0.88 + Math.sin(t * 2.4 + seed) * 0.035;
+        squashY = 0.94 + Math.sin(t * 2.4 + seed) * 0.022;
         headPitch = 0.25;
       }
 
@@ -1158,7 +1189,7 @@ export class CreatureRenderer {
       rig.bodyGroup.rotation.x = tiltX;
 
       // Adorable youthful proportions: slightly larger head on newborn young & juveniles
-      const headScale = c.lifeStage === 'young' ? 1.22 : c.lifeStage === 'juvenile' ? 1.1 : 1.0;
+      const headScale = c.lifeStage === 'young' ? 1.18 : c.lifeStage === 'juvenile' ? 1.08 : 1.0;
       rig.headGroup.scale.setScalar(headScale);
       rig.headGroup.rotation.x = headPitch;
       rig.headGroup.rotation.z = headRoll;
@@ -1213,41 +1244,84 @@ export class CreatureRenderer {
     if (existing) return existing;
 
     const def = c.def;
-    const isGlossy = c.species === 'frog' || c.species === 'crow';
-    const furBump = isGlossy ? null : (this.textures?.furBump ?? null);
+    const isFrog = c.species === 'frog';
+    const isCrow = c.species === 'crow';
+    const isBird = def.silhouette === 'bird' || def.silhouette === 'owl';
+    const furMap = isFrog ? null : (this.textures?.furMap ?? null);
+    const furNormal = isFrog ? null : (this.textures?.furNormal ?? null);
+    const furBump = isFrog || isCrow ? null : (this.textures?.furBump ?? null);
     const fabricBump = this.textures?.fabricBump ?? null;
+    const fabricNormal = this.textures?.fabricNormal ?? null;
 
-    const primary = new THREE.MeshStandardMaterial({
+    const furDetailPrimary: Partial<THREE.MeshPhysicalMaterialParameters> = furNormal
+      ? { normalMap: furNormal, normalScale: new THREE.Vector2(isCrow ? 0.4 : 0.56, isCrow ? 0.4 : 0.56) }
+      : { bumpMap: furBump, bumpScale: 0.035 };
+    const furDetailSecondary: Partial<THREE.MeshPhysicalMaterialParameters> = furNormal
+      ? { normalMap: furNormal, normalScale: new THREE.Vector2(0.44, 0.44) }
+      : { bumpMap: furBump, bumpScale: 0.025 };
+    const fabricDetail: Partial<THREE.MeshPhysicalMaterialParameters> = fabricNormal
+      ? { normalMap: fabricNormal, normalScale: new THREE.Vector2(0.52, 0.52) }
+      : { bumpMap: fabricBump, bumpScale: 0.045 };
+
+    const primarySheen = new THREE.Color(def.primaryColor).lerp(
+      new THREE.Color(isCrow ? 0x45588a : 0xf7eee0),
+      isCrow ? 0.45 : 0.36,
+    );
+    const secondarySheen = new THREE.Color(def.secondaryColor).lerp(new THREE.Color(0xfff6e8), 0.34);
+
+    const primary = new THREE.MeshPhysicalMaterial({
       color: def.primaryColor,
-      roughness: c.species === 'frog' ? 0.34 : c.species === 'crow' ? 0.42 : 0.84,
-      metalness: c.species === 'crow' ? 0.18 : 0.02,
-      bumpMap: furBump,
-      bumpScale: 0.035,
+      map: isCrow ? null : furMap,
+      ...furDetailPrimary,
+      roughness: isFrog ? 0.28 : isCrow ? 0.34 : isBird ? 0.74 : 0.88,
+      metalness: isCrow ? 0.14 : 0.0,
+      clearcoat: isFrog ? 0.68 : 0.0,
+      clearcoatRoughness: isFrog ? 0.2 : 0.0,
+      iridescence: isCrow ? 0.58 : 0.0,
+      iridescenceIOR: 1.36,
+      sheen: isFrog ? 0.0 : isCrow ? 0.35 : isBird ? 0.65 : 0.85,
+      sheenRoughness: isCrow ? 0.42 : isBird ? 0.48 : 0.62,
+      sheenColor: primarySheen,
     });
-    const secondary = new THREE.MeshStandardMaterial({
+    const secondary = new THREE.MeshPhysicalMaterial({
       color: def.secondaryColor,
-      roughness: c.species === 'frog' ? 0.42 : 0.82,
-      bumpMap: furBump,
-      bumpScale: 0.025,
+      map: furMap,
+      ...furDetailSecondary,
+      roughness: isFrog ? 0.34 : isBird ? 0.74 : 0.86,
+      metalness: 0.0,
+      clearcoat: isFrog ? 0.45 : 0.0,
+      clearcoatRoughness: isFrog ? 0.26 : 0.0,
+      sheen: isFrog ? 0.0 : isBird ? 0.6 : 0.82,
+      sheenRoughness: isBird ? 0.5 : 0.65,
+      sheenColor: secondarySheen,
     });
-    const accent = new THREE.MeshStandardMaterial({
+    const accent = new THREE.MeshPhysicalMaterial({
       color: def.accentColor,
-      roughness: 0.65,
-    });
-    const cloak = new THREE.MeshStandardMaterial({
-      color: def.cloakColor,
-      roughness: 0.88,
-      bumpMap: fabricBump,
-      bumpScale: 0.045,
+      roughness: 0.68,
+      sheen: isBird ? 0.2 : 0.32,
+      sheenRoughness: 0.7,
+      sheenColor: new THREE.Color(def.accentColor).lerp(new THREE.Color(0xe6dcc8), 0.25),
     });
 
-    // Cheerful complementary scarf/trim color harmonized with cloak
-    const scarfCol = new THREE.Color(def.cloakColor).offsetHSL(0.08, 0.14, 0.16);
-    const scarf = new THREE.MeshStandardMaterial({
+    const cloakSheen = new THREE.Color(def.cloakColor).lerp(new THREE.Color(0xf4ead8), 0.32);
+    const cloak = new THREE.MeshPhysicalMaterial({
+      color: def.cloakColor,
+      roughness: 0.9,
+      sheen: 0.48,
+      sheenRoughness: 0.78,
+      sheenColor: cloakSheen,
+      ...fabricDetail,
+    });
+
+    // Natural complementary woven scarf/trim harmonized with cloak
+    const scarfCol = new THREE.Color(def.cloakColor).offsetHSL(0.06, -0.04, 0.09);
+    const scarf = new THREE.MeshPhysicalMaterial({
       color: scarfCol,
-      roughness: 0.84,
-      bumpMap: fabricBump,
-      bumpScale: 0.04,
+      roughness: 0.88,
+      sheen: 0.52,
+      sheenRoughness: 0.76,
+      sheenColor: scarfCol.clone().lerp(new THREE.Color(0xf7efe0), 0.32),
+      ...fabricDetail,
     });
 
     this.disposables.push(primary, secondary, accent, cloak, scarf);
@@ -1263,18 +1337,24 @@ export class CreatureRenderer {
     if (existing) return existing;
 
     const palette = VILLAGE_ADAPTATION_CATALOG[adaptation].attirePalette;
-    const fabricBump = this.textures?.fabricBump ?? null;
-    const mantle = new THREE.MeshStandardMaterial({
+    const fabricDetail: Partial<THREE.MeshPhysicalMaterialParameters> = this.textures?.fabricNormal
+      ? { normalMap: this.textures.fabricNormal, normalScale: new THREE.Vector2(0.5, 0.5) }
+      : { bumpMap: this.textures?.fabricBump ?? null, bumpScale: 0.05 };
+    const mantle = new THREE.MeshPhysicalMaterial({
       color: palette.mantleColor,
-      roughness: 0.86,
-      bumpMap: fabricBump,
-      bumpScale: 0.05,
+      roughness: 0.89,
+      sheen: 0.45,
+      sheenRoughness: 0.78,
+      sheenColor: new THREE.Color(palette.mantleColor).lerp(new THREE.Color(0xf4ead8), 0.3),
+      ...fabricDetail,
     });
-    const accent = new THREE.MeshStandardMaterial({
+    const accent = new THREE.MeshPhysicalMaterial({
       color: palette.accentColor,
-      roughness: 0.82,
-      bumpMap: fabricBump,
-      bumpScale: 0.045,
+      roughness: 0.86,
+      sheen: 0.52,
+      sheenRoughness: 0.74,
+      sheenColor: new THREE.Color(palette.accentColor).lerp(new THREE.Color(0xf4ead8), 0.32),
+      ...fabricDetail,
     });
     this.disposables.push(mantle, accent);
     const pair = { mantle, accent };
@@ -1378,7 +1458,8 @@ export class CreatureRenderer {
       headMesh.scale.set(1.04, 0.96, 0.98);
     }
 
-    // Helper for adorable glossy eyes with double specular catchlights!
+    // Photographic wet clearcoated animal eyes recessed inside a subtle dark eyelid rim
+    // (real sky & sun reflections come naturally from the PMREM environment map, no painted dots)
     const buildCuteEye = (
       x: number,
       y: number,
@@ -1390,32 +1471,23 @@ export class CreatureRenderer {
       eyeHolder.position.set(x, y, z);
       eyeHolder.scale.setScalar(scale);
 
-      if (irisRingMat) {
-        const ring = addPart(new THREE.Mesh(this.geo.eye, irisRingMat), eyeHolder);
-        ring.scale.set(1.42, 1.42, 0.88);
-        ring.position.z = -0.012;
-      }
+      const rim = addPart(new THREE.Mesh(this.geo.eyeRim, this.eyelidRimMat), eyeHolder);
+      rim.scale.set(irisRingMat ? 1.32 : 1.08, irisRingMat ? 1.32 : 1.08, 0.9);
+      rim.position.z = -0.006;
 
-      addPart(new THREE.Mesh(this.geo.eye, this.eyeMat), eyeHolder);
+      const iris = addPart(
+        new THREE.Mesh(this.geo.eye, irisRingMat ?? this.warmIrisMat),
+        eyeHolder,
+      );
+      iris.scale.set(irisRingMat ? 1.38 : 1.06, irisRingMat ? 1.38 : 1.06, 0.86);
+      iris.position.z = -0.008;
 
-      const shine1 = new THREE.Mesh(this.geo.catchlightBig, this.catchlightMat);
-      shine1.position.set(x < 0 ? 0.018 : -0.014, 0.022, 0.044);
-      eyeHolder.add(shine1);
-
-      const shine2 = new THREE.Mesh(this.geo.catchlightSmall, this.catchlightMat);
-      shine2.position.set(x < 0 ? -0.016 : 0.016, -0.018, 0.046);
-      eyeHolder.add(shine2);
+      const pupil = addPart(new THREE.Mesh(this.geo.eye, this.eyeMat), eyeHolder);
+      pupil.scale.set(0.86, 0.86, 1.02);
+      pupil.position.z = 0.006;
 
       headGroup.add(eyeHolder);
       return eyeHolder;
-    };
-
-    const addRosyCheeks = (spreadX: number, y: number, z: number, scale = 1.0) => {
-      for (const sx of [-spreadX, spreadX]) {
-        const blush = addPart(new THREE.Mesh(this.geo.blush, this.blushMat), headGroup);
-        blush.scale.set(1.2 * scale, 0.72 * scale, 0.45 * scale);
-        blush.position.set(sx, y, z);
-      }
     };
 
     const addWhiskers = (y: number, z: number, spread = 0.09) => {
@@ -1547,7 +1619,6 @@ export class CreatureRenderer {
 
       buildCuteEye(-0.125, 0.04, 0.22, isCrow ? 0.96 : 1.06);
       buildCuteEye(0.125, 0.04, 0.22, isCrow ? 0.96 : 1.06);
-      if (!isCrow) addRosyCheeks(0.16, -0.02, 0.19, 0.85);
 
       // Sculpted beak (longer curved corvid beak for crow, cute perky songbird beak for sparrow/robin)
       const beakLen = isCrow ? 0.24 : 0.15;
@@ -1594,7 +1665,6 @@ export class CreatureRenderer {
 
       buildCuteEye(-0.12, 0.05, 0.225, 1.06);
       buildCuteEye(0.12, 0.05, 0.225, 1.06);
-      addRosyCheeks(0.165, -0.02, 0.195, 0.95);
       addWhiskers(-0.04, 0.25, 0.08);
 
       // Tall sculpted velvety ears with recessed pink inner-ear groove (one playfully bent!)
@@ -1648,7 +1718,6 @@ export class CreatureRenderer {
 
       buildCuteEye(-0.12, 0.055, 0.225, 1.0);
       buildCuteEye(0.12, 0.055, 0.225, 1.0);
-      addRosyCheeks(0.16, -0.03, 0.19, 0.8);
       addWhiskers(-0.04, 0.31, 0.08);
 
       // Tall black-tipped fox ears with cream inner fluff
@@ -1748,7 +1817,6 @@ export class CreatureRenderer {
 
       buildCuteEye(-0.12, 0.055, 0.22, 1.08);
       buildCuteEye(0.12, 0.055, 0.22, 1.08);
-      addRosyCheeks(0.17, -0.03, 0.18, 1.0);
       addWhiskers(-0.04, 0.24, 0.08);
 
       // Cute tufted squirrel ears
@@ -1795,7 +1863,6 @@ export class CreatureRenderer {
 
       buildCuteEye(-0.115, 0.04, 0.24, 1.04);
       buildCuteEye(0.115, 0.04, 0.24, 1.04);
-      addRosyCheeks(0.16, -0.04, 0.2, 1.05);
 
       for (const side of [-1, 1] as const) {
         const ePivot = new THREE.Group();
@@ -1828,7 +1895,6 @@ export class CreatureRenderer {
         dome.position.set(side * 0.155, 0.17, 0.08);
         buildCuteEye(side * 0.165, 0.185, 0.155, 1.08, this.frogIrisMat);
       }
-      addRosyCheeks(0.22, -0.02, 0.17, 1.05);
     } else {
       // Mouse & Rat — charming oversized cupped pink-lined saucer ears, cute tapered snout, whiskers & curled tail!
       const isMouse = c.species === 'mouse';
@@ -1843,7 +1909,6 @@ export class CreatureRenderer {
 
       buildCuteEye(-0.115, 0.05, 0.22, isMouse ? 1.12 : 1.0);
       buildCuteEye(0.115, 0.05, 0.22, isMouse ? 1.12 : 1.0);
-      addRosyCheeks(0.16, -0.03, 0.19, isMouse ? 1.05 : 0.85);
       addWhiskers(-0.04, 0.28, 0.075);
 
       const earRadius = isMouse ? 0.145 : 0.125;
@@ -2128,10 +2193,12 @@ export class CreatureRenderer {
       }
     }
 
-    // Extra whimsical individual touch: some creatures wear a tiny daisy/leaf tucked behind an ear!
+    // Subtle natural individual touch: some creatures tuck a tiny woodland leaf sprig behind an ear
     if (seed > 0.72 && c.role !== 'mystic' && c.role !== 'guard') {
-      const flower = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6), this.lanternGlowMat), headGroup);
-      flower.position.set(-0.18, 0.18, 0.12);
+      const sprig = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.042, 8, 6), this.leafMat), headGroup);
+      sprig.scale.set(1.25, 0.38, 0.85);
+      sprig.rotation.set(0.3, 0.4, 0.5);
+      sprig.position.set(-0.18, 0.18, 0.12);
     }
 
     // 7. Magical golden fairy-ring selection halo with 4 orbiting sparkle beads
@@ -2141,7 +2208,7 @@ export class CreatureRenderer {
     selectionGroup.add(ringMesh);
     for (let i = 0; i < 4; i++) {
       const a = (i / 4) * Math.PI * 2;
-      const bead = new THREE.Mesh(this.geo.catchlightBig, this.selectionMat);
+      const bead = new THREE.Mesh(this.geo.selectionBead, this.selectionMat);
       bead.scale.setScalar(2.6);
       bead.position.set(Math.cos(a) * 0.65, 0.12, Math.sin(a) * 0.65);
       selectionGroup.add(bead);

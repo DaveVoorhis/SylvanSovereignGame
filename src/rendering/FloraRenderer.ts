@@ -12,17 +12,22 @@ import {
   createCurvedGrassTuftGeo,
   createFernRosetteGeo,
   createGnarledOakTrunkGeo,
+  createHorizonBroadleafGeo,
   createLilyPadGeo,
   createLotusBloomGeo,
   createMossyBoulderGeo,
   createOakCanopyGeo,
-  createPineCanopyGeo,
-  createPineTrunkGeo,
   createToadstoolClusterGeo,
   createWildflowerClusterGeo,
   mergePartGeometries,
 } from './GeometryHelpers';
-import type { TextureLibrary } from './ProceduralTextures';
+import {
+  buildProceduralHorizonPines,
+  buildProceduralPineForest,
+  type HorizonPinePlacement,
+  type ProceduralPineForestResult,
+} from './ProceduralPineBuilder';
+import type { PbrTextureSet, TextureLibrary } from './ProceduralTextures';
 import type { SkyLightingState } from './WaterShader';
 
 interface FoliageUniforms {
@@ -31,6 +36,8 @@ interface FoliageUniforms {
   uSunDir: { value: THREE.Vector3 };
   uSunColor: { value: THREE.Color };
   uDaylight: { value: number };
+  uCloudTime: { value: number };
+  uCloudCoverage: { value: number };
 }
 
 interface ClearableTreeGroup {
@@ -40,9 +47,66 @@ interface ClearableTreeGroup {
   readonly cleared: Uint8Array;
 }
 
+function makeNormalOrBumpProps(
+  tex: PbrTextureSet,
+  normalStrength: number,
+  bumpFallback: number,
+): Partial<THREE.MeshStandardMaterialParameters> {
+  if (tex.normalMap) {
+    return {
+      normalMap: tex.normalMap,
+      normalScale: new THREE.Vector2(normalStrength, normalStrength),
+    };
+  }
+  return {
+    bumpMap: tex.bumpMap,
+    bumpScale: bumpFallback,
+  };
+}
+
 /**
- * Enhances a standard foliage material with gentle GPU breeze flutter and warm
- * backlit sunlit leaf translucency while preserving PBR lighting, shadows, and fog.
+ * Shared vertex wind displacement chunk used by both color and shadow-depth foliage passes
+ * so dappled leaf shadows sway organically in perfect sync with the canopy.
+ */
+function buildCanopyWindVertexChunk(windAmp: number): string {
+  return `#include <begin_vertex>
+    vec3 instOrigin = vec3(0.0);
+    #ifdef USE_INSTANCING
+      instOrigin = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
+    #endif
+    float canopyMask = smoothstep(2.0, 6.8, position.y);
+    float phase = uTime * (1.45 + uWindStrength * 1.15) + instOrigin.x * 0.27 + instOrigin.z * 0.21;
+    float gust = sin(phase + position.y * 0.45) * 0.65 + cos(phase * 1.8 + position.x * 1.3 + position.z * 1.1) * 0.35;
+    float flutter = sin(uTime * 4.2 + position.x * 3.1 + position.z * 2.7 + instOrigin.x) * 0.22;
+    float sway = (gust + flutter) * ${windAmp.toFixed(3)} * (0.65 + uWindStrength * 0.95) * canopyMask;
+    transformed.x += sway;
+    transformed.z += sway * 0.68;
+    transformed.y += flutter * 0.042 * canopyMask;`;
+}
+
+function enhanceFoliageDepthMaterial(
+  mat: THREE.MeshDepthMaterial,
+  uniforms: FoliageUniforms,
+  windAmp: number,
+): void {
+  mat.customProgramCacheKey = () => `forest-foliage-depth-${windAmp.toFixed(3)}`;
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = uniforms.uTime;
+    shader.uniforms.uWindStrength = uniforms.uWindStrength;
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        uniform float uTime;
+        uniform float uWindStrength;`,
+      )
+      .replace('#include <begin_vertex>', buildCanopyWindVertexChunk(windAmp));
+  };
+}
+
+/**
+ * Enhances a standard foliage material with gentle GPU breeze flutter, natural backlit
+ * chlorophyll translucency, and synchronized drifting cloud shadows.
  */
 function enhanceBotanicalFoliageMaterial(
   mat: THREE.MeshStandardMaterial,
@@ -50,13 +114,15 @@ function enhanceBotanicalFoliageMaterial(
   windAmp: number,
   translucency: number,
 ): void {
-  mat.customProgramCacheKey = () => `forest-foliage-${windAmp.toFixed(2)}-${translucency.toFixed(2)}`;
+  mat.customProgramCacheKey = () => `forest-foliage-v2-${windAmp.toFixed(2)}-${translucency.toFixed(2)}`;
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = uniforms.uTime;
     shader.uniforms.uWindStrength = uniforms.uWindStrength;
     shader.uniforms.uSunDir = uniforms.uSunDir;
     shader.uniforms.uSunColor = uniforms.uSunColor;
     shader.uniforms.uDaylight = uniforms.uDaylight;
+    shader.uniforms.uCloudTime = uniforms.uCloudTime;
+    shader.uniforms.uCloudCoverage = uniforms.uCloudCoverage;
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -66,22 +132,7 @@ function enhanceBotanicalFoliageMaterial(
         uniform float uWindStrength;
         varying vec3 vFoliageWorldPos;`,
       )
-      .replace(
-        '#include <begin_vertex>',
-        `#include <begin_vertex>
-        vec3 instOrigin = vec3(0.0);
-        #ifdef USE_INSTANCING
-          instOrigin = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
-        #endif
-        float canopyMask = smoothstep(2.0, 6.8, position.y);
-        float phase = uTime * (1.55 + uWindStrength * 1.1) + instOrigin.x * 0.27 + instOrigin.z * 0.21;
-        float gust = sin(phase + position.y * 0.45) * 0.65 + cos(phase * 1.8 + position.x * 1.3 + position.z * 1.1) * 0.35;
-        float flutter = sin(uTime * 4.2 + position.x * 3.1 + position.z * 2.7 + instOrigin.x) * 0.22;
-        float sway = (gust + flutter) * ${windAmp.toFixed(3)} * (0.65 + uWindStrength * 0.95) * canopyMask;
-        transformed.x += sway;
-        transformed.z += sway * 0.68;
-        transformed.y += flutter * 0.045 * canopyMask;`,
-      )
+      .replace('#include <begin_vertex>', buildCanopyWindVertexChunk(windAmp))
       .replace(
         '#include <project_vertex>',
         `#include <project_vertex>
@@ -100,37 +151,181 @@ function enhanceBotanicalFoliageMaterial(
         uniform vec3 uSunDir;
         uniform vec3 uSunColor;
         uniform float uDaylight;
-        varying vec3 vFoliageWorldPos;`,
+        uniform float uCloudTime;
+        uniform float uCloudCoverage;
+        varying vec3 vFoliageWorldPos;
+
+        float fHash21(vec2 p) {
+          p = fract(p * vec2(127.1, 311.7));
+          p += dot(p, p + 34.53);
+          return fract(p.x * p.y);
+        }
+        float fNoise2(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(fHash21(i), fHash21(i + vec2(1.0, 0.0)), f.x),
+            mix(fHash21(i + vec2(0.0, 1.0)), fHash21(i + vec2(1.0, 1.0)), f.x),
+            f.y
+          );
+        }`,
       )
       .replace(
         '#include <opaque_fragment>',
         `vec3 fViewDir = normalize(cameraPosition - vFoliageWorldPos);
-        float backLit = pow(clamp(dot(fViewDir, -normalize(uSunDir)), 0.0, 1.0), 3.0);
-        float rimLit = 0.25 + 0.75 * backLit;
-        outgoingLight += diffuseColor.rgb * uSunColor * rimLit * uDaylight * ${translucency.toFixed(3)};
+        float backLit = pow(clamp(dot(fViewDir, -normalize(uSunDir)), 0.0, 1.0), 3.2);
+        // Natural chlorophyll warmth when sunlit from behind
+        vec3 sssTint = diffuseColor.rgb * vec3(1.12, 1.18, 0.72);
+        vec2 fCloudUv = vFoliageWorldPos.xz * 0.0046 + vec2(uCloudTime * 0.011, uCloudTime * 0.0045);
+        float fCloudN = fNoise2(fCloudUv) * 0.65 + fNoise2(fCloudUv * 2.1 + 4.3) * 0.35;
+        float fCloudThresh = mix(0.64, 0.34, clamp(uCloudCoverage, 0.0, 1.0));
+        float fCloudShadow = smoothstep(fCloudThresh, fCloudThresh + 0.22, fCloudN);
+        float fSunVis = mix(1.0, 0.72, fCloudShadow * uDaylight * (1.0 - uCloudCoverage * 0.35));
+        outgoingLight *= fSunVis;
+        outgoingLight += sssTint * uSunColor * (0.14 + 0.86 * backLit) * uDaylight * fSunVis * ${translucency.toFixed(3)};
         #include <opaque_fragment>`,
       );
   };
 }
 
 /**
- * Enhances instanced grass tufts with rolling GPU wind waves across prairies and woodland glades.
+ * World-aligned coherent tree wind sway + local bough flutter for per-bough instanced
+ * procedural pines, driven by per-instance `aWindData = vec3(treeOriginX, treeOriginZ, swayWeight)`.
+ */
+function buildPineBoughProjectVertexChunk(windAmp: number, writeWorldPos: boolean): string {
+  return `vec4 mvPosition = vec4( transformed, 1.0 );
+    #ifdef USE_INSTANCING
+      mvPosition = instanceMatrix * mvPosition;
+    #endif
+    float pTip = clamp(length(position.xyz), 0.15, 1.45);
+    float pMask = aWindData.z * (0.52 + 0.48 * pTip);
+    float pPhase = uTime * (1.42 + uWindStrength * 1.15) + aWindData.x * 0.27 + aWindData.y * 0.21;
+    float pGust = sin(pPhase + mvPosition.y * 0.35) * 0.65 + cos(pPhase * 1.75 + mvPosition.x * 0.75 + mvPosition.z * 0.65) * 0.35;
+    float pFlutter = sin(uTime * 4.1 + mvPosition.x * 2.9 + mvPosition.z * 2.5) * 0.20;
+    float pSway = (pGust + pFlutter) * ${windAmp.toFixed(3)} * (0.65 + uWindStrength * 0.95) * pMask;
+    mvPosition.x += pSway;
+    mvPosition.z += pSway * 0.68;
+    mvPosition.y += pFlutter * 0.036 * pMask;
+    ${writeWorldPos ? 'vec4 fWorldPos = modelMatrix * mvPosition;\n    vFoliageWorldPos = fWorldPos.xyz;' : ''}
+    mvPosition = modelViewMatrix * mvPosition;
+    gl_Position = projectionMatrix * mvPosition;`;
+}
+
+function enhancePineBoughDepthMaterial(
+  mat: THREE.MeshDepthMaterial,
+  uniforms: FoliageUniforms,
+  windAmp: number,
+): void {
+  mat.customProgramCacheKey = () => `forest-pine-bough-depth-${windAmp.toFixed(3)}`;
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = uniforms.uTime;
+    shader.uniforms.uWindStrength = uniforms.uWindStrength;
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        attribute vec3 aWindData;
+        uniform float uTime;
+        uniform float uWindStrength;`,
+      )
+      .replace('#include <project_vertex>', buildPineBoughProjectVertexChunk(windAmp, false));
+  };
+}
+
+function enhancePineBoughFoliageMaterial(
+  mat: THREE.MeshStandardMaterial,
+  uniforms: FoliageUniforms,
+  windAmp: number,
+  translucency: number,
+): void {
+  mat.customProgramCacheKey = () => `forest-pine-bough-v1-${windAmp.toFixed(2)}-${translucency.toFixed(2)}`;
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = uniforms.uTime;
+    shader.uniforms.uWindStrength = uniforms.uWindStrength;
+    shader.uniforms.uSunDir = uniforms.uSunDir;
+    shader.uniforms.uSunColor = uniforms.uSunColor;
+    shader.uniforms.uDaylight = uniforms.uDaylight;
+    shader.uniforms.uCloudTime = uniforms.uCloudTime;
+    shader.uniforms.uCloudCoverage = uniforms.uCloudCoverage;
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        attribute vec3 aWindData;
+        uniform float uTime;
+        uniform float uWindStrength;
+        varying vec3 vFoliageWorldPos;`,
+      )
+      .replace('#include <project_vertex>', buildPineBoughProjectVertexChunk(windAmp, true));
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        uniform vec3 uSunDir;
+        uniform vec3 uSunColor;
+        uniform float uDaylight;
+        uniform float uCloudTime;
+        uniform float uCloudCoverage;
+        varying vec3 vFoliageWorldPos;
+
+        float fHash21(vec2 p) {
+          p = fract(p * vec2(127.1, 311.7));
+          p += dot(p, p + 34.53);
+          return fract(p.x * p.y);
+        }
+        float fNoise2(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(fHash21(i), fHash21(i + vec2(1.0, 0.0)), f.x),
+            mix(fHash21(i + vec2(0.0, 1.0)), fHash21(i + vec2(1.0, 1.0)), f.x),
+            f.y
+          );
+        }`,
+      )
+      .replace(
+        '#include <opaque_fragment>',
+        `vec3 fViewDir = normalize(cameraPosition - vFoliageWorldPos);
+        float backLit = pow(clamp(dot(fViewDir, -normalize(uSunDir)), 0.0, 1.0), 3.2);
+        vec3 sssTint = diffuseColor.rgb * vec3(1.10, 1.16, 0.74);
+        vec2 fCloudUv = vFoliageWorldPos.xz * 0.0046 + vec2(uCloudTime * 0.011, uCloudTime * 0.0045);
+        float fCloudN = fNoise2(fCloudUv) * 0.65 + fNoise2(fCloudUv * 2.1 + 4.3) * 0.35;
+        float fCloudThresh = mix(0.64, 0.34, clamp(uCloudCoverage, 0.0, 1.0));
+        float fCloudShadow = smoothstep(fCloudThresh, fCloudThresh + 0.22, fCloudN);
+        float fSunVis = mix(1.0, 0.72, fCloudShadow * uDaylight * (1.0 - uCloudCoverage * 0.35));
+        outgoingLight *= fSunVis;
+        outgoingLight += sssTint * uSunColor * (0.14 + 0.86 * backLit) * uDaylight * fSunVis * ${translucency.toFixed(3)};
+        #include <opaque_fragment>`,
+      );
+  };
+}
+
+/**
+ * Enhances instanced grass tufts with rolling GPU wind waves and subtle backlit translucency.
  */
 function enhanceGrassWindMaterial(
   mat: THREE.MeshStandardMaterial,
   uniforms: FoliageUniforms,
 ): void {
-  mat.customProgramCacheKey = () => 'forest-prairie-grass-wind-v1';
+  mat.customProgramCacheKey = () => 'forest-prairie-grass-wind-v2';
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = uniforms.uTime;
     shader.uniforms.uWindStrength = uniforms.uWindStrength;
+    shader.uniforms.uSunDir = uniforms.uSunDir;
+    shader.uniforms.uSunColor = uniforms.uSunColor;
+    shader.uniforms.uDaylight = uniforms.uDaylight;
 
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
         `#include <common>
         uniform float uTime;
-        uniform float uWindStrength;`,
+        uniform float uWindStrength;
+        varying vec3 vGrassWorldPos;`,
       )
       .replace(
         '#include <begin_vertex>',
@@ -140,21 +335,47 @@ function enhanceGrassWindMaterial(
           gOrigin = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
         #endif
         float tipMask = smoothstep(0.06, 0.72, position.y);
-        float wavePhase = uTime * (1.85 + uWindStrength * 1.55) + gOrigin.x * 0.11 + gOrigin.z * 0.085;
+        float wavePhase = uTime * (1.75 + uWindStrength * 1.55) + gOrigin.x * 0.11 + gOrigin.z * 0.085;
         float gust = sin(wavePhase) * 0.62 + cos(wavePhase * 1.7 + gOrigin.z * 0.17) * 0.38;
-        float sway = gust * (0.095 + uWindStrength * 0.145) * tipMask;
+        float sway = gust * (0.085 + uWindStrength * 0.14) * tipMask;
         transformed.x += sway;
         transformed.z += sway * 0.58;`,
+      )
+      .replace(
+        '#include <project_vertex>',
+        `#include <project_vertex>
+        vec4 gWorldPos = vec4(transformed, 1.0);
+        #ifdef USE_INSTANCING
+          gWorldPos = instanceMatrix * gWorldPos;
+        #endif
+        gWorldPos = modelMatrix * gWorldPos;
+        vGrassWorldPos = gWorldPos.xyz;`,
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        uniform vec3 uSunDir;
+        uniform vec3 uSunColor;
+        uniform float uDaylight;
+        varying vec3 vGrassWorldPos;`,
+      )
+      .replace(
+        '#include <opaque_fragment>',
+        `vec3 gViewDir = normalize(cameraPosition - vGrassWorldPos);
+        float gBackLit = pow(clamp(dot(gViewDir, -normalize(uSunDir)), 0.0, 1.0), 3.5);
+        outgoingLight += diffuseColor.rgb * uSunColor * gBackLit * uDaylight * 0.24;
+        #include <opaque_fragment>`,
       );
   };
 }
 
 /**
- * High-resolution instanced woodland flora renderer:
- * realistic multi-branch ancient oaks, towering conifers, and graceful silver birches
- * clothed in volumetric alpha-cutout 3D botanical leaf/needle canopies with dappled shadows,
- * GPU wind sway, backlit sun translucency, dynamic city-expansion tree clearing,
- * and an endless outer horizon forest canopy fading softly into distance blur.
+ * High-resolution naturalistic instanced woodland flora renderer:
+ * normal-mapped ancient oaks, conifers, and silver birches with wind-synced dappled shadows,
+ * backlit leaf translucency, leafy alpha-cutout woodland shrubs, feathery alpha-cutout
+ * distant horizon tree lines, and seasonal botanical color calibration.
  */
 export class FloraRenderer {
   private readonly group = new THREE.Group();
@@ -171,6 +392,7 @@ export class FloraRenderer {
   private readonly wildflowerGroup = new THREE.Group();
   private readonly lilyGroup = new THREE.Group();
   private readonly clearableTreeGroups: ClearableTreeGroup[] = [];
+  private proceduralPines: ProceduralPineForestResult | null = null;
   private readonly disposables: (THREE.BufferGeometry | THREE.Material)[] = [];
   private readonly foliageUniforms: FoliageUniforms;
   private lastSeason: Season | null = null;
@@ -186,8 +408,10 @@ export class FloraRenderer {
       uTime: { value: 0 },
       uWindStrength: { value: 0.25 },
       uSunDir: { value: new THREE.Vector3(0.5, 0.7, 0.4).normalize() },
-      uSunColor: { value: new THREE.Color(0xfff1cf) },
+      uSunColor: { value: new THREE.Color(0xfff1d8) },
       uDaylight: { value: 1.0 },
+      uCloudTime: { value: 0 },
+      uCloudCoverage: { value: 0.38 },
     };
 
     // Filter out trees sitting directly inside initial settlement clearings
@@ -206,117 +430,135 @@ export class FloraRenderer {
 
     const oakBarkMat = new THREE.MeshStandardMaterial({
       map: textures.oakBark.map,
-      bumpMap: textures.oakBark.bumpMap,
-      bumpScale: 0.22,
+      ...makeNormalOrBumpProps(textures.oakBark, 1.1, 0.22),
       roughnessMap: textures.oakBark.roughnessMap,
       roughness: 0.94,
     });
     const pineBarkMat = new THREE.MeshStandardMaterial({
       map: textures.pineBark.map,
-      bumpMap: textures.pineBark.bumpMap,
-      bumpScale: 0.22,
+      ...makeNormalOrBumpProps(textures.pineBark, 1.05, 0.22),
       roughnessMap: textures.pineBark.roughnessMap,
       roughness: 0.92,
     });
     const birchBarkMat = new THREE.MeshStandardMaterial({
       map: textures.birchBark.map,
-      bumpMap: textures.birchBark.bumpMap,
-      bumpScale: 0.14,
+      ...makeNormalOrBumpProps(textures.birchBark, 0.75, 0.14),
       roughnessMap: textures.birchBark.roughnessMap,
-      roughness: 0.86,
+      roughness: 0.85,
     });
 
-    // Botanical alpha-cutout PBR foliage materials with dappled shadow depth materials
+    // Botanical alpha-cutout PBR foliage materials with wind-synced dappled shadow depth materials
     this.oakFoliageMat = new THREE.MeshStandardMaterial({
       map: textures.oakLeafCluster,
-      color: 0x459234,
-      roughness: 0.78,
+      color: 0x4b7438,
+      roughness: 0.76,
       metalness: 0.01,
-      alphaTest: 0.42,
+      alphaTest: 0.40,
       side: THREE.DoubleSide,
       vertexColors: true,
     });
-    enhanceBotanicalFoliageMaterial(this.oakFoliageMat, this.foliageUniforms, 0.11, 0.38);
+    enhanceBotanicalFoliageMaterial(this.oakFoliageMat, this.foliageUniforms, 0.11, 0.32);
 
     this.pineFoliageMat = new THREE.MeshStandardMaterial({
       map: textures.pineNeedleSpray,
-      color: 0x266e3e,
-      roughness: 0.84,
+      color: 0x2c563a,
+      roughness: 0.82,
+      metalness: 0.01,
+      alphaTest: 0.36,
+      side: THREE.DoubleSide,
+      vertexColors: true,
+    });
+    enhancePineBoughFoliageMaterial(this.pineFoliageMat, this.foliageUniforms, 0.095, 0.22);
+
+    this.birchFoliageMat = new THREE.MeshStandardMaterial({
+      map: textures.birchLeafCluster,
+      color: 0x6f9446,
+      roughness: 0.70,
       metalness: 0.01,
       alphaTest: 0.38,
       side: THREE.DoubleSide,
       vertexColors: true,
     });
-    enhanceBotanicalFoliageMaterial(this.pineFoliageMat, this.foliageUniforms, 0.08, 0.26);
+    enhanceBotanicalFoliageMaterial(this.birchFoliageMat, this.foliageUniforms, 0.15, 0.40);
 
-    this.birchFoliageMat = new THREE.MeshStandardMaterial({
-      map: textures.birchLeafCluster,
-      color: 0x7ac948,
-      roughness: 0.72,
-      metalness: 0.01,
-      alphaTest: 0.4,
+    // Feathery alpha-cutout materials for the endless distant horizon woodland
+    this.distantPineMat = new THREE.MeshStandardMaterial({
+      map: textures.pineNeedleSpray,
+      color: 0x294d35,
+      roughness: 0.92,
+      metalness: 0.0,
+      alphaTest: 0.34,
       side: THREE.DoubleSide,
       vertexColors: true,
     });
-    enhanceBotanicalFoliageMaterial(this.birchFoliageMat, this.foliageUniforms, 0.15, 0.48);
-
-    // Lightweight atmospheric materials for the endless distant horizon woodland
-    this.distantPineMat = new THREE.MeshStandardMaterial({
-      color: 0x235f39,
-      roughness: 0.92,
-      metalness: 0.0,
-    });
     this.distantBroadleafMat = new THREE.MeshStandardMaterial({
-      color: 0x3c7d31,
-      roughness: 0.9,
+      map: textures.oakLeafCluster,
+      color: 0x416834,
+      roughness: 0.90,
       metalness: 0.0,
+      alphaTest: 0.34,
+      side: THREE.DoubleSide,
+      vertexColors: true,
     });
 
     const oakDepthMat = new THREE.MeshDepthMaterial({
       depthPacking: THREE.RGBADepthPacking,
       map: textures.oakLeafCluster,
-      alphaTest: 0.42,
+      alphaTest: 0.40,
     });
+    enhanceFoliageDepthMaterial(oakDepthMat, this.foliageUniforms, 0.11);
+
     const pineDepthMat = new THREE.MeshDepthMaterial({
       depthPacking: THREE.RGBADepthPacking,
       map: textures.pineNeedleSpray,
-      alphaTest: 0.38,
+      alphaTest: 0.36,
     });
+    enhancePineBoughDepthMaterial(pineDepthMat, this.foliageUniforms, 0.095);
+
     const birchDepthMat = new THREE.MeshDepthMaterial({
       depthPacking: THREE.RGBADepthPacking,
       map: textures.birchLeafCluster,
-      alphaTest: 0.4,
+      alphaTest: 0.38,
     });
+    enhanceFoliageDepthMaterial(birchDepthMat, this.foliageUniforms, 0.15);
 
     this.grassMat = new THREE.MeshStandardMaterial({
-      color: 0x6ca33f,
+      color: 0x628141,
       roughness: 0.84,
       side: THREE.DoubleSide,
       vertexColors: true,
     });
     enhanceGrassWindMaterial(this.grassMat, this.foliageUniforms);
+
     this.fernMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      roughness: 0.82,
+      roughness: 0.80,
       side: THREE.DoubleSide,
       vertexColors: true,
     });
+
+    // Leafy alpha-cutout woodland shrub material (replaces smooth sphere-puff bushes)
     this.bushMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      roughness: 0.86,
+      map: textures.oakLeafCluster,
+      color: 0x456b34,
+      roughness: 0.82,
+      alphaTest: 0.36,
+      side: THREE.DoubleSide,
       vertexColors: true,
     });
+
+    // Natural waxy woodland toadstool cap (zero daytime neon emissive)
     this.toadstoolCapMat = new THREE.MeshStandardMaterial({
       map: textures.toadstoolCap,
-      emissive: 0x3b0f0a,
-      emissiveIntensity: 0.28,
-      roughness: 0.42,
+      roughness: 0.36,
+      metalness: 0.02,
     });
+
     this.fairyLanternMat = new THREE.MeshStandardMaterial({
-      color: 0xfff0b3,
-      emissive: 0xffb84d,
-      emissiveIntensity: 1.5,
-      roughness: 0.25,
+      color: 0xecdcb6,
+      emissive: 0xffaa42,
+      emissiveIntensity: 0.1,
+      roughness: 0.28,
     });
 
     this.disposables.push(
@@ -345,7 +587,7 @@ export class FloraRenderer {
     if (oaks.length > 0) {
       const trunkGeo = createGnarledOakTrunkGeo();
       const crownGeo = createOakCanopyGeo();
-      const lanternGeo = new THREE.SphereGeometry(0.15, 10, 8);
+      const lanternGeo = new THREE.SphereGeometry(0.12, 10, 8);
       this.disposables.push(trunkGeo, crownGeo, lanternGeo);
 
       const trunks = new THREE.InstancedMesh(trunkGeo, oakBarkMat, oaks.length);
@@ -371,10 +613,10 @@ export class FloraRenderer {
         crowns.setMatrixAt(i, dummy.matrix);
 
         const v = ((i * 17) % 13) / 12 - 0.5;
-        tint.setRGB(1 + v * 0.14, 1 + v * 0.08, 1 - v * 0.1);
+        tint.setRGB(1 + v * 0.16, 1 + v * 0.10, 1 - v * 0.10);
         crowns.setColorAt(i, tint);
 
-        if (i % 5 === 0) {
+        if (i % 7 === 0) {
           const cosR = Math.cos(t.rotation);
           const sinR = Math.sin(t.rotation);
           const lx = 1.45 * cosR - 0.65 * sinR;
@@ -406,43 +648,20 @@ export class FloraRenderer {
       }
     }
 
-    // 2. Realistic Towering Pines
+    // 2. Per-Tree Unique Procedural Conifer & Pine Forest:
+    //    Every single pine tree is generated individually with its own curved trunk,
+    //    optional twin-leader fork, weathered stubs, whorl spacing, storm gaps, and foliage hue.
     if (pines.length > 0) {
-      const trunkGeo = createPineTrunkGeo();
-      const crownGeo = createPineCanopyGeo();
-      this.disposables.push(trunkGeo, crownGeo);
-
-      const trunks = new THREE.InstancedMesh(trunkGeo, pineBarkMat, pines.length);
-      const crowns = new THREE.InstancedMesh(crownGeo, this.pineFoliageMat, pines.length);
-      crowns.customDepthMaterial = pineDepthMat;
-      trunks.castShadow = true;
-      trunks.receiveShadow = true;
-      crowns.castShadow = true;
-      crowns.receiveShadow = true;
-
-      pines.forEach((t, i) => {
-        const tiltX = ((i * 23) % 9 - 4) * 0.007;
-        const tiltZ = ((i * 29) % 9 - 4) * 0.007;
-        const tallVar = 0.94 + ((i * 11) % 7) * 0.032;
-
-        dummy.position.set(t.x, t.y - 0.14, t.z);
-        dummy.rotation.set(tiltX, t.rotation, tiltZ);
-        dummy.scale.set(t.scale, t.scale * tallVar, t.scale);
-        dummy.updateMatrix();
-        trunks.setMatrixAt(i, dummy.matrix);
-        crowns.setMatrixAt(i, dummy.matrix);
-
-        const v = ((i * 19) % 11) / 10 - 0.5;
-        tint.setRGB(1 + v * 0.08, 1 + v * 0.12, 1 + v * 0.06);
-        crowns.setColorAt(i, tint);
-      });
-      this.group.add(trunks, crowns);
-      this.clearableTreeGroups.push({
-        spots: pines,
-        trunks,
-        crowns,
-        cleared: new Uint8Array(pines.length),
-      });
+      this.proceduralPines = buildProceduralPineForest(
+        pines,
+        (x, z) => world.terrain.getBiomeAt(x, z),
+        (x, z) => world.terrain.getCoastSignedDistance(x, z),
+        pineBarkMat,
+        this.pineFoliageMat,
+        pineDepthMat,
+      );
+      this.disposables.push(...this.proceduralPines.disposables);
+      this.group.add(this.proceduralPines.trunksMesh, ...this.proceduralPines.frondMeshes);
     }
 
     // 3. Realistic Silver Birches
@@ -481,11 +700,11 @@ export class FloraRenderer {
       });
     }
 
-    // 3b. Endless Horizon Woodland Ring — lush low-poly distant forest stretching across outer hills (76m..340m)
+    // 3b. Endless Horizon Woodland Ring — feathery botanical card canopies across distant hills
     const rng = world.rng.fork();
     this.buildHorizonForestRing(rng, dummy, tint);
 
-    // 4. Sculpted Mossy Woodland Boulders vs. Sharp Faceted Alpine Crags & Desert Sandstone Outcrops
+    // 4. Sculpted Mossy Woodland Boulders vs. Sharp Alpine Crags & Desert Outcrops
     if (world.terrain.rocks.length > 0) {
       const mossyRockSpots: Array<{ spot: (typeof world.terrain.rocks)[number]; biome: string }> = [];
       const cragRockSpots: Array<{ spot: (typeof world.terrain.rocks)[number]; biome: string }> = [];
@@ -499,13 +718,15 @@ export class FloraRenderer {
         }
       }
 
+      const rockTex = textures.rock ?? textures.stone;
+
       if (mossyRockSpots.length > 0) {
         const rockGeo = createMossyBoulderGeo();
         const rockMat = new THREE.MeshStandardMaterial({
-          map: textures.stone.map,
-          bumpMap: textures.stone.bumpMap,
-          bumpScale: 0.16,
-          roughness: 0.88,
+          map: rockTex.map,
+          ...makeNormalOrBumpProps(rockTex, 1.0, 0.18),
+          roughnessMap: rockTex.roughnessMap,
+          roughness: 0.90,
           vertexColors: true,
         });
         this.disposables.push(rockGeo, rockMat);
@@ -522,11 +743,11 @@ export class FloraRenderer {
           rocks.setMatrixAt(i * 2, dummy.matrix);
 
           if (biome === 'seashore') {
-            tint.setHex(0xc9c4b6);
+            tint.setHex(0xbcb7aa);
           } else if (biome === 'moss_hollow' || biome === 'deep_woods') {
-            tint.setHex(0x88a87c);
+            tint.setHex(0x88997c);
           } else {
-            tint.setHex(0xbec4b8);
+            tint.setHex(0xb2b6ac);
           }
           rocks.setColorAt(i * 2, tint);
 
@@ -546,10 +767,10 @@ export class FloraRenderer {
       if (cragRockSpots.length > 0) {
         const cragGeo = createCragSpireGeo();
         const cragMat = new THREE.MeshStandardMaterial({
-          map: textures.stone.map,
-          bumpMap: textures.stone.bumpMap,
-          bumpScale: 0.26,
-          roughness: 0.92,
+          map: rockTex.map,
+          ...makeNormalOrBumpProps(rockTex, 1.25, 0.26),
+          roughnessMap: rockTex.roughnessMap,
+          roughness: 0.93,
           vertexColors: true,
         });
         this.disposables.push(cragGeo, cragMat);
@@ -560,32 +781,28 @@ export class FloraRenderer {
 
         cragRockSpots.forEach(({ spot: r, biome }, i) => {
           if (biome === 'alpine_crag') {
-            // Tall jagged dark-granite & snow-dusted alpine crag spires
             const hMult = 1.65 + (r.variant % 3) * 0.45;
             dummy.position.set(r.x, r.y - 0.18 * r.scale, r.z);
             dummy.rotation.set((r.variant - 1) * 0.14, r.rotation, ((i % 3) - 1) * 0.12);
             dummy.scale.set(r.scale * 1.18, r.scale * hMult, r.scale * 1.05);
-            tint.setHex(r.y > 42 ? 0xc8d2da : 0x6f7982);
+            tint.setHex(r.y > 42 ? 0xbec7ce : 0x6c737b);
           } else if (biome === 'desert') {
-            // Wind-carved terracotta sandstone outcrops & hoodoos — zero green moss
             const hMult = 0.82 + (r.variant % 3) * 0.26;
             dummy.position.set(r.x, r.y - 0.12 * r.scale, r.z);
             dummy.rotation.set(0.06, r.rotation, -0.05);
             dummy.scale.set(r.scale * 1.42, r.scale * hMult, r.scale * 1.24);
-            tint.setHex(i % 2 === 0 ? 0xd99b62 : 0xc67c47);
+            tint.setHex(i % 2 === 0 ? 0xc29265 : 0xad764e);
           } else {
-            // Angular granite ridge outcrops
             const hMult = 1.15 + (r.variant % 3) * 0.3;
             dummy.position.set(r.x, r.y - 0.14 * r.scale, r.z);
             dummy.rotation.set(r.variant * 0.18, r.rotation, r.variant * 0.12);
             dummy.scale.set(r.scale * 1.22, r.scale * hMult, r.scale * 1.08);
-            tint.setHex(0x889196);
+            tint.setHex(0x838b8f);
           }
           dummy.updateMatrix();
           crags.setMatrixAt(i * 2, dummy.matrix);
           crags.setColorAt(i * 2, tint);
 
-          // Companion fractured talus shard
           const px = r.x + Math.cos(r.rotation + 0.9) * r.scale * 1.15;
           const pz = r.z + Math.sin(r.rotation + 0.9) * r.scale * 1.15;
           const py = world.terrain.getHeightAt(px, pz);
@@ -604,7 +821,7 @@ export class FloraRenderer {
       }
     }
 
-    // 5. Arching Ferns (variant 0), Plump Berry Bushes (variant 1), Polka-Dot Toadstool Clusters (variant 2)
+    // 5. Arching Ferns (variant 0), Leafy Berry Shrubs (variant 1), Woodland Toadstools (variant 2)
     const ferns = world.terrain.undergrowth.filter((u) => u.variant === 0);
     const bushes = world.terrain.undergrowth.filter((u) => u.variant === 1);
     const shrooms = world.terrain.undergrowth.filter((u) => u.variant === 2);
@@ -629,8 +846,8 @@ export class FloraRenderer {
       const { foliage, berries } = createBerryBushGeo();
       const berryMat = new THREE.MeshStandardMaterial({
         color: 0xffffff,
-        roughness: 0.34,
-        metalness: 0.05,
+        roughness: 0.28,
+        metalness: 0.04,
       });
       this.disposables.push(foliage, berries, berryMat);
 
@@ -638,15 +855,19 @@ export class FloraRenderer {
       const berryMesh = new THREE.InstancedMesh(berries, berryMat, bushes.length);
       bushMesh.castShadow = true;
       bushMesh.receiveShadow = true;
+      bushMesh.customDepthMaterial = oakDepthMat;
 
-      const berryPalette = [0xe03a3e, 0x4b5ec7, 0xf29f29, 0xd6487e];
+      const berryPalette = [0xa8282b, 0x2f3b6b, 0xc77c26, 0x8f2c4e];
       bushes.forEach((b, i) => {
         dummy.position.set(b.x, b.y - 0.04, b.z);
         dummy.rotation.set(0, b.rotation, 0);
-        dummy.scale.setScalar(b.scale * 1.22);
+        dummy.scale.setScalar(b.scale * 1.24);
         dummy.updateMatrix();
         bushMesh.setMatrixAt(i, dummy.matrix);
         berryMesh.setMatrixAt(i, dummy.matrix);
+        const v = ((i * 13) % 9) / 8 - 0.5;
+        tint.setRGB(1 + v * 0.14, 1 + v * 0.10, 1 - v * 0.08);
+        bushMesh.setColorAt(i, tint);
         tint.setHex(berryPalette[i % berryPalette.length]);
         berryMesh.setColorAt(i, tint);
       });
@@ -656,8 +877,8 @@ export class FloraRenderer {
     if (shrooms.length > 0) {
       const { stems, caps } = createToadstoolClusterGeo();
       const stemMat = new THREE.MeshStandardMaterial({
-        color: 0xf4ead8,
-        roughness: 0.78,
+        color: 0xe6dcc8,
+        roughness: 0.80,
       });
       this.disposables.push(stems, caps, stemMat);
 
@@ -670,7 +891,7 @@ export class FloraRenderer {
       shrooms.forEach((m, i) => {
         dummy.position.set(m.x, m.y - 0.02, m.z);
         dummy.rotation.set(0, m.rotation, 0);
-        dummy.scale.setScalar(m.scale * 1.18);
+        dummy.scale.setScalar(m.scale * 1.12);
         dummy.updateMatrix();
         stemMesh.setMatrixAt(i, dummy.matrix);
         capMesh.setMatrixAt(i, dummy.matrix);
@@ -678,17 +899,16 @@ export class FloraRenderer {
       this.group.add(stemMesh, capMesh);
     }
 
-    // 6. Whimsical Meadow Wildflower Clusters (circular valley spread)
+    // 6. Natural Meadow Wildflower Clusters
     const circularRadius = world.terrain.halfSize + 8;
     {
       const flowerCount = 1350;
       const { stems, petals, centers } = createWildflowerClusterGeo();
-      const fStemMat = new THREE.MeshStandardMaterial({ color: 0x4b7d34, roughness: 0.85 });
-      const fPetalMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 });
+      const fStemMat = new THREE.MeshStandardMaterial({ color: 0x456332, roughness: 0.86 });
+      const fPetalMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.62 });
       const fCenterMat = new THREE.MeshStandardMaterial({
-        color: 0xffd24d,
-        emissive: 0x382504,
-        roughness: 0.5,
+        color: 0xd8aa3e,
+        roughness: 0.65,
       });
       this.disposables.push(stems, petals, centers, fStemMat, fPetalMat, fCenterMat);
 
@@ -696,7 +916,8 @@ export class FloraRenderer {
       const petalInst = new THREE.InstancedMesh(petals, fPetalMat, flowerCount);
       const centerInst = new THREE.InstancedMesh(centers, fCenterMat, flowerCount);
 
-      const petalColors = [0xfff8eb, 0xffe066, 0xff9ec4, 0x9ec5ff, 0xd8a8ff, 0xffb385];
+      // Authentic wildflower colors (oxeye daisy, buttercup, red clover, cornflower, wild violet, yarrow)
+      const petalColors = [0xefeae0, 0xe6c453, 0xd89aa8, 0x8ba8d6, 0xb89ac9, 0xe4b289];
       let placed = 0;
       for (let tries = 0; tries < flowerCount * 6 && placed < flowerCount; tries++) {
         const a = rng.range(0, Math.PI * 2);
@@ -718,7 +939,7 @@ export class FloraRenderer {
 
         dummy.position.set(fx, fy - 0.02, fz);
         dummy.rotation.set(0, rng.range(0, Math.PI * 2), 0);
-        const s = rng.range(0.85, 1.55);
+        const s = rng.range(0.82, 1.48);
         dummy.scale.setScalar(s);
         dummy.updateMatrix();
         stemInst.setMatrixAt(placed, dummy.matrix);
@@ -736,14 +957,14 @@ export class FloraRenderer {
       this.group.add(this.wildflowerGroup);
     }
 
-    // 7. Pond Lily Pads, Pastel Lotus Blooms & Riverside Cattails
+    // 7. Pond Lily Pads, Natural Water-Lily Blooms & Riverside Cattails
     {
       const padGeo = createLilyPadGeo();
       const lotusGeo = createLotusBloomGeo();
-      const padMat = new THREE.MeshStandardMaterial({ color: 0x3b7838, roughness: 0.48 });
+      const padMat = new THREE.MeshStandardMaterial({ color: 0x355b31, roughness: 0.44 });
       const lotusMat = new THREE.MeshStandardMaterial({
         color: 0xffffff,
-        roughness: 0.45,
+        roughness: 0.48,
         vertexColors: true,
       });
       this.disposables.push(padGeo, lotusGeo, padMat, lotusMat);
@@ -762,7 +983,6 @@ export class FloraRenderer {
         const lz = Math.sin(a) * r;
         const ly = world.terrain.getHeightAt(lx, lz);
         if (ly > world.terrain.waterLevel - 0.22) continue;
-        // Keep lily pads in calm freshwater ponds & rivers, never in ocean surf
         if (world.terrain.getCoastSignedDistance(lx, lz) < 12) continue;
 
         const rot = rng.range(0, Math.PI * 2);
@@ -773,9 +993,9 @@ export class FloraRenderer {
         dummy.updateMatrix();
         padInst.setMatrixAt(padsPlaced++, dummy.matrix);
 
-        if (rng.chance(0.45)) {
+        if (rng.chance(0.42)) {
           dummy.position.set(lx, world.terrain.waterLevel + 0.055, lz);
-          dummy.scale.setScalar(scale * 1.15);
+          dummy.scale.setScalar(scale * 1.12);
           dummy.updateMatrix();
           lotusInst.setMatrixAt(lotusesPlaced++, dummy.matrix);
         }
@@ -806,8 +1026,8 @@ export class FloraRenderer {
       }
       const reedGeo = mergePartGeometries(reedParts, false);
       const headGeo = mergePartGeometries(headParts, false);
-      const reedMat = new THREE.MeshStandardMaterial({ color: 0x4f7c3c, roughness: 0.85 });
-      const cattailMat = new THREE.MeshStandardMaterial({ color: 0x5c361e, roughness: 0.92 });
+      const reedMat = new THREE.MeshStandardMaterial({ color: 0x4b6838, roughness: 0.86 });
+      const cattailMat = new THREE.MeshStandardMaterial({ color: 0x4f301b, roughness: 0.94 });
       this.disposables.push(reedGeo, headGeo, reedMat, cattailMat);
 
       const maxReeds = 360;
@@ -821,7 +1041,6 @@ export class FloraRenderer {
         const rz = Math.sin(a) * r;
         const ry = world.terrain.getHeightAt(rx, rz);
         if (ry < world.terrain.waterLevel - 0.12 || ry > world.terrain.waterLevel + 0.36) continue;
-        // Keep cattails along freshwater riverbanks & ponds rather than salty ocean beach
         if (world.terrain.getCoastSignedDistance(rx, rz) < 12) continue;
         dummy.position.set(rx, ry - 0.04, rz);
         dummy.rotation.set(0, rng.range(0, Math.PI * 2), 0);
@@ -836,7 +1055,7 @@ export class FloraRenderer {
       this.group.add(reedInst, cattailInst);
     }
 
-    // 8. Dense Curved Multi-Blade Prairie & Lush Woodland Grass Tufts
+    // 8. Dense Curved Multi-Blade Prairie & Woodland Grass Tufts
     const grassCount = Math.floor(world.config.grassBladeCount * grassMultiplier * 0.85);
     if (grassCount > 0) {
       const tuftGeo = createCurvedGrassTuftGeo();
@@ -848,7 +1067,7 @@ export class FloraRenderer {
       let placed = 0;
       const prairieTarget = Math.floor(grassCount * 0.48);
 
-      // Pass A: Carpet the flat open prairies and meadows with tall waving wind-swept grass
+      // Pass A: Open prairies and meadows
       for (let i = 0; i < prairieTarget * 9 && placed < prairieTarget; i++) {
         const a = rng.range(0, Math.PI * 2);
         const r = Math.sqrt(rng.next()) * circularRadius;
@@ -868,15 +1087,15 @@ export class FloraRenderer {
         grass.setMatrixAt(placed, dummy.matrix);
 
         if (gBiome === 'prairie') {
-          tint.setHex(placed % 3 === 0 ? 0xd9ca5c : 0xc0d95a);
+          tint.setHex(placed % 3 === 0 ? 0xc2b669 : 0xa6b564);
         } else {
-          tint.setHex(0xa8db64);
+          tint.setHex(0x8eaa62);
         }
         grass.setColorAt(placed, tint);
         placed++;
       }
 
-      // Pass B: Lush verdant forest floor, mossy hollows, and grassy riverbanks (zero desert grass!)
+      // Pass B: Forest floor, mossy hollows, and grassy riverbanks
       for (let i = 0; i < grassCount * 4 && placed < grassCount; i++) {
         const a = rng.range(0, Math.PI * 2);
         const r = Math.sqrt(rng.next()) * circularRadius;
@@ -898,21 +1117,21 @@ export class FloraRenderer {
         grass.setMatrixAt(placed, dummy.matrix);
 
         if (gBiome === 'prairie') {
-          tint.setHex(0xcbd65c);
+          tint.setHex(0xb4b664);
         } else if (gBiome === 'seashore') {
-          tint.setHex(0xd4c27c);
+          tint.setHex(0xbdae7c);
         } else if (gBiome === 'moss_hollow') {
-          tint.setHex(0x4cb562);
+          tint.setHex(0x528258);
         } else if (gBiome === 'deep_woods') {
-          tint.setHex(0x5eb84c);
+          tint.setHex(0x5a854c);
         } else if (gBiome === 'riverbank') {
-          tint.setHex(0x72c458);
+          tint.setHex(0x6e9454);
         } else if (gBiome === 'meadow') {
-          tint.setHex(0xa8db64);
+          tint.setHex(0x8eaa62);
         } else if (gBiome === 'rocky_ridge') {
-          tint.setHex(0x88a378);
+          tint.setHex(0x7c8c6e);
         } else {
-          tint.setHex(0x7ec25c);
+          tint.setHex(0x739655);
         }
         grass.setColorAt(placed, tint);
         placed++;
@@ -931,60 +1150,36 @@ export class FloraRenderer {
     dummy: THREE.Object3D,
     tint: THREE.Color,
   ): void {
-    // Low-poly silhouette conifers & broadleaf woodland canopies encircling the valley out to 345m
-    const pineParts: THREE.BufferGeometry[] = [];
-    const tier1 = new THREE.ConeGeometry(2.6, 5.4, 7);
-    tier1.translate(0, 3.6, 0);
-    const tier2 = new THREE.ConeGeometry(2.0, 4.6, 7);
-    tier2.translate(0, 6.2, 0);
-    const tier3 = new THREE.ConeGeometry(1.3, 3.6, 6);
-    tier3.translate(0, 8.6, 0);
-    pineParts.push(tier1, tier2, tier3);
-    const distantPineGeo = mergePartGeometries(pineParts, false);
+    // Procedurally unique multi-tier distant conifers + broadleaves across distant hills
+    const distantOakGeo = createHorizonBroadleafGeo();
 
-    const oakParts: THREE.BufferGeometry[] = [];
-    const domeMain = new THREE.DodecahedronGeometry(2.9, 1);
-    domeMain.scale(1.15, 0.88, 1.15);
-    domeMain.translate(0, 5.2, 0);
-    const domeSide = new THREE.DodecahedronGeometry(2.1, 1);
-    domeSide.translate(1.4, 4.4, 0.7);
-    const domeSide2 = new THREE.DodecahedronGeometry(1.9, 1);
-    domeSide2.translate(-1.3, 4.5, -0.8);
-    oakParts.push(domeMain, domeSide, domeSide2);
-    const distantOakGeo = mergePartGeometries(oakParts, false);
-
-    const trunkGeo = new THREE.CylinderGeometry(0.32, 0.55, 3.2, 5);
+    const trunkGeo = new THREE.CylinderGeometry(0.28, 0.50, 3.2, 5);
     trunkGeo.translate(0, 1.5, 0);
-    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4b3829, roughness: 0.95 });
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x453629, roughness: 0.96 });
 
-    this.disposables.push(distantPineGeo, distantOakGeo, trunkGeo, trunkMat);
+    this.disposables.push(distantOakGeo, trunkGeo, trunkMat);
 
     const innerR = this.world.terrain.halfSize + 6;
     const outerR = this.world.terrain.halfSize * 3.0;
     const pineTarget = 1400;
     const oakTarget = 1000;
 
-    const pineMesh = new THREE.InstancedMesh(distantPineGeo, this.distantPineMat, pineTarget);
     const oakMesh = new THREE.InstancedMesh(distantOakGeo, this.distantBroadleafMat, oakTarget);
-    const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, pineTarget + oakTarget);
-    pineMesh.frustumCulled = false;
+    const oakTrunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, oakTarget);
     oakMesh.frustumCulled = false;
-    trunkMesh.frustumCulled = false;
+    oakTrunkMesh.frustumCulled = false;
 
-    let pineCount = 0;
+    const pinePlacements: HorizonPinePlacement[] = [];
     let oakCount = 0;
-    let trunkCount = 0;
 
-    for (let tries = 0; tries < 9600 && (pineCount < pineTarget || oakCount < oakTarget); tries++) {
+    for (let tries = 0; tries < 9600 && (pinePlacements.length < pineTarget || oakCount < oakTarget); tries++) {
       const a = rng.range(0, Math.PI * 2);
-      // Area-weighted distribution with extra density in the mid-distance transition band
       const u = Math.pow(rng.next(), 0.78);
       const r = innerR + u * (outerR - innerR);
       const x = Math.cos(a) * r;
       const z = Math.sin(a) * r;
       const y = this.world.terrain.getHeightAt(x, z);
       if (y < this.world.terrain.waterLevel + 0.45 || y > 24.0) continue;
-      // Keep open ocean sea, distant desert dunes, and treeless open prairies free of horizon trees
       if (this.world.terrain.getCoastSignedDistance(x, z) < 18) continue;
       const hBiome = this.world.terrain.getBiomeAt(x, z);
       if (
@@ -1002,36 +1197,42 @@ export class FloraRenderer {
         continue;
       }
 
-      const isPine = pineCount < pineTarget && (oakCount >= oakTarget || rng.chance(0.6));
+      const isPine = pinePlacements.length < pineTarget && (oakCount >= oakTarget || rng.chance(0.6));
       const distScale = 1.0 + u * 0.85;
       const s = rng.range(0.88, 1.55) * distScale;
 
-      dummy.position.set(x, y - 0.35, z);
-      dummy.rotation.set(0, rng.range(0, Math.PI * 2), 0);
-      dummy.scale.set(s, s * rng.range(0.92, 1.25), s);
-      dummy.updateMatrix();
-
       if (isPine) {
-        pineMesh.setMatrixAt(pineCount, dummy.matrix);
-        const v = rng.range(-0.14, 0.14);
-        tint.setRGB(1 + v * 0.7, 1 + v, 1 + v * 0.6);
-        pineMesh.setColorAt(pineCount, tint);
-        pineCount++;
+        pinePlacements.push({
+          x,
+          y,
+          z,
+          scale: s,
+          biome: hBiome,
+          seed: Math.floor(rng.next() * 0x7fffffff),
+        });
       } else {
+        dummy.position.set(x, y - 0.35, z);
+        dummy.rotation.set(rng.range(-0.04, 0.04), rng.range(0, Math.PI * 2), rng.range(-0.04, 0.04));
+        dummy.scale.set(s * rng.range(0.88, 1.14), s * rng.range(0.86, 1.32), s * rng.range(0.88, 1.14));
+        dummy.updateMatrix();
         oakMesh.setMatrixAt(oakCount, dummy.matrix);
         const v = rng.range(-0.16, 0.16);
         tint.setRGB(1 + v, 1 + v * 0.8, 1 - v * 0.5);
         oakMesh.setColorAt(oakCount, tint);
+        oakTrunkMesh.setMatrixAt(oakCount, dummy.matrix);
         oakCount++;
       }
-
-      trunkMesh.setMatrixAt(trunkCount++, dummy.matrix);
     }
 
-    pineMesh.count = pineCount;
+    if (pinePlacements.length > 0) {
+      const horizonPines = buildProceduralHorizonPines(pinePlacements, this.distantPineMat, trunkMat);
+      this.disposables.push(...horizonPines.disposables);
+      this.group.add(horizonPines.trunkMesh, ...horizonPines.foliageMeshes);
+    }
+
     oakMesh.count = oakCount;
-    trunkMesh.count = trunkCount;
-    this.group.add(trunkMesh, pineMesh, oakMesh);
+    oakTrunkMesh.count = oakCount;
+    this.group.add(oakTrunkMesh, oakMesh);
   }
 
   update(dt = 0, sky?: SkyLightingState): void {
@@ -1039,65 +1240,58 @@ export class FloraRenderer {
       this.updateSeasonPalette(this.world.season);
     }
 
-    // Dynamically clear trees wherever growing cities raise new buildings or waterway bridges
     if (this.world.structureRevision !== this.lastStructureRevision) {
       this.lastStructureRevision = this.world.structureRevision;
       this.clearTreesNearBuildings();
     }
 
-    // Drive organic wind flutter & sunlit backlit leaf translucency
+    // Drive organic wind flutter, backlit translucency & cloud shadow drift
     this.foliageUniforms.uTime.value += dt;
     if (sky) {
       this.foliageUniforms.uWindStrength.value = sky.windStrength;
       this.foliageUniforms.uSunDir.value.copy(sky.sunDirection);
       this.foliageUniforms.uSunColor.value.copy(sky.sunColor);
       this.foliageUniforms.uDaylight.value = sky.daylight;
+      this.foliageUniforms.uCloudTime.value = sky.cloudTime ?? 0;
+      this.foliageUniforms.uCloudCoverage.value = sky.cloudCoverage ?? 0.38;
     }
 
-    // Gentle lily pad bobbing & evening fairy lantern / toadstool shimmer
     const t = this.world.elapsedSeconds;
-    this.lilyGroup.position.y = Math.sin(t * 1.45) * 0.022;
+    this.lilyGroup.position.y = Math.sin(t * 1.45) * 0.018;
 
+    // Lanterns only glow warmly at dusk/night, never glowing neon bulbs in noon sunlight
     const sunY = Math.sin((this.world.timeOfDay - 0.25) * Math.PI * 2);
-    const nightAmt = THREE.MathUtils.clamp(1 - (sunY + 0.1) * 2.1, 0.15, 1.6);
-    this.fairyLanternMat.emissiveIntensity = nightAmt * (1.35 + Math.sin(t * 3.8) * 0.2);
-    this.toadstoolCapMat.emissiveIntensity = 0.12 + nightAmt * 0.32;
+    const nightAmt = THREE.MathUtils.clamp(1 - (sunY + 0.08) * 2.6, 0.0, 1.35);
+    this.fairyLanternMat.emissiveIntensity = nightAmt * (1.25 + Math.sin(t * 3.8) * 0.16);
   }
 
   private clearTreesNearBuildings(): void {
     const zeroMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
+    const isTreeBlocked = (tree: TreeSpot): boolean => {
+      for (const settlement of this.world.settlements) {
+        if (Math.hypot(tree.x - settlement.center.x, tree.z - settlement.center.z) < 7.5) {
+          return true;
+        }
+        for (const b of settlement.buildings) {
+          const clearDist = BUILDING_CATALOG[b.type].footprintRadius + 1.45;
+          if (Math.hypot(tree.x - b.position.x, tree.z - b.position.z) < clearDist) {
+            return true;
+          }
+        }
+      }
+      for (const br of this.world.bridges) {
+        if (isPointNearBridge(br, tree.x, tree.z, 1.8)) {
+          return true;
+        }
+      }
+      return false;
+    };
 
     for (const group of this.clearableTreeGroups) {
       let dirty = false;
       for (let i = 0; i < group.spots.length; i++) {
         if (group.cleared[i]) continue;
-        const tree = group.spots[i];
-
-        let blocked = false;
-        for (const settlement of this.world.settlements) {
-          if (Math.hypot(tree.x - settlement.center.x, tree.z - settlement.center.z) < 7.5) {
-            blocked = true;
-            break;
-          }
-          for (const b of settlement.buildings) {
-            const clearDist = BUILDING_CATALOG[b.type].footprintRadius + 1.45;
-            if (Math.hypot(tree.x - b.position.x, tree.z - b.position.z) < clearDist) {
-              blocked = true;
-              break;
-            }
-          }
-          if (blocked) break;
-        }
-        if (!blocked) {
-          for (const br of this.world.bridges) {
-            if (isPointNearBridge(br, tree.x, tree.z, 1.8)) {
-              blocked = true;
-              break;
-            }
-          }
-        }
-
-        if (blocked) {
+        if (isTreeBlocked(group.spots[i])) {
           group.cleared[i] = 1;
           group.trunks.setMatrixAt(i, zeroMatrix);
           group.crowns.setMatrixAt(i, zeroMatrix);
@@ -1110,48 +1304,58 @@ export class FloraRenderer {
         group.crowns.instanceMatrix.needsUpdate = true;
       }
     }
+
+    if (this.proceduralPines) {
+      for (let i = 0; i < this.proceduralPines.spots.length; i++) {
+        if (isTreeBlocked(this.proceduralPines.spots[i])) {
+          this.proceduralPines.clearTree(i);
+        }
+      }
+      this.proceduralPines.flushCleared();
+    }
   }
 
   private updateSeasonPalette(season: Season): void {
     this.lastSeason = season;
     this.wildflowerGroup.visible = season !== 'winter';
 
+    // Calibrated naturalistic chlorophyll & seasonal pigments (photographic, non-neon)
     if (season === 'spring') {
-      this.oakFoliageMat.color.setHex(0x4b9e38);
-      this.pineFoliageMat.color.setHex(0x267542);
-      this.birchFoliageMat.color.setHex(0x82d44c);
-      this.distantPineMat.color.setHex(0x22633b);
-      this.distantBroadleafMat.color.setHex(0x408a34);
-      this.grassMat.color.setHex(0x74b342);
-      this.fernMat.color.setHex(0xffffff);
-      this.bushMat.color.setHex(0xffffff);
+      this.oakFoliageMat.color.setHex(0x4f783b);
+      this.pineFoliageMat.color.setHex(0x2d583c);
+      this.birchFoliageMat.color.setHex(0x74994a);
+      this.distantPineMat.color.setHex(0x284d35);
+      this.distantBroadleafMat.color.setHex(0x456b36);
+      this.grassMat.color.setHex(0x698845);
+      this.fernMat.color.setHex(0xf2f5ee);
+      this.bushMat.color.setHex(0x486e36);
     } else if (season === 'summer') {
-      this.oakFoliageMat.color.setHex(0x39852e);
-      this.pineFoliageMat.color.setHex(0x1f6338);
-      this.birchFoliageMat.color.setHex(0x66ba42);
-      this.distantPineMat.color.setHex(0x1b5431);
-      this.distantBroadleafMat.color.setHex(0x32732a);
-      this.grassMat.color.setHex(0x629e38);
-      this.fernMat.color.setHex(0xebfae6);
-      this.bushMat.color.setHex(0xe8f5e1);
+      this.oakFoliageMat.color.setHex(0x3e6631);
+      this.pineFoliageMat.color.setHex(0x254c34);
+      this.birchFoliageMat.color.setHex(0x5e8542);
+      this.distantPineMat.color.setHex(0x21442f);
+      this.distantBroadleafMat.color.setHex(0x385c2d);
+      this.grassMat.color.setHex(0x5b7a3c);
+      this.fernMat.color.setHex(0xe2ebd9);
+      this.bushMat.color.setHex(0x3c5f2f);
     } else if (season === 'autumn') {
-      this.oakFoliageMat.color.setHex(0xd9752b);
-      this.pineFoliageMat.color.setHex(0x345e42);
-      this.birchFoliageMat.color.setHex(0xf2c244);
-      this.distantPineMat.color.setHex(0x2e523a);
-      this.distantBroadleafMat.color.setHex(0xb4692c);
-      this.grassMat.color.setHex(0x9a7d3e);
-      this.fernMat.color.setHex(0xd9b36c);
-      this.bushMat.color.setHex(0xd69658);
+      this.oakFoliageMat.color.setHex(0xb86631);
+      this.pineFoliageMat.color.setHex(0x314f3d);
+      this.birchFoliageMat.color.setHex(0xcfa544);
+      this.distantPineMat.color.setHex(0x2b4535);
+      this.distantBroadleafMat.color.setHex(0x9a5c30);
+      this.grassMat.color.setHex(0x887141);
+      this.fernMat.color.setHex(0xb8965d);
+      this.bushMat.color.setHex(0x9e6e42);
     } else {
-      this.oakFoliageMat.color.setHex(0xb8c8d4);
-      this.pineFoliageMat.color.setHex(0x5d827a);
-      this.birchFoliageMat.color.setHex(0xd2dde6);
-      this.distantPineMat.color.setHex(0x547470);
-      this.distantBroadleafMat.color.setHex(0xa8b8c4);
-      this.grassMat.color.setHex(0xb8c6cf);
-      this.fernMat.color.setHex(0x9ab0b8);
-      this.bushMat.color.setHex(0xb0c2cc);
+      this.oakFoliageMat.color.setHex(0xa8b5bf);
+      this.pineFoliageMat.color.setHex(0x4f6d67);
+      this.birchFoliageMat.color.setHex(0xbec8d0);
+      this.distantPineMat.color.setHex(0x48625e);
+      this.distantBroadleafMat.color.setHex(0x99a6b0);
+      this.grassMat.color.setHex(0xa8b4bc);
+      this.fernMat.color.setHex(0x8b9ea6);
+      this.bushMat.color.setHex(0x98a8b2);
     }
   }
 

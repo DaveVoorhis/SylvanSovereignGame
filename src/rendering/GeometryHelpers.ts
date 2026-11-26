@@ -262,9 +262,9 @@ function shadeBotanicalCanopy(
   const v = new THREE.Vector3();
   const n = new THREE.Vector3();
   const radial = new THREE.Vector3();
-  const innerCol = new THREE.Color(0x4b5c44);
-  const midCol = new THREE.Color(0xc2d0b4);
-  const tipCol = new THREE.Color(0xffffff);
+  const innerCol = new THREE.Color(0x414e3a);
+  const midCol = new THREE.Color(0xb8c4aa);
+  const tipCol = new THREE.Color(0xf6f8f2);
   const c = new THREE.Color();
 
   for (let i = 0; i < pos.count; i++) {
@@ -452,53 +452,248 @@ export function createOakCanopyGeo(): THREE.BufferGeometry {
   return shadeBotanicalCanopy(merged, 5.55, 3.25, 2.25, 0.8);
 }
 
+export const PINE_VARIANT_COUNT = 5;
+export const HORIZON_PINE_VARIANT_COUNT = 3;
+
+interface PineArchetype {
+  readonly seed: number;
+  readonly height: number;
+  readonly crownStart: number;
+  readonly crownEnd: number;
+  readonly baseRadius: number;
+  readonly leanX: number;
+  readonly leanZ: number;
+  readonly trunkWhorls: number;
+  readonly canopyWhorls: number;
+  readonly baseBoughLen: number;
+  readonly topBoughLen: number;
+  readonly baseBoughWidth: number;
+  readonly topBoughWidth: number;
+  readonly boughCurvePow: number;
+  readonly pitchBase: number;
+  readonly pitchTop: number;
+  readonly skipRate: number;
+  readonly windBias: number; // >0 stretches boughs toward +X (flagged ridge pine)
+  readonly spireHeight: number; // 0 = broad flat/rounded Scots pine crown
+  readonly bareStubs: boolean; // dead lower stubs on tall bare-trunk mature pines
+}
+
+const PINE_ARCHETYPES: readonly PineArchetype[] = [
+  // 0: Irregular Woodland Norway Spruce (asymmetric gaps, organic drooping boughs)
+  {
+    seed: 11,
+    height: 9.0,
+    crownStart: 2.35,
+    crownEnd: 8.55,
+    baseRadius: 0.42,
+    leanX: 0.08,
+    leanZ: -0.05,
+    trunkWhorls: 6,
+    canopyWhorls: 8,
+    baseBoughLen: 2.65,
+    topBoughLen: 0.65,
+    baseBoughWidth: 1.72,
+    topBoughWidth: 0.68,
+    boughCurvePow: 0.88,
+    pitchBase: 0.34,
+    pitchTop: -0.34,
+    skipRate: 0.16,
+    windBias: 0.06,
+    spireHeight: 1.35,
+    bareStubs: false,
+  },
+  // 1: Tall Mature Scots / Ponderosa Pine (high bare reddish trunk + broad irregular umbrella crown)
+  {
+    seed: 29,
+    height: 10.4,
+    crownStart: 5.05,
+    crownEnd: 9.95,
+    baseRadius: 0.46,
+    leanX: -0.24,
+    leanZ: 0.15,
+    trunkWhorls: 5,
+    canopyWhorls: 6,
+    baseBoughLen: 3.15,
+    topBoughLen: 1.65,
+    baseBoughWidth: 1.95,
+    topBoughWidth: 1.35,
+    boughCurvePow: 0.55,
+    pitchBase: 0.04,
+    pitchTop: -0.26,
+    skipRate: 0.14,
+    windBias: 0.12,
+    spireHeight: 0.0,
+    bareStubs: true,
+  },
+  // 2: Slender Alpine Subalpine Fir / Young Spire (tall, narrow, low feathered skirts)
+  {
+    seed: 47,
+    height: 9.8,
+    crownStart: 1.55,
+    crownEnd: 9.35,
+    baseRadius: 0.31,
+    leanX: 0.05,
+    leanZ: 0.06,
+    trunkWhorls: 7,
+    canopyWhorls: 10,
+    baseBoughLen: 1.62,
+    topBoughLen: 0.44,
+    baseBoughWidth: 1.24,
+    topBoughWidth: 0.52,
+    boughCurvePow: 0.92,
+    pitchBase: 0.48,
+    pitchTop: -0.28,
+    skipRate: 0.12,
+    windBias: 0.04,
+    spireHeight: 1.65,
+    bareStubs: false,
+  },
+  // 3: Broad Old-Growth Douglas Fir / Cedar (massive wide irregular bough pads, blunted summit)
+  {
+    seed: 73,
+    height: 10.1,
+    crownStart: 1.95,
+    crownEnd: 9.45,
+    baseRadius: 0.54,
+    leanX: 0.14,
+    leanZ: 0.10,
+    trunkWhorls: 7,
+    canopyWhorls: 9,
+    baseBoughLen: 3.35,
+    topBoughLen: 1.12,
+    baseBoughWidth: 2.05,
+    topBoughWidth: 0.98,
+    boughCurvePow: 0.78,
+    pitchBase: 0.28,
+    pitchTop: -0.22,
+    skipRate: 0.18,
+    windBias: 0.09,
+    spireHeight: 0.75,
+    bareStubs: false,
+  },
+  // 4: Wind-Sculpted / Leaning Ridge Pine (sweeping bent trunk & asymmetric flagged boughs)
+  {
+    seed: 97,
+    height: 8.3,
+    crownStart: 2.95,
+    crownEnd: 7.85,
+    baseRadius: 0.40,
+    leanX: 0.68,
+    leanZ: -0.24,
+    trunkWhorls: 6,
+    canopyWhorls: 7,
+    baseBoughLen: 2.55,
+    topBoughLen: 1.05,
+    baseBoughWidth: 1.68,
+    topBoughWidth: 0.92,
+    boughCurvePow: 0.68,
+    pitchBase: 0.16,
+    pitchTop: -0.20,
+    skipRate: 0.24,
+    windBias: 0.46,
+    spireHeight: 0.55,
+    bareStubs: true,
+  },
+];
+
+function buildPineTrunkCurve(arch: PineArchetype): THREE.CatmullRomCurve3 {
+  const s = arch.seed;
+  const midBendX = arch.leanX * 0.38 + (detRand(s, 11) - 0.5) * 0.26;
+  const midBendZ = arch.leanZ * 0.38 + (detRand(s, 12) - 0.5) * 0.26;
+  const upperBendX = arch.leanX * 0.78 + (detRand(s, 13) - 0.5) * 0.22;
+  const upperBendZ = arch.leanZ * 0.78 + (detRand(s, 14) - 0.5) * 0.22;
+  return new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, -0.25, 0),
+    new THREE.Vector3(midBendX, arch.height * 0.30, midBendZ),
+    new THREE.Vector3(upperBendX, arch.height * 0.65, upperBendZ),
+    new THREE.Vector3(arch.leanX, arch.height, arch.leanZ),
+  ]);
+}
+
 /**
- * Realistic towering conifer pine trunk with flared roots and visible woody branch whorls.
+ * Realistic conifer trunk with flared buttress roots and visible woody branch whorls
+ * tailored to each of the 5 distinct woodland/alpine pine archetypes.
  */
-export function createPineTrunkGeo(): THREE.BufferGeometry {
+export function createPineTrunkGeo(variant = 0): THREE.BufferGeometry {
+  const arch = PINE_ARCHETYPES[((variant % PINE_ARCHETYPES.length) + PINE_ARCHETYPES.length) % PINE_ARCHETYPES.length];
   const parts: THREE.BufferGeometry[] = [];
 
-  const trunkCurve = new THREE.CatmullRomCurve3([
-    new THREE.Vector3(0, -0.25, 0),
-    new THREE.Vector3(0.05, 2.6, -0.04),
-    new THREE.Vector3(-0.04, 5.5, 0.04),
-    new THREE.Vector3(0.02, 8.6, 0),
-  ]);
+  const trunkCurve = buildPineTrunkCurve(arch);
   parts.push(
     createTaperedTubeGeo(
       trunkCurve,
       14,
       10,
       (t, angle) => {
-        const base = THREE.MathUtils.lerp(0.42, 0.06, Math.pow(t, 0.85));
-        const flare = Math.pow(Math.max(0, 1 - t * 4.2), 2.1) * (0.2 + 0.07 * Math.sin(angle * 4));
+        const base = THREE.MathUtils.lerp(arch.baseRadius, 0.065, Math.pow(t, 0.84));
+        const flare =
+          Math.pow(Math.max(0, 1 - t * 4.0), 2.1) *
+          (arch.baseRadius * 0.48 + 0.07 * Math.sin(angle * 4 + arch.seed));
         return base + flare;
       },
       true,
     ),
   );
 
+  // Optional weathered bare lower branch stubs on mature Scots/ridge pines
+  if (arch.bareStubs) {
+    for (let sIdx = 0; sIdx < 3; sIdx++) {
+      const st = THREE.MathUtils.lerp(0.24, 0.46, sIdx / 2);
+      const origin = trunkCurve.getPointAt(st);
+      const a = detRand(arch.seed + sIdx * 7, 21) * Math.PI * 2;
+      const stubLen = 0.45 + detRand(arch.seed + sIdx * 7, 22) * 0.42;
+      const sCurve = new THREE.CatmullRomCurve3([
+        origin.clone(),
+        new THREE.Vector3(
+          origin.x + Math.cos(a) * stubLen * 0.55,
+          origin.y - 0.12,
+          origin.z + Math.sin(a) * stubLen * 0.55,
+        ),
+        new THREE.Vector3(
+          origin.x + Math.cos(a) * stubLen,
+          origin.y - 0.22,
+          origin.z + Math.sin(a) * stubLen,
+        ),
+      ]);
+      parts.push(createTaperedTubeGeo(sCurve, 4, 5, (t) => THREE.MathUtils.lerp(0.065, 0.018, t), true));
+    }
+  }
+
   // Visible woody bough whorls extending out into the pine needle sprays
-  const whorlCount = 6;
+  const whorlCount = arch.trunkWhorls;
   for (let w = 0; w < whorlCount; w++) {
-    const wt = w / (whorlCount - 1);
-    const y = THREE.MathUtils.lerp(2.7, 7.1, wt);
-    const len = THREE.MathUtils.lerp(2.1, 0.65, wt);
+    const wt = whorlCount > 1 ? w / (whorlCount - 1) : 0;
+    const y = THREE.MathUtils.lerp(arch.crownStart, arch.crownEnd * 0.88, wt);
+    const curveT = THREE.MathUtils.clamp((y + 0.25) / (arch.height + 0.25), 0.05, 0.95);
+    const origin = trunkCurve.getPointAt(curveT);
+    const len = THREE.MathUtils.lerp(arch.baseBoughLen * 0.78, arch.topBoughLen * 0.82, Math.pow(wt, arch.boughCurvePow));
     const branches = w < 3 ? 5 : 4;
     for (let b = 0; b < branches; b++) {
-      const a = (b / branches) * Math.PI * 2 + w * 0.72;
-      const droop = THREE.MathUtils.lerp(-0.48, -0.1, wt);
+      const bId = arch.seed * 31 + w * 13 + b;
+      if (detRand(bId, 3) < arch.skipRate * 0.75) continue;
+      const a = (b / branches) * Math.PI * 2 + w * 0.83 + (detRand(bId, 1) - 0.5) * 0.35;
+      const windMult = 1 + Math.cos(a) * arch.windBias;
+      const localLen = len * (0.78 + detRand(bId, 2) * 0.42) * windMult;
+      const droop = THREE.MathUtils.lerp(-arch.pitchBase * 1.15, -arch.pitchTop * 0.35, wt);
       const bCurve = new THREE.CatmullRomCurve3([
-        new THREE.Vector3(0, y, 0),
-        new THREE.Vector3(Math.cos(a) * len * 0.55, y + droop * 0.65, Math.sin(a) * len * 0.55),
-        new THREE.Vector3(Math.cos(a) * len, y + droop * 0.85 + 0.14, Math.sin(a) * len),
+        origin.clone(),
+        new THREE.Vector3(
+          origin.x + Math.cos(a) * localLen * 0.55,
+          origin.y + droop * 0.62,
+          origin.z + Math.sin(a) * localLen * 0.55,
+        ),
+        new THREE.Vector3(
+          origin.x + Math.cos(a) * localLen,
+          origin.y + droop * 0.78 + 0.16,
+          origin.z + Math.sin(a) * localLen,
+        ),
       ]);
       parts.push(
         createTaperedTubeGeo(
           bCurve,
           5,
           5,
-          (t) => THREE.MathUtils.lerp(0.075 * (1 - wt * 0.45), 0.02, t),
+          (t) => THREE.MathUtils.lerp(0.08 * (1 - wt * 0.45), 0.02, t),
           true,
         ),
       );
@@ -509,32 +704,49 @@ export function createPineTrunkGeo(): THREE.BufferGeometry {
 }
 
 /**
- * Realistic towering evergreen pine canopy composed of 8 organic whorls of drooping,
- * upturned 3D pine-needle bough fronds with radial shading and deep inner-crown shadow.
+ * Realistic evergreen conifer canopy across 5 distinct botanical archetypes
+ * (woodland spruce, bare-trunk Scots pine, narrow alpine fir, old-growth Douglas fir,
+ * and wind-sculpted ridge pine) with irregular gaps, organic asymmetry, and radial AO.
  */
-export function createPineCanopyGeo(): THREE.BufferGeometry {
+export function createPineCanopyGeo(variant = 0): THREE.BufferGeometry {
+  const arch = PINE_ARCHETYPES[((variant % PINE_ARCHETYPES.length) + PINE_ARCHETYPES.length) % PINE_ARCHETYPES.length];
+  const trunkCurve = buildPineTrunkCurve(arch);
   const fronds: THREE.BufferGeometry[] = [];
 
-  const whorls = 8;
-  let idx = 0;
+  const whorls = arch.canopyWhorls;
+  let idx = arch.seed * 100;
   for (let w = 0; w < whorls; w++) {
-    const wt = w / (whorls - 1); // 0 = wide lowest boughs, 1 = slender leader tip
-    const y = THREE.MathUtils.lerp(2.65, 8.45, Math.pow(wt, 0.94));
-    const boughLen = THREE.MathUtils.lerp(2.75, 0.72, Math.pow(wt, 0.88));
-    const boughWidth = THREE.MathUtils.lerp(1.75, 0.68, wt);
-    const count = Math.round(THREE.MathUtils.lerp(7, 4, wt));
+    const wt = whorls > 1 ? w / (whorls - 1) : 0; // 0 = lowest boughs, 1 = upper crown
+    const jitterW = (detRand(arch.seed + w * 5, 7) - 0.5) * 0.06;
+    const y = THREE.MathUtils.lerp(arch.crownStart, arch.crownEnd, Math.pow(THREE.MathUtils.clamp(wt + jitterW, 0, 1), 0.94));
+    const curveT = THREE.MathUtils.clamp((y + 0.25) / (arch.height + 0.25), 0.05, 0.98);
+    const center = trunkCurve.getPointAt(curveT);
+
+    // Scots/umbrella pine flares mid-upper crown wider before gently rounding off at the top
+    const profile =
+      arch.spireHeight <= 0.01
+        ? Math.sin(wt * Math.PI * 0.72 + 0.35)
+        : 1 - Math.pow(wt, arch.boughCurvePow);
+    const boughLen = THREE.MathUtils.lerp(arch.topBoughLen, arch.baseBoughLen, profile);
+    const boughWidth = THREE.MathUtils.lerp(arch.baseBoughWidth, arch.topBoughWidth, wt);
+    const count = Math.round(THREE.MathUtils.lerp(7, arch.spireHeight <= 0.01 ? 5 : 4, wt));
 
     for (let b = 0; b < count; b++) {
       idx++;
-      const a = (b / count) * Math.PI * 2 + w * 0.88 + (detRand(idx, 1) - 0.5) * 0.25;
-      const pitchDown = THREE.MathUtils.lerp(0.32, -0.35, wt) + (detRand(idx, 2) - 0.5) * 0.14;
-      const localLen = boughLen * (0.86 + detRand(idx, 3) * 0.26);
+      // Occasional organic missing bough creates real natural gaps instead of machine-uniform cones
+      if (w < whorls - 1 && detRand(idx, 9) < arch.skipRate) continue;
+
+      const a = (b / count) * Math.PI * 2 + w * 0.91 + (detRand(idx, 1) - 0.5) * 0.42;
+      const windMult = Math.max(0.45, 1 + Math.cos(a) * arch.windBias);
+      const pitchDown = THREE.MathUtils.lerp(arch.pitchBase, arch.pitchTop, wt) + (detRand(idx, 2) - 0.5) * 0.22;
+      const localLen = boughLen * (0.74 + detRand(idx, 3) * 0.48) * windMult;
+      const localWidth = boughWidth * (0.82 + detRand(idx, 8) * 0.34);
 
       // Main horizontal-draping curved pine needle frond + angled cross-vane for full 3D depth
       for (const roll of [0, 0.62, -0.62]) {
-        if (roll !== 0 && wt > 0.78) continue;
+        if (roll !== 0 && wt > 0.76 && arch.spireHeight > 0.1) continue;
         const card = createCuppedLeafCard(
-          boughWidth * (roll === 0 ? 1.0 : 0.74),
+          localWidth * (roll === 0 ? 1.0 : 0.74),
           localLen,
           roll === 0 ? 0.22 : 0.12,
         );
@@ -545,22 +757,46 @@ export function createPineCanopyGeo(): THREE.BufferGeometry {
           card.rotateZ(roll);
         }
         card.rotateY(-a + Math.PI / 2);
-        card.translate(Math.cos(a) * 0.18, y + (detRand(idx, 4) - 0.5) * 0.22, Math.sin(a) * 0.18);
+        card.translate(
+          center.x + Math.cos(a) * 0.18,
+          center.y + (detRand(idx, 4) - 0.5) * 0.32,
+          center.z + Math.sin(a) * 0.18,
+        );
         fronds.push(card);
       }
     }
   }
 
-  // Feathered vertical evergreen spire tip
-  for (let i = 0; i < 3; i++) {
-    const spire = createCuppedLeafCard(0.72, 1.35, 0.08);
-    spire.rotateY((i / 3) * Math.PI);
-    spire.translate(0, 8.85, 0);
-    fronds.push(spire);
+  const topPt = trunkCurve.getPointAt(1);
+  if (arch.spireHeight > 0.1) {
+    // Feathered vertical evergreen leader spire
+    for (let i = 0; i < 3; i++) {
+      const spire = createCuppedLeafCard(0.68 + detRand(arch.seed + i, 5) * 0.22, arch.spireHeight, 0.08);
+      spire.rotateY((i / 3) * Math.PI + arch.seed * 0.3);
+      spire.translate(topPt.x, topPt.y + arch.spireHeight * 0.24, topPt.z);
+      fronds.push(spire);
+    }
+  } else {
+    // Broad, sunlit, flat-topped Scots/Ponderosa pine crown dome pads
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2 + arch.seed * 0.4;
+      const r = 0.55 + detRand(arch.seed + i, 6) * 0.85;
+      const pad = createCuppedLeafCard(1.75, 1.65, 0.26);
+      pad.rotateX(-Math.PI / 2 + 0.14);
+      pad.rotateY(a);
+      pad.translate(
+        topPt.x + Math.cos(a) * r,
+        topPt.y - 0.1 + (detRand(arch.seed + i, 7) - 0.5) * 0.35,
+        topPt.z + Math.sin(a) * r,
+      );
+      fronds.push(pad);
+    }
   }
 
   const merged = mergePartGeometries(fronds, false);
-  return shadeBotanicalCanopy(merged, 5.4, 2.7, 3.6, 0.74);
+  const centerY = (arch.crownStart + arch.crownEnd) * 0.5;
+  const crownH = Math.max(1.8, (arch.crownEnd - arch.crownStart) * 0.55);
+  return shadeBotanicalCanopy(merged, centerY, arch.baseBoughLen, crownH, 0.74);
 }
 
 /**
@@ -661,6 +897,94 @@ export function createBirchCanopyGeo(): THREE.BufferGeometry {
 }
 
 /**
+ * Lightweight alpha-cutout cross-card botanical broadleaf tree for distant horizon ridges
+ * (replaces low-poly dodecahedron blobs with airy feathery silhouettes).
+ */
+export function createHorizonBroadleafGeo(): THREE.BufferGeometry {
+  const cards: THREE.BufferGeometry[] = [];
+  const specs: [number, number, number, number, number, number][] = [
+    [0, 5.2, 0, 4.8, 4.4, 0],
+    [0, 5.2, 0, 4.8, 4.4, Math.PI / 3],
+    [0, 5.2, 0, 4.8, 4.4, (2 * Math.PI) / 3],
+    [1.3, 4.4, 0.6, 3.6, 3.2, 0.5],
+    [-1.2, 4.6, -0.7, 3.5, 3.2, 2.1],
+    [0, 6.2, 0, 4.2, 3.8, 0.3],
+  ];
+  for (let i = 0; i < specs.length; i++) {
+    const [cx, cy, cz, w, h, rotY] = specs[i];
+    const card = new THREE.PlaneGeometry(w, h, 1, 1);
+    if (i === 5) {
+      card.rotateX(-Math.PI / 2 + 0.15);
+    }
+    card.rotateY(rotY);
+    card.translate(cx, cy, cz);
+    cards.push(card);
+  }
+  const merged = mergePartGeometries(cards, false);
+  return shadeBotanicalCanopy(merged, 5.1, 3.2, 2.4, 0.85);
+}
+
+/**
+ * Lightweight alpha-cutout tiered bough-card conifer for distant horizon mountain ridges
+ * across 3 distinct silhouettes (spruce, high-crowned Scots pine, slender alpine fir).
+ */
+export function createHorizonPineGeo(variant = 0): THREE.BufferGeometry {
+  const v = ((variant % HORIZON_PINE_VARIANT_COUNT) + HORIZON_PINE_VARIANT_COUNT) % HORIZON_PINE_VARIANT_COUNT;
+  const cards: THREE.BufferGeometry[] = [];
+
+  const tiers: [number, number, number, number][] =
+    v === 1
+      ? [
+          // High-crowned Scots/Ponderosa pine
+          [5.4, 3.4, 3.3, 4],
+          [7.4, 3.2, 3.0, 4],
+          [9.0, 2.5, 2.3, 3],
+        ]
+      : v === 2
+        ? [
+            // Narrow tall alpine fir spire
+            [2.4, 2.0, 2.1, 4],
+            [4.9, 1.7, 1.8, 4],
+            [7.3, 1.4, 1.5, 3],
+            [9.1, 1.0, 1.2, 3],
+          ]
+        : [
+            // Classic irregular woodland spruce
+            [3.0, 3.4, 3.1, 4],
+            [5.3, 2.7, 2.6, 4],
+            [7.4, 1.9, 2.0, 3],
+          ];
+
+  for (let t = 0; t < tiers.length; t++) {
+    const [y, w, len, count] = tiers[t];
+    for (let i = 0; i < count; i++) {
+      const seedIdx = v * 40 + t * 10 + i;
+      const a = (i / count) * Math.PI * 2 + t * 0.72 + (detRand(seedIdx, 1) - 0.5) * 0.4;
+      const localLen = len * (0.82 + detRand(seedIdx, 2) * 0.36);
+      const card = new THREE.PlaneGeometry(w, localLen, 1, 1);
+      card.translate(0, localLen * 0.4, 0);
+      card.rotateX(-Math.PI / 2 + (v === 1 ? 0.08 : 0.34) - t * 0.12);
+      card.rotateY(-a + Math.PI / 2);
+      card.translate(Math.cos(a) * 0.15, y + (detRand(seedIdx, 3) - 0.5) * 0.35, Math.sin(a) * 0.15);
+      cards.push(card);
+    }
+  }
+  if (v !== 1) {
+    const spireW = v === 2 ? 1.4 : 2.0;
+    const spireH = v === 2 ? 3.6 : 3.1;
+    const spireY = v === 2 ? 10.1 : 8.6;
+    for (let i = 0; i < 2; i++) {
+      const spire = new THREE.PlaneGeometry(spireW, spireH, 1, 1);
+      spire.rotateY(i * (Math.PI / 2) + v * 0.5);
+      spire.translate(0, spireY, 0);
+      cards.push(spire);
+    }
+  }
+  const merged = mergePartGeometries(cards, false);
+  return shadeBotanicalCanopy(merged, v === 1 ? 7.2 : 5.6, v === 2 ? 1.8 : 2.9, 3.9, 0.78);
+}
+
+/**
  * Fluted, scalloped storybook pine bough tier with drooping branches and sunlit tip shading.
  */
 export function createScallopedPineTierGeo(
@@ -689,12 +1013,12 @@ export function createScallopedPineTierGeo(
   }
   geo.computeVertexNormals();
 
-  const inner = new THREE.Color(0x8ba395);
-  const outer = new THREE.Color(0xffffff);
+  const inner = new THREE.Color(0x7c8f83);
+  const outer = new THREE.Color(0xf2f5f0);
   paintVertexColors(geo, (x, y, z, _nx, ny, _nz, out) => {
     const dist = THREE.MathUtils.clamp(Math.hypot(x, z) / radius, 0, 1);
     const h = THREE.MathUtils.clamp((y + height * 0.5) / height, 0, 1);
-    const bright = THREE.MathUtils.clamp(0.45 + h * 0.35 + dist * 0.25 + ny * 0.15, 0.45, 1.12);
+    const bright = THREE.MathUtils.clamp(0.45 + h * 0.35 + dist * 0.25 + ny * 0.15, 0.45, 1.1);
     out.copy(inner).lerp(outer, THREE.MathUtils.clamp(bright, 0, 1));
   });
 
@@ -702,15 +1026,15 @@ export function createScallopedPineTierGeo(
 }
 
 /**
- * Sculpted storybook mossy boulder with organic facets and lush moss-capped vertex shading.
+ * Sculpted naturalistic mossy woodland boulder with organic stone faces and muted moss cap.
  */
 export function createMossyBoulderGeo(): THREE.BufferGeometry {
   const geo = createOrganicPuffGeo(0.9, 3, 0.18, 4.2);
-  const rockCol = new THREE.Color(0xc8ccc4);
-  const mossCol = new THREE.Color(0x7fb05b);
+  const rockCol = new THREE.Color(0xb2b5ad);
+  const mossCol = new THREE.Color(0x5b7646);
 
   paintVertexColors(geo, (_x, y, _z, _nx, ny, _nz, out) => {
-    const mossMask = THREE.MathUtils.smoothstep(ny * 0.75 + (y / 0.9) * 0.25, 0.35, 0.78);
+    const mossMask = THREE.MathUtils.smoothstep(ny * 0.75 + (y / 0.9) * 0.25, 0.38, 0.80);
     out.copy(rockCol).lerp(mossCol, mossMask);
   });
   return geo;
@@ -744,9 +1068,9 @@ export function createCragSpireGeo(): THREE.BufferGeometry {
   if (nonIndexed !== geo) geo.dispose();
   nonIndexed.computeVertexNormals();
 
-  const creviceCol = new THREE.Color(0x6e7378);
-  const faceCol = new THREE.Color(0xc8cdd0);
-  const crestCol = new THREE.Color(0xf4f6f7);
+  const creviceCol = new THREE.Color(0x585e64);
+  const faceCol = new THREE.Color(0xb8bdc1);
+  const crestCol = new THREE.Color(0xe5e8eb);
   paintVertexColors(nonIndexed, (_x, y, _z, _nx, ny, _nz, out) => {
     const lift = THREE.MathUtils.clamp((y + 0.6) * 0.42 + (ny * 0.5 + 0.5) * 0.45, 0, 1);
     if (lift < 0.55) {
@@ -759,7 +1083,7 @@ export function createCragSpireGeo(): THREE.BufferGeometry {
 }
 
 /**
- * Lush multi-frond arching fern rosette with base-to-tip sunlit emerald gradient.
+ * Lush multi-frond arching woodland fern rosette with naturalistic deep-to-olive gradient.
  */
 export function createFernRosetteGeo(): THREE.BufferGeometry {
   const fronds: THREE.BufferGeometry[] = [];
@@ -806,8 +1130,8 @@ export function createFernRosetteGeo(): THREE.BufferGeometry {
     frond.setIndex(indices);
     frond.computeVertexNormals();
 
-    const baseCol = new THREE.Color(0x285224);
-    const tipCol = new THREE.Color(0x8bc954);
+    const baseCol = new THREE.Color(0x243b1f);
+    const tipCol = new THREE.Color(0x668443);
     paintVertexColors(frond, (x, y, z, _nx, _ny, _nz, out) => {
       const dist = THREE.MathUtils.clamp(Math.hypot(x, z) / len, 0, 1);
       out.copy(baseCol).lerp(tipCol, THREE.MathUtils.clamp(dist * 0.75 + y * 0.55, 0, 1));
@@ -820,55 +1144,89 @@ export function createFernRosetteGeo(): THREE.BufferGeometry {
 }
 
 /**
- * Plump fairytale berry bush: clustered foliage puffs + separate berry cluster geometry.
+ * Naturalistic leafy woodland berry shrub built from cupped alpha-cutout leaf-spray cards
+ * (eliminating sphere-puff blobs) + realistic clustered wild berries.
  */
 export function createBerryBushGeo(): {
   foliage: THREE.BufferGeometry;
   berries: THREE.BufferGeometry;
 } {
-  const puffs: THREE.BufferGeometry[] = [];
-  const specs: [number, number, number, number, number][] = [
-    [0, 0.34, 0, 0.48, 1.1],
-    [0.34, 0.26, 0.16, 0.36, 2.7],
-    [-0.32, 0.28, -0.18, 0.38, 4.3],
-    [-0.14, 0.24, 0.34, 0.33, 5.8],
-    [0.18, 0.48, -0.16, 0.31, 7.2],
+  const cards: THREE.BufferGeometry[] = [];
+  const lobes: [number, number, number, number][] = [
+    [0, 0.42, 0, 0.42],
+    [0.32, 0.30, 0.16, 0.32],
+    [-0.30, 0.32, -0.18, 0.34],
+    [-0.14, 0.28, 0.32, 0.30],
+    [0.18, 0.48, -0.18, 0.28],
   ];
-  for (const [x, y, z, r, seed] of specs) {
-    const g = createOrganicPuffGeo(r, 2, 0.14, seed, 0x2a5223, 0x6ca144);
-    g.scale(1.12, 0.86, 1.12);
-    g.translate(x, y, z);
-    puffs.push(g);
+
+  let idx = 0;
+  for (let l = 0; l < lobes.length; l++) {
+    const [lx, ly, lz, lr] = lobes[l];
+    const count = l === 0 ? 7 : 5;
+    for (let j = 0; j < count; j++) {
+      idx++;
+      const phi = Math.acos(1 - 1.5 * ((j + 0.5) / count));
+      const theta = Math.PI * (1 + Math.sqrt(5)) * j + l * 1.9;
+      const rad = lr * (0.35 + detRand(idx, 1) * 0.65);
+
+      const cx = lx + Math.sin(phi) * Math.cos(theta) * rad;
+      const cy = Math.max(0.14, ly + Math.cos(phi) * rad * 0.72);
+      const cz = lz + Math.sin(phi) * Math.sin(theta) * rad;
+
+      const cardSize = 0.48 + detRand(idx, 2) * 0.24;
+      const card = createCuppedLeafCard(cardSize, cardSize * 0.92, 0.09);
+
+      const outDir = new THREE.Vector3(cx, (cy - 0.18) * 1.15 + 0.2, cz).normalize();
+      const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), outDir);
+      const spin = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(
+          (detRand(idx, 3) - 0.5) * 0.8,
+          (detRand(idx, 4) - 0.5) * 0.8,
+          detRand(idx, 5) * Math.PI * 2,
+        ),
+      );
+      quat.multiply(spin);
+      card.applyQuaternion(quat);
+      card.translate(cx, cy, cz);
+      cards.push(card);
+    }
   }
 
+  const foliage = shadeBotanicalCanopy(mergePartGeometries(cards, false), 0.38, 0.68, 0.45, 0.78);
+
   const berryParts: THREE.BufferGeometry[] = [];
-  const berryPositions: [number, number, number][] = [
-    [0.42, 0.44, 0.28],
-    [0.54, 0.34, 0.08],
-    [-0.44, 0.4, -0.22],
-    [-0.24, 0.48, 0.36],
-    [0.12, 0.64, 0.16],
-    [0.22, 0.56, -0.34],
-    [-0.08, 0.36, 0.52],
-    [-0.38, 0.36, 0.18],
-    [0.06, 0.68, -0.14],
-    [0.36, 0.28, -0.28],
+  const berryClusters: [number, number, number][] = [
+    [0.38, 0.42, 0.24],
+    [0.48, 0.33, 0.06],
+    [-0.40, 0.38, -0.20],
+    [-0.22, 0.46, 0.34],
+    [0.12, 0.62, 0.15],
+    [0.20, 0.54, -0.32],
+    [-0.08, 0.34, 0.46],
+    [-0.36, 0.34, 0.16],
+    [0.05, 0.64, -0.14],
+    [0.32, 0.28, -0.26],
   ];
-  for (const [bx, by, bz] of berryPositions) {
-    const b = new THREE.SphereGeometry(0.055, 8, 6);
-    b.translate(bx, by, bz);
-    berryParts.push(b);
+  for (let c = 0; c < berryClusters.length; c++) {
+    const [bx, by, bz] = berryClusters[c];
+    for (let k = 0; k < 2; k++) {
+      const b = new THREE.SphereGeometry(0.036, 7, 5);
+      const off = k === 0 ? 0 : 0.044;
+      b.translate(bx + off * Math.cos(c * 2.1), by + (k === 1 ? -0.024 : 0), bz + off * Math.sin(c * 2.1));
+      berryParts.push(b);
+    }
   }
 
   return {
-    foliage: mergePartGeometries(puffs, true),
+    foliage,
     berries: mergePartGeometries(berryParts, false),
   };
 }
 
 /**
- * Fairytale cluster of 3 plump spotted toadstools with curved stems, ruffled gill undersides,
- * and glossy domed caps.
+ * Naturalistic cluster of 3 woodland toadstools with curved stems, ruffled gill undersides,
+ * and organic domed caps.
  */
 export function createToadstoolClusterGeo(): {
   stems: THREE.BufferGeometry;
@@ -883,19 +1241,19 @@ export function createToadstoolClusterGeo(): {
     { x: -0.24, z: 0.18, h: 0.22, capR: 0.18, tiltX: -0.15, tiltZ: -0.22 },
   ];
 
-  // Lathe profile for a plump storybook mushroom stem
+  // Lathe profile for a natural mushroom stem with ring skirt
   const stemPts = [
     new THREE.Vector2(0.0, 0.0),
     new THREE.Vector2(0.11, 0.02),
     new THREE.Vector2(0.13, 0.14),
     new THREE.Vector2(0.085, 0.55),
     new THREE.Vector2(0.095, 0.78),
-    new THREE.Vector2(0.14, 0.84), // cute little gill collar
+    new THREE.Vector2(0.14, 0.84),
     new THREE.Vector2(0.08, 0.92),
     new THREE.Vector2(0.06, 1.0),
   ];
 
-  // Lathe profile for a rounded fairytale toadstool dome cap (wound bottom-to-top for outward normals)
+  // Lathe profile for a rounded dome cap (wound bottom-to-top for outward normals)
   const capPts = [
     new THREE.Vector2(0.0, 0.04),
     new THREE.Vector2(0.28, 0.02),
@@ -919,7 +1277,6 @@ export function createToadstoolClusterGeo(): {
     cap.scale(s.capR, s.capR * 0.95, s.capR);
     cap.rotateX(s.tiltX);
     cap.rotateZ(s.tiltZ);
-    // Top of tilted stem
     const topX = s.x - Math.sin(s.tiltZ) * s.h * 0.9;
     const topY = Math.cos(s.tiltX) * Math.cos(s.tiltZ) * s.h * 0.92;
     const topZ = s.z + Math.sin(s.tiltX) * s.h * 0.9;
@@ -934,7 +1291,7 @@ export function createToadstoolClusterGeo(): {
 }
 
 /**
- * Whimsical meadow wildflower cluster (3 graceful flowers with curved stems, multi-petal heads & golden centers).
+ * Meadow wildflower cluster (curved stems, multi-petal heads & pollen centers).
  */
 export function createWildflowerClusterGeo(): {
   stems: THREE.BufferGeometry;
@@ -960,28 +1317,27 @@ export function createWildflowerClusterGeo(): {
       new THREE.Vector3(fx * 0.75 + leanX * 0.3, h * 0.55, fz * 0.75 + leanZ * 0.3),
       new THREE.Vector3(fx + leanX, h, fz + leanZ),
     ]);
-    stems.push(createTaperedTubeGeo(curve, 5, 5, () => 0.016, false));
+    stems.push(createTaperedTubeGeo(curve, 5, 5, () => 0.015, false));
 
     const hx = fx + leanX;
     const hy = h;
     const hz = fz + leanZ;
 
-    // 6 cute rounded petals arranged in a cheerful cup
     const petalCount = 6;
     for (let p = 0; p < petalCount; p++) {
       const a = (p / petalCount) * Math.PI * 2;
-      const pet = new THREE.SphereGeometry(headR * 0.52, 7, 5);
-      pet.scale(1.15, 0.32, 0.72);
-      pet.translate(headR * 0.62, 0.015, 0);
+      const pet = new THREE.SphereGeometry(headR * 0.48, 7, 5);
+      pet.scale(1.18, 0.28, 0.68);
+      pet.translate(headR * 0.58, 0.014, 0);
       pet.rotateZ(0.22);
       pet.rotateY(a);
       pet.translate(hx, hy, hz);
       petals.push(pet);
     }
 
-    const center = new THREE.SphereGeometry(headR * 0.44, 8, 6);
-    center.scale(1, 0.62, 1);
-    center.translate(hx, hy + 0.02, hz);
+    const center = new THREE.SphereGeometry(headR * 0.40, 8, 6);
+    center.scale(1, 0.58, 1);
+    center.translate(hx, hy + 0.018, hz);
     centers.push(center);
   }
 
@@ -993,7 +1349,7 @@ export function createWildflowerClusterGeo(): {
 }
 
 /**
- * Floating notched emerald lily pad.
+ * Floating notched natural water-lily pad.
  */
 export function createLilyPadGeo(): THREE.BufferGeometry {
   const shape = new THREE.Shape();
@@ -1010,10 +1366,10 @@ export function createLilyPadGeo(): THREE.BufferGeometry {
   shape.closePath();
 
   const geo = new THREE.ExtrudeGeometry(shape, {
-    depth: 0.035,
+    depth: 0.032,
     bevelEnabled: true,
-    bevelThickness: 0.015,
-    bevelSize: 0.015,
+    bevelThickness: 0.012,
+    bevelSize: 0.012,
     bevelSegments: 2,
   });
   geo.rotateX(-Math.PI / 2);
@@ -1022,21 +1378,21 @@ export function createLilyPadGeo(): THREE.BufferGeometry {
 }
 
 /**
- * Multi-layered pastel lotus flower resting atop a lily pad.
+ * Multi-layered natural water-lily / lotus bloom resting atop a lily pad.
  */
 export function createLotusBloomGeo(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   const layers: [number, number, number, number][] = [
-    [7, 0.16, 0.42, 0xffe4ec],
-    [6, 0.12, 0.78, 0xffbfd4],
-    [5, 0.08, 1.12, 0xffdf75],
+    [7, 0.16, 0.42, 0xf2e7e9],
+    [6, 0.12, 0.78, 0xe8c8d2],
+    [5, 0.08, 1.12, 0xe2bf69],
   ];
 
   for (const [count, len, tilt, hex] of layers) {
     for (let i = 0; i < count; i++) {
       const a = (i / count) * Math.PI * 2 + tilt;
       const pet = new THREE.SphereGeometry(len * 0.55, 7, 5);
-      pet.scale(1.35, 0.35, 0.7);
+      pet.scale(1.35, 0.32, 0.68);
       pet.translate(len * 0.52, 0, 0);
       pet.rotateZ(tilt);
       pet.rotateY(a);
@@ -1049,7 +1405,7 @@ export function createLotusBloomGeo(): THREE.BufferGeometry {
 }
 
 /**
- * Multi-blade gracefully arched woodland grass tuft with base-to-tip sunlit gradient.
+ * Multi-blade gracefully arched woodland grass tuft with naturalistic root-to-tip shading.
  */
 export function createCurvedGrassTuftGeo(): THREE.BufferGeometry {
   const blades: THREE.BufferGeometry[] = [];
@@ -1073,7 +1429,7 @@ export function createCurvedGrassTuftGeo(): THREE.BufferGeometry {
       const t = s / segs;
       const bend = t * t * curveAmt;
       const y = t * h * (1 - t * 0.12);
-      const halfW = (1 - t * 0.92) * 0.056;
+      const halfW = (1 - t * 0.92) * 0.052;
 
       const cx = ox + ca * bend;
       const cz = oz + sa * bend;
@@ -1096,8 +1452,8 @@ export function createCurvedGrassTuftGeo(): THREE.BufferGeometry {
     blade.setIndex(indices);
     blade.computeVertexNormals();
 
-    const base = new THREE.Color(0x6b7f58);
-    const tip = new THREE.Color(0xf2ffcf);
+    const base = new THREE.Color(0x475438);
+    const tip = new THREE.Color(0xb8c28a);
     paintVertexColors(blade, (_x, y, _z, _nx, _ny, _nz, out) => {
       out.copy(base).lerp(tip, THREE.MathUtils.clamp(y / h, 0, 1));
     });

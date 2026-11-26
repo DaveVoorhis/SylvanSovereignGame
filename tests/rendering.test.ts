@@ -14,6 +14,8 @@ import {
   createSharedFlameGeometry,
 } from '@rendering/FireEffect';
 import {
+  HORIZON_PINE_VARIANT_COUNT,
+  PINE_VARIANT_COUNT,
   createBerryBushGeo,
   createBirchCanopyGeo,
   createCragSpireGeo,
@@ -21,6 +23,7 @@ import {
   createCurvedGrassTuftGeo,
   createFernRosetteGeo,
   createGnarledOakTrunkGeo,
+  createHorizonPineGeo,
   createLilyPadGeo,
   createLotusBloomGeo,
   createMossyBoulderGeo,
@@ -32,6 +35,13 @@ import {
   createToadstoolClusterGeo,
   createWildflowerClusterGeo,
 } from '@rendering/GeometryHelpers';
+import {
+  PINE_FROND_TYPE_COUNT,
+  buildProceduralHorizonPines,
+  buildProceduralPineForest,
+  createPineFrondGeo,
+  generateProceduralPineSpec,
+} from '@rendering/ProceduralPineBuilder';
 import type { PbrTextureSet, TextureLibrary } from '@rendering/ProceduralTextures';
 import { SettlementRenderer } from '@rendering/SettlementRenderer';
 import { TerrainRenderer } from '@rendering/TerrainRenderer';
@@ -702,6 +712,12 @@ describe('High-Resolution Whimsical Procedural Models', () => {
       expect(mat.uniforms.uGlassB?.value).toBeInstanceOf(THREE.Color);
       expect(mat.uniforms.uGlassC?.value).toBeInstanceOf(THREE.Color);
       expect(mat.uniforms.uGlassD?.value).toBeInstanceOf(THREE.Color);
+      // Post-fog overlay depth occlusion against untouched scene depth buffer
+      expect(mat.uniforms.uSceneDepth).toBeDefined();
+      expect(mat.uniforms.uResolution?.value).toBeInstanceOf(THREE.Vector2);
+      expect(mat.uniforms.uHasSceneDepth?.value).toBe(0.0);
+      expect(mat.fragmentShader).toContain('uSceneDepth');
+      expect(mat.fragmentShader).toContain('gl_FragCoord.z > sceneDepth');
     }
     // Verify the 4 stained-glass jewel tones are genuinely distinct polychromatic hues
     const paletteHexes = new Set([
@@ -905,5 +921,188 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     creatureRenderer.dispose();
     settlementRenderer.dispose();
     textures.dispose();
+  });
+
+  it('uses photographic PBR fur sheen, wet clearcoat eyes, and contact AO + valley mist post-processing', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 314159,
+      initialSettlements: 1,
+      initialCreaturesPerSettlement: 6,
+    });
+    const scene = new THREE.Scene();
+    const textures = createStubTextureLibrary();
+    const creatureRenderer = new CreatureRenderer(scene, world, textures);
+    creatureRenderer.update(0.016, null);
+
+    let physicalFurCount = 0;
+    let wetEyeCount = 0;
+    let whiteCatchlightStickerCount = 0;
+    creatureRenderer.rootGroup.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh)) return;
+      const mat = obj.material;
+      if (mat instanceof THREE.MeshPhysicalMaterial) {
+        if (mat.sheen > 0.5) physicalFurCount++;
+        if (mat.clearcoat >= 0.95 && mat.roughness < 0.06) wetEyeCount++;
+      } else if (mat instanceof THREE.MeshBasicMaterial && mat.color.getHex() === 0xffffff) {
+        whiteCatchlightStickerCount++;
+      }
+    });
+
+    expect(physicalFurCount).toBeGreaterThan(0);
+    expect(wetEyeCount).toBeGreaterThanOrEqual(world.creatures.length * 2);
+    expect(whiteCatchlightStickerCount).toBe(0);
+
+    const camera = new THREE.PerspectiveCamera(48, 16 / 9, 0.2, 4200);
+    const pass = new DistanceFocusBlurPass(camera, 16);
+    pass.updateParams({
+      focusDistance: 45,
+      focusRange: 50,
+      maxBlur: 0.0018,
+      horizonFadeStart: 760,
+      horizonFadeEnd: 2100,
+      worldHorizonStart: 1800,
+      worldHorizonEnd: 2520,
+      horizonColor: new THREE.Color(0xc4d3cc),
+      isPov: false,
+      sunDirection: new THREE.Vector3(0.4, 0.7, 0.5).normalize(),
+      sunColor: new THREE.Color(0xfff1d8),
+      daylight: 0.95,
+      waterLevel: -0.65,
+      fogDensity: 0.0005,
+      aoStrength: 0.88,
+      mistStrength: 0.42,
+    });
+    expect(pass.material.uniforms.uAoStrength.value).toBeCloseTo(0.88, 5);
+    expect(pass.material.uniforms.uMistStrength.value).toBeCloseTo(0.42, 5);
+    expect(pass.material.uniforms.uWaterLevel.value).toBeCloseTo(-0.65, 5);
+    expect(pass.material.uniforms.uWorldHorizonStart.value).toBeCloseTo(1800, 5);
+    expect(pass.material.uniforms.uWorldHorizonEnd.value).toBeCloseTo(2520, 5);
+    expect(pass.material.uniforms.uInvProjectionMatrix.value).toBeInstanceOf(THREE.Matrix4);
+    expect(pass.material.uniforms.uCameraWorldMatrix.value).toBeInstanceOf(THREE.Matrix4);
+    expect(pass.material.fragmentShader).toContain('isSkyPixel');
+    expect(pass.material.fragmentShader).toContain('radialDist');
+    expect(pass.material.fragmentShader).toContain('smoothstep(uHorizonFadeStart, uHorizonFadeEnd, centerDist)');
+    expect(pass.material.fragmentShader).toContain('worldEdgeMist');
+    expect(pass.material.fragmentShader).toContain('horizonTint');
+    expect(pass.material.fragmentShader).not.toContain('0.99985');
+
+    pass.dispose();
+    creatureRenderer.dispose();
+    textures.dispose();
+  });
+
+  it('builds distinct conifer pine archetypes and non-tiling simplex water ripples', () => {
+    expect(PINE_VARIANT_COUNT).toBe(5);
+    expect(HORIZON_PINE_VARIANT_COUNT).toBe(3);
+
+    const canopyBoxes: THREE.Box3[] = [];
+    for (let v = 0; v < PINE_VARIANT_COUNT; v++) {
+      const trunk = createPineTrunkGeo(v);
+      const canopy = createPineCanopyGeo(v);
+      assertValidGeometry(trunk);
+      assertValidGeometry(canopy, true);
+      canopy.computeBoundingBox();
+      expect(canopy.boundingBox).not.toBeNull();
+      canopyBoxes.push(canopy.boundingBox!.clone());
+      trunk.dispose();
+      canopy.dispose();
+    }
+
+    // Mature Scots pine (variant 1) has a tall bare lower trunk compared to low-skirted alpine fir (variant 2)
+    expect(canopyBoxes[1].min.y).toBeGreaterThan(canopyBoxes[2].min.y + 2.0);
+    // Broad old-growth Douglas fir (variant 3) is wider than slender alpine fir (variant 2)
+    const firWidth = canopyBoxes[2].max.x - canopyBoxes[2].min.x;
+    const douglasWidth = canopyBoxes[3].max.x - canopyBoxes[3].min.x;
+    expect(douglasWidth).toBeGreaterThan(firWidth * 1.35);
+
+    for (let v = 0; v < HORIZON_PINE_VARIANT_COUNT; v++) {
+      const horizonPine = createHorizonPineGeo(v);
+      assertValidGeometry(horizonPine, true);
+      horizonPine.dispose();
+    }
+
+    const world = new WorldState(new EventBus(), {
+      seed: 424242,
+      initialSettlements: 0,
+      initialCreaturesPerSettlement: 0,
+    });
+    const water = createRealisticWaterSurface(world.terrain, world.terrain.size, 24, 1.0);
+    const mat = water.mesh.material as THREE.ShaderMaterial;
+    const frag = mat.fragmentShader;
+    expect(frag).toContain('float snoise(vec2 v)');
+    expect(frag).toContain('vec3 snoiseD(vec2 v)');
+    expect(frag).toContain('flowBlend');
+    expect(frag).not.toContain('vFlow * uTime');
+    expect(frag).not.toContain('flow * t');
+    expect(frag).toContain('windPatch');
+    expect(frag).not.toContain('const mat2');
+    expect(frag).not.toMatch(/,\s*\)/);
+    water.dispose();
+  });
+
+  it('generates every pine tree procedurally with unique trunks, boughs, forks, and clearable instances', () => {
+    for (let f = 0; f < PINE_FROND_TYPE_COUNT; f++) {
+      const frond = createPineFrondGeo(f as 0 | 1 | 2);
+      assertValidGeometry(frond, true);
+      frond.dispose();
+    }
+
+    const sampleSpots = Array.from({ length: 48 }, (_, i) => ({
+      x: (i % 8) * 18 - 64 + Math.sin(i * 1.7) * 4,
+      z: Math.floor(i / 8) * 18 - 54 + Math.cos(i * 2.3) * 4,
+      y: i % 3 === 0 ? 12.2 : 3.4,
+      scale: 0.9 + (i % 5) * 0.12,
+      rotation: (i * 1.618) % (Math.PI * 2),
+      kind: 'pine' as const,
+    }));
+
+    const signatures = new Set<string>();
+    const habits = new Set<string>();
+    let forkedCount = 0;
+    for (let i = 0; i < sampleSpots.length; i++) {
+      const biome: BiomeType = i % 3 === 0 ? 'rocky_ridge' : i % 2 === 0 ? 'deep_woods' : 'meadow';
+      const spec = generateProceduralPineSpec(sampleSpots[i], i, biome, 90);
+      signatures.add(
+        `${spec.height.toFixed(3)}:${spec.crownStart.toFixed(3)}:${spec.leanX.toFixed(3)}:${spec.baseBoughLen.toFixed(3)}`,
+      );
+      habits.add(spec.habit);
+      if (spec.hasFork) forkedCount++;
+    }
+    expect(signatures.size).toBe(sampleSpots.length);
+    expect(habits.size).toBeGreaterThanOrEqual(4);
+    expect(forkedCount).toBeGreaterThan(0);
+
+    const barkMat = new THREE.MeshStandardMaterial();
+    const foliageMat = new THREE.MeshStandardMaterial({ vertexColors: true });
+    const depthMat = new THREE.MeshDepthMaterial();
+    const forest = buildProceduralPineForest(
+      sampleSpots,
+      (x) => (x > 0 ? 'deep_woods' : 'rocky_ridge'),
+      () => 85,
+      barkMat,
+      foliageMat,
+      depthMat,
+    );
+    assertValidGeometry(forest.trunksMesh.geometry, false);
+    expect(forest.frondMeshes).toHaveLength(PINE_FROND_TYPE_COUNT);
+    expect(forest.totalBoughInstances).toBeGreaterThan(sampleSpots.length * 18);
+    for (const fm of forest.frondMeshes) {
+      expect(fm.geometry.getAttribute('aWindData')).toBeDefined();
+    }
+    forest.clearTree(0);
+    forest.flushCleared();
+    const posArr = forest.trunksMesh.geometry.attributes.position.array as Float32Array;
+    expect(posArr[1]).toBe(-999);
+
+    const horizon = buildProceduralHorizonPines(
+      sampleSpots.slice(0, 16).map((s, i) => ({ x: s.x, y: s.y, z: s.z, scale: s.scale, biome: 'deep_woods', seed: 100 + i })),
+      foliageMat,
+      barkMat,
+    );
+    expect(horizon.foliageMeshes).toHaveLength(2);
+    expect(horizon.trunkMesh.count).toBe(16);
+    for (const d of [...forest.disposables, ...horizon.disposables, barkMat, foliageMat, depthMat]) {
+      d.dispose();
+    }
   });
 });
