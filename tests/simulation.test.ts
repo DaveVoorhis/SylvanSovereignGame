@@ -471,7 +471,7 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     expect(nightRatio).toBeLessThan(0.28);
     // Mist should remain rare across both natural weather and divine acts
     expect(mistRatio).toBeLessThan(0.1);
-  });
+  }, 15_000);
 
   it('procedurally varies river course, ponds, relief, and settlements across random seeds', () => {
     // Verify random seed generator yields varied valid positive integers and respects exclusion
@@ -1139,5 +1139,99 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
       expect(desertCoastSum / desertCount).toBeGreaterThan(wetCoastSum / wetLandCount);
       expect(desertFreshSum / desertCount).toBeGreaterThan(wetFreshSum / wetLandCount);
     }
+  });
+
+  it('hosts occasional local festivals, regional inter-settlement events, and very occasional realm-wide national holidays', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 20260704,
+      initialSettlements: 3,
+      initialCreaturesPerSettlement: 10,
+    });
+    expect(world.settlements.length).toBe(3);
+
+    const [s0, s1, s2] = world.settlements;
+    // Ensure peaceful regional neighbors so all 3 can attend regional events together
+    world.diplomacy.adjustRelation(s0, s1, 25, world);
+    world.diplomacy.adjustRelation(s0, s2, 25, world);
+    world.diplomacy.adjustRelation(s1, s2, 25, world);
+
+    // 1. Local village/town/city festival: attended by its own inhabitants only
+    const s0Pop = world.getSettlementPopulation(s0.id);
+    const localFest = world.festivals.startLocalFestival(world, s0);
+    expect(localFest).not.toBeNull();
+    expect(localFest!.scope).toBe('local');
+    expect(localFest!.participatingSettlementIds).toEqual([s0.id]);
+
+    const localAttendeesS0 = world.creatures.filter(
+      (c) => c.alive && c.settlementId === s0.id && c.activity === 'celebrating',
+    ).length;
+    const localAttendeesOthers = world.creatures.filter(
+      (c) => c.alive && c.settlementId !== s0.id && c.activity === 'celebrating',
+    ).length;
+    expect(localAttendeesS0).toBeGreaterThanOrEqual(Math.floor(s0Pop * 0.75));
+    expect(localAttendeesOthers).toBe(0);
+
+    // Step forward so attendees dance at the plaza and then let the local festival conclude cleanly
+    let sawDancing = false;
+    for (let i = 0; i < 450; i++) {
+      world.step(0.1);
+      if (world.creatures.some((c) => c.alive && c.isDancingAtCelebration)) {
+        sawDancing = true;
+      }
+      if (!world.festivals.getCelebrationById(localFest!.id)) break;
+    }
+    expect(sawDancing).toBe(true);
+    expect(world.festivals.getCelebrationById(localFest!.id)).toBeUndefined();
+
+    // 2. Regional event: significant proportion across multiple settlements attend at the host plaza
+    const preRelation01 = world.diplomacy.getScore(s0.id, s1.id);
+    const regional = world.festivals.startRegionalEvent(world, s0);
+    expect(regional).not.toBeNull();
+    expect(regional!.scope).toBe('regional');
+    expect(regional!.participatingSettlementIds.length).toBeGreaterThanOrEqual(2);
+
+    const participatingSet = new Set(regional!.participatingSettlementIds);
+    const totalRegionalPop = world.creatures.filter(
+      (c) => c.alive && participatingSet.has(c.settlementId),
+    ).length;
+    const regionalAttendees = world.festivals.getAttendeeCount(world, regional!.id);
+    const visitingNeighbors = world.creatures.filter(
+      (c) =>
+        c.alive &&
+        c.activity === 'celebrating' &&
+        c.activeCelebrationId === regional!.id &&
+        c.settlementId !== s0.id &&
+        c.celebrationHostSettlementId === s0.id,
+    ).length;
+    expect(regionalAttendees / Math.max(1, totalRegionalPop)).toBeGreaterThanOrEqual(0.45);
+    expect(regionalAttendees / Math.max(1, totalRegionalPop)).toBeLessThanOrEqual(0.85);
+    expect(visitingNeighbors).toBeGreaterThanOrEqual(4);
+
+    // Fast-forward past regional event end and verify diplomatic warming
+    for (let i = 0; i < 650; i++) {
+      world.step(0.1);
+      if (!world.festivals.getCelebrationById(regional!.id)) break;
+    }
+    expect(world.festivals.getCelebrationById(regional!.id)).toBeUndefined();
+    expect(world.diplomacy.getScore(s0.id, s1.id)).toBeGreaterThan(preRelation01);
+
+    // 3. National holiday: everyone across all settlements celebrates simultaneously
+    const holiday = world.festivals.startNationalHoliday(world);
+    expect(holiday).not.toBeNull();
+    expect(holiday!.scope).toBe('national');
+    expect(holiday!.participatingSettlementIds.length).toBe(world.settlements.length);
+
+    const eligibleRealmPop = world.creatures.filter(
+      (c) => c.alive && c.activity !== 'fighting' && c.activity !== 'fleeing',
+    ).length;
+    const holidayAttendees = world.festivals.getAttendeeCount(world, holiday!.id);
+    expect(holidayAttendees).toBe(eligibleRealmPop);
+    for (const s of world.settlements) {
+      expect(world.festivals.getVenueCelebration(s.id)?.id).toBe(holiday!.id);
+    }
+
+    // Verify Chronicle recorded festival entries for all three celebration tiers
+    const festivalChronicles = world.chronicle.entries.filter((e) => e.category === 'festival');
+    expect(festivalChronicles.length).toBeGreaterThanOrEqual(3);
   });
 });

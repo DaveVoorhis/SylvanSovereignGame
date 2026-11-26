@@ -135,6 +135,17 @@ export class InspectorPanel {
       const cap = s.getHousingCapacity();
       const profile = s.getAdaptationProfile();
       const biomeLabel = getBiomeDisplayName(s.biome);
+      const activeCel = world.festivals.getCelebrationForSettlement(s.id);
+      const activeCelAttendees = activeCel
+        ? world.festivals.getAttendeeCount(world, activeCel.id)
+        : 0;
+      const scopeLabel = activeCel
+        ? activeCel.scope === 'national'
+          ? 'National Holiday'
+          : activeCel.scope === 'regional'
+            ? 'Regional Event'
+            : `${s.tier[0].toUpperCase()}${s.tier.slice(1)} Festival`
+        : '';
 
       const diploRows = world.settlements
         .filter((other) => other.id !== s.id)
@@ -150,6 +161,15 @@ export class InspectorPanel {
           <button class="close-btn" data-action="close">✕</button>
         </div>
         <div class="inspector-sub">${profile.title} (${s.tier}) · ${biomeLabel}</div>
+        ${
+          activeCel
+            ? `<div class="festival-banner scope-${activeCel.scope}">
+                <div class="festival-banner-title">${activeCel.icon} ${activeCel.name}</div>
+                <div class="festival-banner-meta">${scopeLabel} · ${activeCelAttendees} attending</div>
+                <div class="festival-banner-theme">${activeCel.theme}</div>
+              </div>`
+            : ''
+        }
         <div class="adaptation-card">
           <div class="adaptation-summary">${profile.summary}</div>
           <div class="adaptation-row"><strong>Architecture:</strong> ${profile.architectureSummary}</div>

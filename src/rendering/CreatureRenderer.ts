@@ -859,6 +859,47 @@ export class CreatureRenderer {
     }
   }
 
+  /** Spawns tiny colorful fluttering petals / confetti sparkles above creatures dancing at a celebration. */
+  private spawnFestivalConfetti(c: Creature): void {
+    const cel = c.activeCelebrationId
+      ? this.world.festivals.getCelebrationById(c.activeCelebrationId)
+      : undefined;
+    const palette = cel
+      ? [cel.colorHex, cel.secondaryColorHex, 0xffe57f]
+      : [0xffc857, 0xff6b9d, 0x4cc9f0];
+    const color = palette[Math.floor(Math.random() * palette.length)];
+    const mat = new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 0.35,
+      roughness: 0.42,
+      transparent: true,
+      opacity: 0.92,
+    });
+    const baseScale = 0.44 + Math.random() * 0.24;
+    const mesh = new THREE.Mesh(this.geo.workChip, mat);
+    mesh.name = 'festival_confetti';
+    mesh.position.set(
+      c.x + (Math.random() - 0.5) * 0.36,
+      c.y + 0.95 + Math.random() * 0.35,
+      c.z + (Math.random() - 0.5) * 0.36,
+    );
+    mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+    mesh.scale.setScalar(baseScale);
+    this.rootGroup.add(mesh);
+    this.sparks.push({
+      mesh,
+      mat,
+      createdAt: this.world.elapsedSeconds,
+      duration: 0.72 + Math.random() * 0.28,
+      vx: (Math.random() - 0.5) * 0.85,
+      vy: 1.05 + Math.random() * 0.55,
+      vz: (Math.random() - 0.5) * 0.85,
+      baseScale,
+      gravity: 1.7,
+    });
+  }
+
   update(dt: number, selection: SelectionTarget, povCreatureId: string | null = null): void {
     this.syncCreatures(selection);
     const t = this.world.elapsedSeconds;
@@ -1050,6 +1091,30 @@ export class CreatureRenderer {
         squashY = 0.92 + hop * 0.14;
         headRoll = Math.sin(t * 6.5 + seed) * 0.24;
         headPitch = -0.08 + Math.sin(t * 5.0 + seed) * 0.14;
+      } else if (c.activity === 'celebrating' && c.isDancingAtCelebration) {
+        // Festive village dance: rhythmic bounce, joyful sway, waving paws/wings & music sparkles!
+        const beat = Math.abs(Math.sin(t * 6.4 + seed));
+        const sway = Math.sin(t * 3.2 + seed);
+        bobY += beat * 0.18;
+        squashY = 0.91 + beat * 0.16;
+        tiltZ += sway * 0.18;
+        headRoll = sway * 0.26;
+        headPitch = -0.1 + beat * 0.14;
+        if (!isBird && rig.leftArm && rig.rightArm) {
+          rig.leftArm.rotation.x = -1.35 + Math.sin(t * 6.4 + seed) * 0.45;
+          rig.rightArm.rotation.x = -1.35 - Math.sin(t * 6.4 + seed) * 0.45;
+          rig.leftArm.rotation.z = 0.42 + sway * 0.22;
+          rig.rightArm.rotation.z = -0.42 + sway * 0.22;
+        } else if (isBird && rig.leftArm && rig.rightArm) {
+          const flutter = Math.sin(t * 12.8 + seed) * 0.42;
+          rig.leftArm.rotation.z = 0.58 + flutter;
+          rig.rightArm.rotation.z = -0.58 - flutter;
+        }
+        rig.workChipCooldown -= dt;
+        if (rig.workChipCooldown <= 0) {
+          rig.workChipCooldown = 0.72 + (seed % 0.45);
+          this.spawnFestivalConfetti(c);
+        }
       } else if (c.activity === 'courting' || c.activity === 'nesting') {
         // Warm affectionate head tilt & gentle cozy sway
         headRoll = Math.sin(t * 2.6 + seed) * 0.22;

@@ -158,23 +158,41 @@ export class TopBar {
     const totalBuildings = world.settlements.reduce((sum, s) => sum + s.getCompletedCount(), 0);
     const caravans = world.creatures.filter((c) => c.alive && c.activity === 'trading').length;
     const pioneerCount = world.creatures.filter((c) => c.alive && c.activity === 'emigrating').length;
+    const celebratingCount = world.creatures.filter(
+      (c) => c.alive && c.activity === 'celebrating',
+    ).length;
+    const nationalHoliday = world.festivals.getNationalHoliday();
+    const activeRegional = world.festivals.activeCelebrations.find((c) => c.scope === 'regional');
     this.statsEl.innerHTML = `
       <span>🐾 ${aliveCount} Kin</span>
       ${youngCount > 0 ? `<span>🐣 ${youngCount} Young</span>` : ''}
       <span>🏡 ${totalBuildings} Bldgs</span>
       <span>⚖️ ${caravans} Caravans</span>
       ${pioneerCount > 0 ? `<span>🧭 ${pioneerCount} Pioneers</span>` : ''}
+      ${
+        nationalHoliday
+          ? `<span class="celebration-pill scope-national" title="${nationalHoliday.theme}">${nationalHoliday.icon} National Holiday: ${nationalHoliday.name}</span>`
+          : activeRegional
+            ? `<span class="celebration-pill scope-regional" title="${activeRegional.theme}">${activeRegional.icon} Regional Event (${celebratingCount})</span>`
+            : celebratingCount > 0
+              ? `<span class="celebration-pill scope-local">🎉 ${celebratingCount} Celebrating</span>`
+              : ''
+      }
     `;
 
     this.settlementsBar.innerHTML = '';
     for (const s of world.settlements) {
       const btn = document.createElement('button');
-      btn.className = 'settlement-pill';
+      const cel = world.festivals.getCelebrationForSettlement(s.id);
+      btn.className = `settlement-pill${cel ? ` celebrating scope-${cel.scope}` : ''}`;
       const hex = `#${s.bannerColor.toString(16).padStart(6, '0')}`;
       const pop = world.getSettlementPopulation(s.id);
       const profile = s.getAdaptationProfile();
-      btn.title = `${s.name} — ${profile.title} (${getBiomeDisplayName(s.biome)}): ${profile.summary}`;
-      btn.innerHTML = `<span class="dot" style="background:${hex}"></span><span class="adapt-icon">${profile.icon}</span>${s.name} <small>(${profile.shortLabel} · ${pop})</small>`;
+      const celBadge = cel ? `<span class="cel-badge" title="${cel.name}">${cel.icon}</span>` : '';
+      btn.title = cel
+        ? `${s.name} — ${cel.icon} ${cel.name} (${cel.scope}): ${cel.theme}`
+        : `${s.name} — ${profile.title} (${getBiomeDisplayName(s.biome)}): ${profile.summary}`;
+      btn.innerHTML = `<span class="dot" style="background:${hex}"></span><span class="adapt-icon">${profile.icon}</span>${s.name} <small>(${profile.shortLabel} · ${pop})</small>${celBadge}`;
       btn.addEventListener('click', () => this.callbacks.onFocusSettlement(s.id));
       this.settlementsBar.appendChild(btn);
     }

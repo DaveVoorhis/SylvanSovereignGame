@@ -852,4 +852,58 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     settlementRenderer.dispose();
     textures.dispose();
   });
+
+  it('toggles plaza festival bunting, floating sky lanterns, ceremonial crowns, and dancing confetti for festivals, regional events, and national holidays', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 919293,
+      initialSettlements: 2,
+      initialCreaturesPerSettlement: 8,
+    });
+    const scene = new THREE.Scene();
+    const textures = createStubTextureLibrary();
+    const settlementRenderer = new SettlementRenderer(scene, world, textures);
+    const creatureRenderer = new CreatureRenderer(scene, world, textures);
+
+    settlementRenderer.update(0.05);
+    const getDecorGroups = (): THREE.Object3D[] => {
+      const found: THREE.Object3D[] = [];
+      settlementRenderer.rootGroup.traverse((obj) => {
+        if (obj.name === 'festival_decor') found.push(obj);
+      });
+      return found;
+    };
+
+    // Initially hidden when no celebration is active
+    expect(getDecorGroups().length).toBe(2);
+    expect(getDecorGroups().every((g) => !g.visible)).toBe(true);
+
+    // Local festival decorates only the host settlement (without ceremonial crown)
+    const local = world.festivals.startLocalFestival(world, world.settlements[0]);
+    expect(local).not.toBeNull();
+    settlementRenderer.update(0.1);
+    const visibleAfterLocal = getDecorGroups().filter((g) => g.visible);
+    expect(visibleAfterLocal.length).toBe(1);
+    expect(visibleAfterLocal[0].getObjectByName('festival_crown')?.visible).toBe(false);
+
+    // National holiday decorates EVERY settlement with bunting, sky lanterns, and ceremonial crown
+    const national = world.festivals.startNationalHoliday(world);
+    expect(national).not.toBeNull();
+    settlementRenderer.update(0.1);
+    const visibleAfterNational = getDecorGroups().filter((g) => g.visible);
+    expect(visibleAfterNational.length).toBe(2);
+    for (const g of visibleAfterNational) {
+      expect(g.getObjectByName('festival_crown')?.visible).toBe(true);
+    }
+
+    // Dancing celebrants animate cleanly and emit tiny festive confetti
+    world.creatures[0].isDancingAtCelebration = true;
+    world.elapsedSeconds += 0.9;
+    creatureRenderer.update(0.9, null);
+    const confetti = creatureRenderer.rootGroup.getObjectByName('festival_confetti');
+    expect(confetti).toBeDefined();
+
+    creatureRenderer.dispose();
+    settlementRenderer.dispose();
+    textures.dispose();
+  });
 });

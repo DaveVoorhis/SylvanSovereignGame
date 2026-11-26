@@ -12,7 +12,8 @@ Unlike traditional god games where the player micromanages miracles, the **deity
 - **Six Environmental Village Adaptations**: Villages adapt structurally and culturally to their biome — `forest_canopy`, `coastal_harbor`, `desert_oasis`, `prairie_pastoral`, `mountain_stone`, and `riverside_stilts` — shaping foundations (stilts, retaining terraces, awnings, gardens), building materials, and villager attire.
 - **14 Storybook Building Types & 5-Stage Construction**: Cottages, timber houses, granaries, market stalls, bakeries, workshops, taverns, windmills, greenhouses, watchtowers, shrines, libraries, guildhalls, and carved two-tier stone plaza fountains (with parabolic arcing water jets, surface ripples, and ballistic droplet spray). Structures progress visually through `clearing → leveling → foundation → framing → finishing` with animated builder tools and reclaim older plots when upgrading.
 - **Full Creature Lifecycle**: Adults pair off, raise smaller youthful litters of young, and offspring grow smoothly to adulthood to form new pairs across generations.
-- **Procedural Deity & Living Society**: Inter-settlement diplomacy (`allied`, `friendly`, `neutral`, `tense`, `war`), trade caravans, a clickable living Chronicle, volumetric campfire hearths, and sky-reaching divine beams.
+- **Festivals, Regional Events & National Holidays**: Occasional local village/town/city festivals tailored to each settlement's biome adaptation and season, occasional regional inter-settlement gatherings attended by roughly half the neighboring population, and very occasional realm-wide national holidays celebrated by everyone — complete with plaza bunting garlands, glowing paper lanterns, floating sky lanterns, dancing creatures, and HUD/Chronicle highlights.
+- **Procedural Deity & Living Society**: Inter-settlement diplomacy (`allied`, `friendly`, `neutral`, `tense`, `war`), trade caravans, a clickable living Chronicle, volumetric campfire hearths, and sky-reaching divine beams with translucent stained-glass rose-window light displays.
 
 ## Quick Start
 
@@ -80,7 +81,8 @@ Forest/
     │   └── society/
     │       ├── Chronicle.ts
     │       ├── DiplomacySystem.ts
-    │       └── EconomySystem.ts
+    │       ├── EconomySystem.ts
+    │       └── FestivalSystem.ts # Local festivals, regional events & national holidays
     ├── rendering/               # Three.js WebGL2 PBR presentation layer
     │   ├── AtmosphereSystem.ts  # Dynamic sky shader, lighting, weather & deity beams
     │   ├── CameraController.ts  # World orbit, country Overview & first-person POV

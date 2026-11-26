@@ -156,9 +156,87 @@ function createFountainSprayGeometry(seed: number): THREE.BufferGeometry {
 }
 
 interface RenderedHearth {
+  readonly settlementId: string;
   readonly fire: HearthFire;
   readonly banner: THREE.Mesh;
   readonly seed: number;
+  readonly festivalDecor: THREE.Group;
+  readonly festivalCrown: THREE.Object3D;
+  readonly festivalPrimaryMat: THREE.MeshStandardMaterial;
+  readonly festivalSecondaryMat: THREE.MeshStandardMaterial;
+  readonly festivalLanternMat: THREE.ShaderMaterial;
+}
+
+/** Creates GPU-animated rising festive paper sky lanterns & glowing celebration sparkles above a plaza. */
+function createFestivalLanternsGeometry(seed: number, count = 42): THREE.BufferGeometry {
+  const positions = new Float32Array(count * 3);
+  const seeds = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    const h1 = Math.abs(Math.sin(seed * 13.7 + i * 12.9898) * 43758.5453) % 1;
+    const h2 = Math.abs(Math.sin(seed * 27.3 + i * 78.233) * 24634.6345) % 1;
+    const h3 = Math.abs(Math.sin(seed * 53.1 + i * 39.425) * 19384.2134) % 1;
+    const ang = h1 * Math.PI * 2;
+    const r = 1.6 + h2 * 3.8;
+    positions[i * 3] = Math.cos(ang) * r;
+    positions[i * 3 + 1] = 2.6 + h3 * 1.4;
+    positions[i * 3 + 2] = Math.sin(ang) * r;
+    seeds[i * 3] = h1; // phase offset
+    seeds[i * 3 + 1] = 0.55 + h2 * 0.65; // rise speed
+    seeds[i * 3 + 2] = h3; // color mix & size seed
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 3));
+  return geo;
+}
+
+function createFestivalLanternMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uColorA: { value: new THREE.Color(0xffc857) },
+      uColorB: { value: new THREE.Color(0xff6b9d) },
+      uHeightScale: { value: 1.0 },
+    },
+    vertexShader: /* glsl */ `
+      attribute vec3 aSeed;
+      uniform float uTime;
+      uniform float uHeightScale;
+      varying float vAlpha;
+      varying float vMix;
+      void main() {
+        float cycle = fract(aSeed.x + uTime * aSeed.y * 0.14);
+        float swayX = sin(uTime * 1.3 + aSeed.x * 19.0 + cycle * 6.0) * 0.55;
+        float swayZ = cos(uTime * 1.1 + aSeed.z * 23.0 + cycle * 5.0) * 0.55;
+        vec3 p = position + vec3(swayX, cycle * 8.5 * uHeightScale, swayZ);
+        vAlpha = sin(cycle * 3.14159265) * 0.92;
+        vMix = aSeed.z;
+        vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
+        float baseSize = mix(10.0, 20.0, aSeed.z) * (0.85 + 0.15 * uHeightScale);
+        gl_PointSize = clamp(baseSize * (56.0 / max(6.0, -mvPosition.z)), 2.5, 22.0);
+        gl_Position = projectionMatrix * mvPosition;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uColorA;
+      uniform vec3 uColorB;
+      varying float vAlpha;
+      varying float vMix;
+      void main() {
+        vec2 q = gl_PointCoord - vec2(0.5);
+        float d = length(q);
+        if (d > 0.5) discard;
+        float core = exp(-d * d * 20.0);
+        float halo = smoothstep(0.5, 0.08, d) * 0.55;
+        vec3 col = mix(uColorA, uColorB, smoothstep(0.15, 0.85, vMix));
+        col = mix(col, vec3(1.0, 0.97, 0.88), core * 0.65);
+        gl_FragColor = vec4(col, clamp((core + halo) * vAlpha, 0.0, 0.92));
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
 }
 
 interface RenderedBridge {
@@ -551,6 +629,32 @@ export class SettlementRenderer {
     for (const hearth of this.hearths) {
       hearth.fire.update(t, nightGlow, windStrength);
       hearth.banner.rotation.y = Math.sin(t * (2.2 + windStrength * 1.4) + hearth.seed) * (0.14 + windStrength * 0.12);
+
+      // Reveal vibrant plaza bunting, paper lanterns & floating sky lanterns during festivals/events/holidays
+      const cel = this.world.festivals.getVenueCelebration(hearth.settlementId);
+      hearth.festivalDecor.visible = cel !== undefined;
+      if (cel) {
+        hearth.festivalPrimaryMat.color.setHex(cel.colorHex);
+        hearth.festivalPrimaryMat.emissive.setHex(cel.colorHex);
+        hearth.festivalPrimaryMat.emissiveIntensity = 0.22 + nightGlow * 0.18;
+        hearth.festivalSecondaryMat.color.setHex(cel.secondaryColorHex);
+        hearth.festivalSecondaryMat.emissive.setHex(cel.secondaryColorHex);
+        hearth.festivalSecondaryMat.emissiveIntensity = 0.22 + nightGlow * 0.18;
+
+        hearth.festivalLanternMat.uniforms.uTime.value = t;
+        (hearth.festivalLanternMat.uniforms.uColorA.value as THREE.Color).setHex(cel.colorHex);
+        (hearth.festivalLanternMat.uniforms.uColorB.value as THREE.Color).setHex(cel.secondaryColorHex);
+        hearth.festivalLanternMat.uniforms.uHeightScale.value =
+          cel.scope === 'national' ? 1.55 : cel.scope === 'regional' ? 1.25 : 0.95;
+
+        const showCrown = cel.scope === 'regional' || cel.scope === 'national';
+        hearth.festivalCrown.visible = showCrown;
+        if (showCrown) {
+          hearth.festivalCrown.rotation.y = t * (cel.scope === 'national' ? 0.9 : 0.55);
+          hearth.festivalCrown.position.y =
+            (cel.scope === 'national' ? 5.6 : 4.9) + Math.sin(t * 2.1 + hearth.seed) * 0.22;
+        }
+      }
     }
 
     // Animate shrine crystals, rune rings, workshop wheels, windmill rotors, fountain jets, swaying signs & smoke
@@ -1009,10 +1113,130 @@ export class SettlementRenderer {
       }
     }
 
+    // Toggleable festival decoration kit: 6 lantern posts, draped multi-colored bunting pennants,
+    // floating sky lanterns, and a rotating ceremonial crown garland for regional/national occasions.
+    const festivalDecor = new THREE.Group();
+    festivalDecor.name = 'festival_decor';
+    const festivalPrimaryMat = new THREE.MeshStandardMaterial({
+      color: 0xffc857,
+      emissive: 0xffc857,
+      emissiveIntensity: 0.25,
+      roughness: 0.55,
+      side: THREE.DoubleSide,
+    });
+    const festivalSecondaryMat = new THREE.MeshStandardMaterial({
+      color: 0xff6b9d,
+      emissive: 0xff6b9d,
+      emissiveIntensity: 0.25,
+      roughness: 0.55,
+      side: THREE.DoubleSide,
+    });
+    const festivalLanternMat = createFestivalLanternMaterial();
+    this.extraDisposables.push(festivalPrimaryMat, festivalSecondaryMat, festivalLanternMat);
+
+    const postCount = 6;
+    const postRadius = 3.55;
+    const postHeight = 3.65;
+    const postTops: THREE.Vector3[] = [];
+    for (let i = 0; i < postCount; i++) {
+      const ang = (i / postCount) * Math.PI * 2 + 0.22;
+      const px = Math.cos(ang) * postRadius;
+      const pz = Math.sin(ang) * postRadius;
+      const fPost = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.055, 0.075, postHeight, 7),
+        this.timberMat,
+      );
+      fPost.position.set(px, postHeight * 0.5 + plazaY, pz);
+      fPost.castShadow = true;
+      festivalDecor.add(fPost);
+
+      // Glowing paper festival lantern perched atop each timber post
+      const paperLantern = new THREE.Mesh(
+        new THREE.SphereGeometry(0.22, 10, 8),
+        i % 2 === 0 ? festivalPrimaryMat : festivalSecondaryMat,
+      );
+      paperLantern.scale.set(1.0, 1.22, 1.0);
+      paperLantern.position.set(px, postHeight + plazaY + 0.14, pz);
+      festivalDecor.add(paperLantern);
+
+      postTops.push(new THREE.Vector3(px, postHeight + plazaY - 0.18, pz));
+    }
+
+    // Draped bunting ropes + triangular colored pennants hanging between every pair of posts
+    const pennantShape = new THREE.Shape();
+    pennantShape.moveTo(-0.14, 0);
+    pennantShape.lineTo(0.14, 0);
+    pennantShape.lineTo(0, -0.32);
+    pennantShape.closePath();
+    const pennantGeo = new THREE.ShapeGeometry(pennantShape);
+    this.extraDisposables.push(pennantGeo);
+
+    for (let i = 0; i < postCount; i++) {
+      const a = postTops[i];
+      const b = postTops[(i + 1) % postCount];
+      const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+      mid.y -= 0.52;
+      const curve = new THREE.CatmullRomCurve3([a, mid, b]);
+      const ropeMesh = new THREE.Mesh(
+        new THREE.TubeGeometry(curve, 10, 0.018, 5, false),
+        this.ropeMat,
+      );
+      festivalDecor.add(ropeMesh);
+
+      const spanYaw = Math.atan2(b.x - a.x, b.z - a.z) + Math.PI / 2;
+      for (let p = 1; p <= 5; p++) {
+        const pt = curve.getPoint(p / 6);
+        const pennant = new THREE.Mesh(
+          pennantGeo,
+          (i + p) % 2 === 0 ? festivalPrimaryMat : festivalSecondaryMat,
+        );
+        pennant.position.copy(pt);
+        pennant.rotation.y = spanYaw;
+        festivalDecor.add(pennant);
+      }
+    }
+
+    // Rotating ceremonial garland ring high above the square for Regional Events & National Holidays
+    const festivalCrown = new THREE.Group();
+    festivalCrown.name = 'festival_crown';
+    const crownTorus = new THREE.Mesh(
+      new THREE.TorusGeometry(1.75, 0.06, 8, 28),
+      this.brassMat,
+    );
+    crownTorus.rotation.x = Math.PI / 2;
+    festivalCrown.add(crownTorus);
+    for (let k = 0; k < 8; k++) {
+      const ka = (k / 8) * Math.PI * 2;
+      const orb = new THREE.Mesh(
+        new THREE.SphereGeometry(0.16, 8, 6),
+        k % 2 === 0 ? festivalPrimaryMat : festivalSecondaryMat,
+      );
+      orb.position.set(Math.cos(ka) * 1.75, -0.18, Math.sin(ka) * 1.75);
+      festivalCrown.add(orb);
+    }
+    festivalCrown.position.y = 5.1;
+    festivalCrown.visible = false;
+    festivalDecor.add(festivalCrown);
+
+    // Floating glowing sky lanterns rising above the celebrating plaza
+    const lanternsGeo = createFestivalLanternsGeometry(seed);
+    const lanternsPoints = new THREE.Points(lanternsGeo, festivalLanternMat);
+    lanternsPoints.renderOrder = 3;
+    festivalDecor.add(lanternsPoints);
+
+    festivalDecor.visible = false;
+    group.add(festivalDecor);
+
     this.hearths.push({
+      settlementId: settlement.id,
       fire,
       banner,
       seed,
+      festivalDecor,
+      festivalCrown,
+      festivalPrimaryMat,
+      festivalSecondaryMat,
+      festivalLanternMat,
     });
 
     this.rootGroup.add(group);

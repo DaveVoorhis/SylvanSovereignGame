@@ -126,6 +126,7 @@ export class CreatureAI {
 
     creature.isActivelyWorking = false;
     creature.activeConstructionStage = null;
+    creature.isDancingAtCelebration = false;
 
     // Passive physiological drift
     creature.ageDays += dt / world.config.dayLengthSeconds;
@@ -235,6 +236,8 @@ export class CreatureAI {
       this.handleNesting(creature, world, dt);
     } else if (creature.activity === 'playing') {
       this.handlePlaying(creature, world, dt);
+    } else if (creature.activity === 'celebrating') {
+      this.handleCelebrating(creature, world, dt);
     } else if (creature.activity === 'trading') {
       this.handleTrading(creature, world, dt);
     } else if (creature.activity === 'building') {
@@ -312,6 +315,20 @@ export class CreatureAI {
     const home = world.getSettlement(creature.settlementId);
     if (!home) return;
     const profile = home.getAdaptationProfile();
+
+    // 0. If a National Holiday is underway, rejoin the realm-wide celebration immediately
+    const nationalHoliday = world.festivals.getNationalHoliday();
+    if (nationalHoliday && creature.health > creature.maxHealth * 0.35) {
+      const spot = world.festivals.pickCelebrationSpot(home, world);
+      creature.activity = 'celebrating';
+      creature.activeCelebrationId = nationalHoliday.id;
+      creature.celebrationHostSettlementId = home.id;
+      creature.targetX = spot.x;
+      creature.targetZ = spot.z;
+      creature.actionTimer = world.rng.range(4, 7);
+      creature.thought = `Joining everyone for ${nationalHoliday.name}!`;
+      return;
+    }
 
     // 1. Low health or low energy -> rest at home
     const isNight = world.timeOfDay < 0.22 || world.timeOfDay > 0.84;
@@ -1191,6 +1208,102 @@ export class CreatureAI {
     }
   }
 
+  private handleCelebrating(creature: Creature, world: WorldState, dt: number): void {
+    const cel = creature.activeCelebrationId
+      ? world.festivals.getCelebrationById(creature.activeCelebrationId)
+      : undefined;
+    if (!cel) {
+      creature.activeCelebrationId = null;
+      creature.celebrationHostSettlementId = null;
+      creature.isDancingAtCelebration = false;
+      if (creature.emigrationPartyId && creature.emigrationTargetX !== null && creature.emigrationTargetZ !== null) {
+        creature.activity = 'emigrating';
+        creature.targetX = creature.emigrationTargetX;
+        creature.targetZ = creature.emigrationTargetZ;
+      } else {
+        creature.activity = 'idle';
+        creature.actionTimer = 0.25;
+      }
+      return;
+    }
+
+    // Pioneers on a distant trek pause to cheer on the trail during a National Holiday
+    if (cel.scope === 'national' && creature.emigrationPartyId) {
+      creature.isDancingAtCelebration = true;
+      creature.targetX = creature.x;
+      creature.targetZ = creature.z;
+      creature.mood = Math.min(100, creature.mood + dt * 5.0);
+      creature.devotion = Math.min(100, creature.devotion + dt * 2.0);
+      return;
+    }
+
+    const venue =
+      world.getSettlement(creature.celebrationHostSettlementId ?? cel.hostSettlementId) ??
+      world.getSettlement(creature.settlementId);
+    if (!venue) {
+      creature.activity = 'idle';
+      creature.activeCelebrationId = null;
+      creature.celebrationHostSettlementId = null;
+      return;
+    }
+
+    const distToPlaza = Math.hypot(venue.center.x - creature.x, venue.center.z - creature.z);
+    const plazaRange = Math.max(5.5, Math.min(10.5, venue.radius * 0.88));
+
+    if (distToPlaza <= plazaRange) {
+      creature.isDancingAtCelebration = true;
+      creature.mood = Math.min(100, creature.mood + dt * 5.5);
+      creature.energy = Math.min(100, creature.energy + dt * 2.2);
+      if (cel.scope === 'national') {
+        creature.devotion = Math.min(100, creature.devotion + dt * 2.2);
+      }
+
+      if (creature.actionTimer <= 0) {
+        const spot = world.festivals.pickCelebrationSpot(venue, world);
+        creature.targetX = spot.x;
+        creature.targetZ = spot.z;
+        this.ensureReachableTarget(creature, world);
+        creature.actionTimer = world.rng.range(3.2, 6.2);
+
+        // Warm bonds with nearby fellow celebrants (building cross-village friendships at regional events!)
+        this.queryNearbyCreatures(creature, creature.x, creature.z, 5.5, world, this.nearbyCreatures);
+        let mingledWith: Creature | null = null;
+        for (let i = 0; i < this.nearbyCreatures.length; i++) {
+          const other = this.nearbyCreatures[i];
+          if (other.activity === 'celebrating') {
+            creature.adjustRelationship(other.id, cel.scope === 'regional' ? 7 : 5);
+            other.adjustRelationship(creature.id, cel.scope === 'regional' ? 7 : 5);
+            mingledWith = other;
+            break;
+          }
+        }
+
+        if (cel.scope === 'national') {
+          creature.thought = mingledWith
+            ? `Toasting ${cel.name} with ${mingledWith.name}!`
+            : `Celebrating ${cel.name} with the whole realm!`;
+        } else if (cel.scope === 'regional') {
+          creature.thought = mingledWith
+            ? `Dancing with ${mingledWith.name} at ${cel.name}!`
+            : `Enjoying ${cel.name} in ${venue.name}!`;
+        } else {
+          creature.thought = mingledWith
+            ? `Dancing and laughing with ${mingledWith.name} at ${cel.name}!`
+            : `Reveling at ${cel.name}!`;
+        }
+      }
+    } else if (
+      creature.actionTimer <= 0 ||
+      Math.hypot(creature.targetX - creature.x, creature.targetZ - creature.z) <= 0.85
+    ) {
+      const spot = world.festivals.pickCelebrationSpot(venue, world);
+      creature.targetX = spot.x;
+      creature.targetZ = spot.z;
+      this.ensureReachableTarget(creature, world);
+      creature.actionTimer = world.rng.range(5, 9);
+    }
+  }
+
   private depositInventory(creature: Creature, home: { stockpile: Record<ResourceType, number> }): void {
     const keys: ResourceType[] = ['timber', 'berries', 'acorns', 'stone', 'herbs', 'crafts'];
     for (const k of keys) {
@@ -1375,8 +1488,13 @@ export class CreatureAI {
   private updateCreatureElevation(creature: Creature, world: WorldState): void {
     const groundY = world.terrain.getHeightAt(creature.x, creature.z);
     const bridgeY = world.terrain.getBridgeDeckY(creature.x, creature.z);
+    const isRegionalFestivalTraveler =
+      creature.activity === 'celebrating' &&
+      !creature.isDancingAtCelebration &&
+      creature.celebrationHostSettlementId !== null &&
+      creature.celebrationHostSettlementId !== creature.settlementId;
     const waterFloor =
-      creature.def.amphibious || creature.activity === 'emigrating'
+      creature.def.amphibious || creature.activity === 'emigrating' || isRegionalFestivalTraveler
         ? world.terrain.waterLevel - 0.06
         : world.terrain.waterLevel;
     creature.y =
@@ -1438,12 +1556,18 @@ export class CreatureAI {
 
     if (dist > 0.25) {
       const isEmigrating = creature.activity === 'emigrating';
+      const isRegionalFestivalTraveler =
+        creature.activity === 'celebrating' &&
+        !creature.isDancingAtCelebration &&
+        creature.celebrationHostSettlementId !== null &&
+        creature.celebrationHostSettlementId !== creature.settlementId;
+      const canFordWater = isEmigrating || isRegionalFestivalTraveler;
       const canTraverse = (x: number, z: number): boolean =>
-        isEmigrating
+        canFordWater
           ? world.terrain.canEmigrantTraverse(x, z)
           : world.terrain.isWalkable(x, z, creature.def.amphibious);
       const isFordingWater =
-        isEmigrating &&
+        canFordWater &&
         !creature.def.aerial &&
         world.terrain.getBridgeDeckY(creature.x, creature.z) === null &&
         world.terrain.getHeightAt(creature.x, creature.z) < world.terrain.waterLevel + 0.05;
@@ -1459,6 +1583,12 @@ export class CreatureAI {
                 ? isFordingWater
                   ? 0.82
                   : 1.42
+                : isRegionalFestivalTraveler
+                  ? isFordingWater
+                    ? 0.84
+                    : 1.24
+                  : creature.isDancingAtCelebration
+                    ? 0.78
                 : 1.0;
 
       const step = Math.min(dist, creature.def.baseSpeed * speedMult * dt);

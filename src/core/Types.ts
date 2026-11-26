@@ -66,6 +66,7 @@ export type CreatureActivity =
   | 'courting'
   | 'nesting'
   | 'playing'
+  | 'celebrating'
   | 'fighting'
   | 'fleeing'
   | 'resting'
@@ -135,8 +136,32 @@ export type ChronicleCategory =
   | 'settlement'
   | 'trade'
   | 'social'
+  | 'festival'
   | 'combat'
   | 'nature';
+
+export type CelebrationScope = 'local' | 'regional' | 'national';
+
+export interface ActiveCelebration {
+  readonly id: string;
+  readonly scope: CelebrationScope;
+  readonly name: string;
+  readonly theme: string;
+  readonly icon: string;
+  /** Primary host settlement (local host, regional gathering host, or leading realm capital). */
+  readonly hostSettlementId: string;
+  /** All settlements participating in this celebration. */
+  readonly participatingSettlementIds: readonly string[];
+  /** Primary world plaza position for Chronicle camera focus. */
+  readonly position: Vec2;
+  readonly colorHex: number;
+  readonly secondaryColorHex: number;
+  readonly startedAt: number;
+  readonly startedDay: number;
+  readonly duration: number;
+  /** Target fraction of invited population attending (local ~0.85, regional ~0.55, national 1.0). */
+  readonly attendanceRatio: number;
+}
 
 export interface ChronicleEntry {
   readonly id: number;

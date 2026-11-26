@@ -24,6 +24,7 @@ import { SettlementManager } from './settlements/SettlementManager';
 import { Chronicle } from './society/Chronicle';
 import { DiplomacySystem } from './society/DiplomacySystem';
 import { EconomySystem } from './society/EconomySystem';
+import { FestivalSystem } from './society/FestivalSystem';
 import type { BridgeInstance } from './terrain/Bridge';
 import { ObstacleMap } from './terrain/ObstacleMap';
 import { TerrainMap } from './terrain/TerrainMap';
@@ -57,6 +58,7 @@ export class WorldState {
   readonly settlementManager: SettlementManager;
   readonly economy: EconomySystem;
   readonly diplomacy: DiplomacySystem;
+  readonly festivals: FestivalSystem;
 
   readonly settlements: Settlement[] = [];
   readonly bridges: BridgeInstance[] = [];
@@ -92,6 +94,7 @@ export class WorldState {
     this.settlementManager = new SettlementManager();
     this.economy = new EconomySystem();
     this.diplomacy = new DiplomacySystem();
+    this.festivals = new FestivalSystem();
 
     this.settlementManager.createInitialSettlements(this);
     this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision);
@@ -413,6 +416,7 @@ export class WorldState {
     this.settlementManager.tick(this, dt);
     this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision);
     this.diplomacy.tick(this, dt);
+    this.festivals.tick(this, dt);
 
     this.creatureAI.prepareStep(this);
     for (const creature of this.creatures) {

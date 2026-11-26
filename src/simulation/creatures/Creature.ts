@@ -104,6 +104,11 @@ export class Creature {
   emigrationTargetX: number | null = null;
   emigrationTargetZ: number | null = null;
 
+  /** Active festival, regional event, or national holiday participation state. */
+  activeCelebrationId: string | null = null;
+  celebrationHostSettlementId: string | null = null;
+  isDancingAtCelebration = false;
+
   readonly inventory: ResourceBundle = createEmptyResources();
   /** Maps another creature ID -> affinity score in [-100, 100]. */
   readonly relationships = new Map<string, number>();
