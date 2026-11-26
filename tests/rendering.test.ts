@@ -393,7 +393,7 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     textures.dispose();
   });
 
-  it('builds and animates articulated high-resolution rigs for all 12 species and all 6 roles', () => {
+  it('builds and animates articulated high-resolution rigs for all 21 species and all 6 roles', () => {
     const world = new WorldState(new EventBus(), { seed: 98765 });
     const roles: CreatureRole[] = ['forager', 'builder', 'merchant', 'guard', 'artisan', 'mystic'];
 
@@ -436,10 +436,18 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     renderer.rootGroup.traverse((obj) => {
       if (obj instanceof THREE.Mesh) {
         meshCount++;
+        const pos = obj.geometry.getAttribute('position');
+        expect(pos).toBeDefined();
+        for (let i = 0; i < Math.min(pos.count, 16); i++) {
+          expect(Number.isFinite(pos.getX(i))).toBe(true);
+          expect(Number.isFinite(pos.getY(i))).toBe(true);
+          expect(Number.isFinite(pos.getZ(i))).toBe(true);
+        }
       }
     });
 
     // High-resolution articulated creatures have many sculpted sub-meshes per creature
+    expect(ALL_SPECIES_IDS).toHaveLength(21);
     expect(meshCount).toBeGreaterThan(world.creatures.length * 10);
 
     renderer.dispose();

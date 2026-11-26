@@ -75,11 +75,32 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
       'rabbit',
       'fox',
       'hedgehog',
+      'badger',
+      'owl',
+      'bear',
+      'wolf',
+      'cat',
+      'raccoon',
+      'weasel',
+      'snake',
+      'turtle',
+      'pigeon',
+      'magpie',
     ];
+    expect(ALL_SPECIES_IDS).toHaveLength(21);
     for (const id of required) {
       expect(ALL_SPECIES_IDS).toContain(id);
       expect(SPECIES_CATALOG[id as keyof typeof SPECIES_CATALOG].displayName.length).toBeGreaterThan(0);
     }
+    expect(SPECIES_CATALOG.snake.locomotion).toBe('slither');
+    expect(SPECIES_CATALOG.turtle.amphibious).toBe(true);
+    expect(SPECIES_CATALOG.pigeon.aerial).toBe(true);
+    expect(SPECIES_CATALOG.magpie.aerial).toBe(true);
+    // Every species must be naturally adapted to at least one biome village adaptation
+    const covered = new Set(
+      ALL_VILLAGE_ADAPTATIONS.flatMap((id) => VILLAGE_ADAPTATION_CATALOG[id].adaptedSpecies),
+    );
+    expect(covered.size).toBe(ALL_SPECIES_IDS.length);
   });
 
   it(
@@ -1146,6 +1167,8 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
       seed: 20260704,
       initialSettlements: 3,
       initialCreaturesPerSettlement: 10,
+      deityDecisionIntervalSec: 999,
+      diplomacyIntervalSec: 999,
     });
     expect(world.settlements.length).toBe(3);
 

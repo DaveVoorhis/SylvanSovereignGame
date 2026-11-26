@@ -396,6 +396,8 @@ export class GameEngine {
         bobOffset = Math.abs(Math.sin(c.animPhase)) * 0.2;
       } else if (c.def.locomotion === 'fly') {
         bobOffset = Math.sin(c.animPhase * 1.2) * 0.08;
+      } else if (c.def.locomotion === 'slither') {
+        bobOffset = Math.sin(c.animPhase * 1.4) * 0.03;
       } else {
         bobOffset = Math.abs(Math.sin(c.animPhase)) * 0.07;
       }

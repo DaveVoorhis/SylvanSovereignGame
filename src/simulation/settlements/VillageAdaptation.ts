@@ -69,7 +69,7 @@ export const VILLAGE_ADAPTATION_CATALOG: Record<VillageAdaptationId, VillageAdap
     economySummary: 'Abundant old-growth timber, acorns, and deep spiritual devotion at ancient shrines',
     summary:
       'Beneath towering old-growth oaks, forest dwellers weave living moss roofs and hang lantern trails through the dappled shade.',
-    adaptedSpecies: ['owl', 'squirrel', 'fox', 'hedgehog', 'robin'],
+    adaptedSpecies: ['owl', 'bear', 'squirrel', 'wolf', 'fox', 'magpie', 'weasel', 'hedgehog', 'robin'],
     settlementNames: ['Elderhollow', 'Whisperbough', 'Bramblehaven', 'Oakenvale', 'Lanternshade', 'Mosswood'],
     starterHome: 'burrow_cottage',
     starterCivic: 'shrine',
@@ -115,7 +115,7 @@ export const VILLAGE_ADAPTATION_CATALOG: Record<VillageAdaptationId, VillageAdap
     economySummary: 'Seafaring trade harbors, coastal kelp & herb foraging, and brisk driftwood carpentry',
     summary:
       'Set beside tidal sands and rolling waves, coastal villagers raise driftwood wharves, light harbor beacons, and trade far along the coast.',
-    adaptedSpecies: ['crow', 'frog', 'fox', 'sparrow', 'rat'],
+    adaptedSpecies: ['crow', 'turtle', 'fox', 'pigeon', 'raccoon', 'frog', 'cat', 'sparrow', 'rat'],
     settlementNames: ['Saltcrest', 'Driftwharf', 'Gullhaven', 'Tidewatch', 'Shellbay', 'Breakerpoint'],
     starterHome: 'timber_house',
     starterCivic: 'market_stall',
@@ -161,7 +161,7 @@ export const VILLAGE_ADAPTATION_CATALOG: Record<VillageAdaptationId, VillageAdap
     economySummary: 'Master artisans and far-ranging caravan merchants crafting glazed wares and oasis spices',
     summary:
       'Across golden dunes and sandstone mesas, desert settlers shade their plazas with ochre canvas, store cool water in amphorae, and lead rich caravans.',
-    adaptedSpecies: ['fox', 'crow', 'sparrow', 'mouse', 'owl'],
+    adaptedSpecies: ['fox', 'snake', 'cat', 'pigeon', 'crow', 'wolf', 'sparrow', 'mouse', 'owl'],
     settlementNames: ['Sunspire', 'Ochre Oasis', 'Duneward', 'Saffron Well', 'Redmesa', 'Mirage Rest'],
     starterHome: 'burrow_cottage',
     starterCivic: 'fountain_plaza',
@@ -207,7 +207,7 @@ export const VILLAGE_ADAPTATION_CATALOG: Record<VillageAdaptationId, VillageAdap
     economySummary: 'Abundant grain, berry, and acorn harvests feeding bustling mills, bakeries, and open markets',
     summary:
       'Across wide sunlit grasslands and wildflower plains, pastoral villagers harness steady prairie winds with windmills and harvest abundant stores.',
-    adaptedSpecies: ['rabbit', 'mouse', 'sparrow', 'robin', 'hedgehog'],
+    adaptedSpecies: ['rabbit', 'cat', 'weasel', 'magpie', 'pigeon', 'mouse', 'sparrow', 'robin', 'hedgehog'],
     settlementNames: ['Goldfield', 'Windmeadow', 'Clovercrest', 'Sunsteppe', 'Wheatglen', 'Breezehollow'],
     starterHome: 'burrow_cottage',
     starterCivic: 'windmill',
@@ -253,7 +253,7 @@ export const VILLAGE_ADAPTATION_CATALOG: Record<VillageAdaptationId, VillageAdap
     economySummary: 'Rich mountain stone quarries, swift alpine masonry, and durable stone-arch bridges',
     summary:
       'Perched on terraced granite ledges below snow-dusted crags, mountain villagers anchor stone homes against fierce highland gales.',
-    adaptedSpecies: ['badger', 'owl', 'crow', 'fox', 'hedgehog'],
+    adaptedSpecies: ['badger', 'wolf', 'bear', 'owl', 'magpie', 'weasel', 'crow', 'fox', 'hedgehog'],
     settlementNames: ['Cragwatch', 'Granitehearth', 'Frostspire', 'Stonebench', 'Cairnpeak', 'Ironridge'],
     starterHome: 'timber_house',
     starterCivic: 'watchtower',
@@ -299,7 +299,7 @@ export const VILLAGE_ADAPTATION_CATALOG: Record<VillageAdaptationId, VillageAdap
     economySummary: 'Lush river-bank herbs, fertile fen berries, and eager timber-arch bridgecraft',
     summary:
       'Built high on pilings above rushing streams and misty fens, riverside folk keep dry above seasonal floods and span rivers with arched bridges.',
-    adaptedSpecies: ['frog', 'rat', 'robin', 'badger', 'mouse'],
+    adaptedSpecies: ['frog', 'raccoon', 'turtle', 'snake', 'weasel', 'rat', 'robin', 'badger', 'mouse'],
     settlementNames: ['Willowford', 'Reedwalk', 'Fenbridge', 'Creekstilt', 'Brookhaven', 'Mistybank'],
     starterHome: 'burrow_cottage',
     starterCivic: 'greenhouse',

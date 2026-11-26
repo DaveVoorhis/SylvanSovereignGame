@@ -49,9 +49,18 @@ export type SpeciesId =
   | 'fox'
   | 'hedgehog'
   | 'badger'
-  | 'owl';
+  | 'owl'
+  | 'bear'
+  | 'wolf'
+  | 'cat'
+  | 'raccoon'
+  | 'weasel'
+  | 'snake'
+  | 'turtle'
+  | 'pigeon'
+  | 'magpie';
 
-export type LocomotionKind = 'walk' | 'hop' | 'scurry' | 'fly';
+export type LocomotionKind = 'walk' | 'hop' | 'scurry' | 'fly' | 'slither';
 
 export type LifeStage = 'young' | 'juvenile' | 'adult' | 'elder';
 
