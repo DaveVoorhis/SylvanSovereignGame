@@ -692,6 +692,26 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     expect(beam.wallMat).toBeInstanceOf(THREE.ShaderMaterial);
     expect(beam.haloMat).toBeInstanceOf(THREE.ShaderMaterial);
     expect(beam.motesPoints).toBeInstanceOf(THREE.Points);
+
+    // Polychromatic cathedral stained-glass jewel uniforms & transparent atmospheric blending
+    const glassMats = [beam.outerMat, beam.coreMat, beam.ringMat, beam.wallMat, beam.haloMat, beam.motesMat];
+    for (const mat of glassMats) {
+      expect(mat.transparent).toBe(true);
+      expect(mat.depthWrite).toBe(false);
+      expect(mat.blending).toBe(THREE.AdditiveBlending);
+      expect(mat.uniforms.uGlassB?.value).toBeInstanceOf(THREE.Color);
+      expect(mat.uniforms.uGlassC?.value).toBeInstanceOf(THREE.Color);
+      expect(mat.uniforms.uGlassD?.value).toBeInstanceOf(THREE.Color);
+    }
+    // Verify the 4 stained-glass jewel tones are genuinely distinct polychromatic hues
+    const paletteHexes = new Set([
+      beam.palette.primary.getHex(),
+      beam.palette.jewelB.getHex(),
+      beam.palette.jewelC.getHex(),
+      beam.palette.jewelD.getHex(),
+    ]);
+    expect(paletteHexes.size).toBe(4);
+
     expect(beam.motesPoints.geometry.getAttribute('position').count).toBeGreaterThanOrEqual(100);
     expect(beam.motesPoints.geometry.getAttribute('aKind')).toBeDefined();
     expect(beam.glowLight).toBeInstanceOf(THREE.PointLight);

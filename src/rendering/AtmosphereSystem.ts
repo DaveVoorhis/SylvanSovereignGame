@@ -5,6 +5,31 @@ import type { SkyLightingState } from './WaterShader';
 
 export const DIVINE_BEAM_HEIGHT = 2200;
 
+export interface StainedGlassPalette {
+  readonly primary: THREE.Color;
+  readonly jewelB: THREE.Color;
+  readonly jewelC: THREE.Color;
+  readonly jewelD: THREE.Color;
+}
+
+/**
+ * Derives a luminous four-jewel cathedral stained-glass palette anchored to the divine event's
+ * signature hue, pairing it with harmonious sapphire/emerald, rose/amethyst, and sunlit gold
+ * companion tones so every manifestation radiates translucent polychromatic light.
+ */
+export function deriveStainedGlassPalette(primaryHex: number): StainedGlassPalette {
+  const primary = new THREE.Color(primaryHex);
+  const hsl = { h: 0, s: 0, l: 0 };
+  primary.getHSL(hsl);
+
+  const sat = Math.max(0.76, Math.min(0.94, hsl.s + 0.14));
+  const jewelB = new THREE.Color().setHSL((hsl.h + 0.29) % 1, sat, 0.58);
+  const jewelC = new THREE.Color().setHSL((hsl.h + 0.58) % 1, Math.min(0.95, sat + 0.04), 0.56);
+  const jewelD = new THREE.Color().setHSL((hsl.h + 0.78) % 1, sat, 0.62);
+
+  return { primary, jewelB, jewelC, jewelD };
+}
+
 export interface DivineBeamVisual {
   readonly group: THREE.Group;
   readonly outerMat: THREE.ShaderMaterial;
@@ -19,6 +44,7 @@ export interface DivineBeamVisual {
   readonly motesMat: THREE.ShaderMaterial;
   readonly motesPoints: THREE.Points;
   readonly glowLight: THREE.PointLight;
+  readonly palette: StainedGlassPalette;
   readonly dispose: () => void;
 }
 
@@ -80,14 +106,17 @@ export function createDivineBeamVisual(
   const group = new THREE.Group();
   group.position.set(effect.position.x, groundY, effect.position.z);
 
-  const beamColor = new THREE.Color(effect.colorHex);
+  const palette = deriveStainedGlassPalette(effect.colorHex);
   const ownedGeos: THREE.BufferGeometry[] = [];
 
   const outerMat = new THREE.ShaderMaterial({
     vertexShader: DIVINE_BEAM_VERTEX_SHADER,
     fragmentShader: DIVINE_BEAM_FRAGMENT_SHADER,
     uniforms: {
-      uColor: { value: beamColor.clone() },
+      uColor: { value: palette.primary.clone() },
+      uGlassB: { value: palette.jewelB.clone() },
+      uGlassC: { value: palette.jewelC.clone() },
+      uGlassD: { value: palette.jewelD.clone() },
       uOpacity: { value: 0.0 },
       uTime: { value: 0.0 },
       uCoreWeight: { value: 0.0 },
@@ -107,7 +136,10 @@ export function createDivineBeamVisual(
     vertexShader: DIVINE_BEAM_VERTEX_SHADER,
     fragmentShader: DIVINE_BEAM_FRAGMENT_SHADER,
     uniforms: {
-      uColor: { value: beamColor.clone() },
+      uColor: { value: palette.primary.clone() },
+      uGlassB: { value: palette.jewelB.clone() },
+      uGlassC: { value: palette.jewelC.clone() },
+      uGlassD: { value: palette.jewelD.clone() },
       uOpacity: { value: 0.0 },
       uTime: { value: 0.0 },
       uCoreWeight: { value: 1.0 },
@@ -123,12 +155,15 @@ export function createDivineBeamVisual(
   coreBeam.renderOrder = 3;
   group.add(coreBeam);
 
-  // 1. Ground Celestial Mandala & Multi-Pulse Expanding Shockwave Disc
+  // 1. Ground Stained-Glass Rose-Window Light Projection & Polychromatic Shockwave Disc
   const ringMat = new THREE.ShaderMaterial({
     vertexShader: DIVINE_RING_VERTEX_SHADER,
     fragmentShader: DIVINE_RING_FRAGMENT_SHADER,
     uniforms: {
-      uColor: { value: beamColor.clone() },
+      uColor: { value: palette.primary.clone() },
+      uGlassB: { value: palette.jewelB.clone() },
+      uGlassC: { value: palette.jewelC.clone() },
+      uGlassD: { value: palette.jewelD.clone() },
       uOpacity: { value: 0.0 },
       uTime: { value: 0.0 },
       uProgress: { value: 0.0 },
@@ -147,7 +182,7 @@ export function createDivineBeamVisual(
   ringMesh.renderOrder = 3;
   group.add(ringMesh);
 
-  // 2. Rising Volumetric Aurora Shockwave Curtain riding the expanding perimeter
+  // 2. Rising Translucent Stained-Glass Clerestory Aurora Curtain riding the expanding perimeter
   let wallGeo = sharedWallGeo;
   if (!wallGeo) {
     wallGeo = new THREE.CylinderGeometry(1.08, 0.96, 1.0, 64, 1, true);
@@ -158,7 +193,10 @@ export function createDivineBeamVisual(
     vertexShader: DIVINE_WALL_VERTEX_SHADER,
     fragmentShader: DIVINE_WALL_FRAGMENT_SHADER,
     uniforms: {
-      uColor: { value: beamColor.clone() },
+      uColor: { value: palette.primary.clone() },
+      uGlassB: { value: palette.jewelB.clone() },
+      uGlassC: { value: palette.jewelC.clone() },
+      uGlassD: { value: palette.jewelD.clone() },
       uOpacity: { value: 0.0 },
       uTime: { value: 0.0 },
     },
@@ -173,7 +211,7 @@ export function createDivineBeamVisual(
   wallMesh.renderOrder = 3;
   group.add(wallMesh);
 
-  // 3. Twin Counter-Rotating Celestial Armillary Halo Rings orbiting the lower light column
+  // 3. Twin Counter-Rotating Prismatic Armillary Halo Rings orbiting the lower light column
   let haloGeo = sharedHaloGeo;
   if (!haloGeo) {
     haloGeo = new THREE.TorusGeometry(1.0, 0.036, 10, 64);
@@ -184,7 +222,10 @@ export function createDivineBeamVisual(
     vertexShader: DIVINE_HALO_VERTEX_SHADER,
     fragmentShader: DIVINE_HALO_FRAGMENT_SHADER,
     uniforms: {
-      uColor: { value: beamColor.clone() },
+      uColor: { value: palette.primary.clone() },
+      uGlassB: { value: palette.jewelB.clone() },
+      uGlassC: { value: palette.jewelC.clone() },
+      uGlassD: { value: palette.jewelD.clone() },
       uOpacity: { value: 0.0 },
       uTime: { value: 0.0 },
     },
@@ -216,7 +257,10 @@ export function createDivineBeamVisual(
     vertexShader: DIVINE_MOTES_VERTEX_SHADER,
     fragmentShader: DIVINE_MOTES_FRAGMENT_SHADER,
     uniforms: {
-      uColor: { value: beamColor.clone() },
+      uColor: { value: palette.primary.clone() },
+      uGlassB: { value: palette.jewelB.clone() },
+      uGlassC: { value: palette.jewelC.clone() },
+      uGlassD: { value: palette.jewelD.clone() },
       uOpacity: { value: 0.0 },
       uTime: { value: 0.0 },
       uWaveRadius: { value: 2.0 },
@@ -261,6 +305,7 @@ export function createDivineBeamVisual(
     motesMat,
     motesPoints,
     glowLight,
+    palette,
     dispose,
   };
 }
@@ -288,12 +333,23 @@ const DIVINE_BEAM_VERTEX_SHADER = /* glsl */ `
 
 const DIVINE_BEAM_FRAGMENT_SHADER = /* glsl */ `
   uniform vec3 uColor;
+  uniform vec3 uGlassB;
+  uniform vec3 uGlassC;
+  uniform vec3 uGlassD;
   uniform float uOpacity;
   uniform float uTime;
   uniform float uCoreWeight;
   varying vec2 vUv;
   varying vec3 vWorldNormal;
   varying vec3 vWorldPos;
+
+  vec3 sampleCathedralGlass(float phase, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
+    float p = fract(phase) * 4.0;
+    if (p < 1.0) return mix(c0, c1, smoothstep(0.08, 0.92, p));
+    if (p < 2.0) return mix(c1, c2, smoothstep(0.08, 0.92, p - 1.0));
+    if (p < 3.0) return mix(c2, c3, smoothstep(0.08, 0.92, p - 2.0));
+    return mix(c3, c0, smoothstep(0.08, 0.92, p - 3.0));
+  }
 
   void main() {
     vec3 viewDir = normalize(cameraPosition - vWorldPos);
@@ -307,12 +363,17 @@ const DIVINE_BEAM_FRAGMENT_SHADER = /* glsl */ `
 
     // Seamless atmospheric dissolve very high in the sky + radiant bloom where beam meets earth
     float topFade = 1.0 - smoothstep(0.72, 1.0, vUv.y);
-    float groundBloom = 1.0 + smoothstep(0.06, 0.0, vUv.y) * 0.85;
+    float groundBloom = 1.0 + smoothstep(0.06, 0.0, vUv.y) * 0.65;
     float bottomSoft = smoothstep(0.0, 0.004, vUv.y);
 
+    // Translucent stained-glass chromatic light shafts drifting down the outer heavenly veil
+    float glassPhase = vUv.x * 2.0 + vUv.y * 0.45 - uTime * 0.06;
+    vec3 glassRibbon = sampleCathedralGlass(glassPhase, uColor, uGlassD, uGlassB, uGlassC);
+    vec3 outerTint = mix(uColor, glassRibbon, 0.58 * (1.0 - uCoreWeight));
+
     float alpha = uOpacity * edgeSoft * ribbon * shimmer * topFade * bottomSoft * groundBloom;
-    vec3 col = mix(uColor, vec3(1.0, 0.99, 0.95), uCoreWeight * 0.45 * pow(facing, 2.2));
-    gl_FragColor = vec4(col, clamp(alpha, 0.0, 1.0));
+    vec3 col = mix(outerTint, vec3(1.0, 0.98, 0.92), uCoreWeight * 0.42 * pow(facing, 2.2));
+    gl_FragColor = vec4(col, clamp(alpha, 0.0, 0.78));
   }
 `;
 
@@ -326,16 +387,28 @@ const DIVINE_RING_VERTEX_SHADER = /* glsl */ `
 
 const DIVINE_RING_FRAGMENT_SHADER = /* glsl */ `
   uniform vec3 uColor;
+  uniform vec3 uGlassB;
+  uniform vec3 uGlassC;
+  uniform vec3 uGlassD;
   uniform float uOpacity;
   uniform float uTime;
   uniform float uProgress;
   varying vec2 vLocalPos;
+
+  vec3 sampleRoseGlass(float phase, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
+    float p = fract(phase) * 4.0;
+    if (p < 1.0) return mix(c0, c1, smoothstep(0.14, 0.86, p));
+    if (p < 2.0) return mix(c1, c2, smoothstep(0.14, 0.86, p - 1.0));
+    if (p < 3.0) return mix(c2, c3, smoothstep(0.14, 0.86, p - 2.0));
+    return mix(c3, c0, smoothstep(0.14, 0.86, p - 3.0));
+  }
 
   void main() {
     float r = length(vLocalPos);
     if (r > 1.0) discard;
 
     float ang = atan(vLocalPos.y, vLocalPos.x);
+    float normAng = ang * 0.15915494 + 0.5;
     float waveR = mix(0.08, 0.94, uProgress);
 
     // Organic swirling plasma turbulence distorting the shockwave edge
@@ -344,65 +417,123 @@ const DIVINE_RING_FRAGMENT_SHADER = /* glsl */ `
       cos(ang * 11.0 - uTime * 2.15 + r * 14.5) * 0.007;
     float rw = r + swirl;
 
-    // 1. Primary incandescent shockwave crest + luminous filamentous trailing wake
+    // 1. Primary prismatic shockwave crest + sheer chromatic trailing wake
     float dWave = rw - waveR;
-    float crest = exp(-dWave * dWave * 520.0) * 1.45;
-    float wake = smoothstep(waveR - 0.32, waveR, rw) * (1.0 - smoothstep(waveR, waveR + 0.04, rw));
+    float crest = exp(-dWave * dWave * 520.0) * 0.95;
+    float leadPrism = exp(-pow(dWave - 0.022, 2.0) * 900.0) * 0.45;
+    float trailPrism = exp(-pow(dWave + 0.028, 2.0) * 720.0) * 0.48;
+    float wake = smoothstep(waveR - 0.34, waveR, rw) * (1.0 - smoothstep(waveR, waveR + 0.035, rw));
     float wakeFilaments = 0.58 + 0.42 * sin(ang * 16.0 - uTime * 3.4 + r * 28.0);
-    float shockwave = crest + wake * wakeFilaments * 0.56;
+    float wakeEnergy = wake * wakeFilaments * 0.32;
 
-    // 2. Resonant secondary & tertiary harmonic echo shockwaves pulsing outward
+    // 2. Resonant secondary & tertiary harmonic echoes in complementary jewel hues
     float p2 = fract(uProgress * 1.9 + 0.36);
     float r2 = mix(0.06, 0.92, 1.0 - pow(1.0 - p2, 1.8));
-    float echo2 = exp(-pow(rw - r2, 2.0) * 860.0) * sin(p2 * 3.14159265) * 0.78;
+    float echo2 = exp(-pow(rw - r2, 2.0) * 880.0) * sin(p2 * 3.14159265) * 0.58;
 
     float p3 = fract(uProgress * 1.9 + 0.72);
     float r3 = mix(0.06, 0.92, 1.0 - pow(1.0 - p3, 1.8));
-    float echo3 = exp(-pow(rw - r3, 2.0) * 1080.0) * sin(p3 * 3.14159265) * 0.52;
+    float echo3 = exp(-pow(rw - r3, 2.0) * 1100.0) * sin(p3 * 3.14159265) * 0.46;
 
-    // 3. Counter-rotating celestial sacred mandala, astrolabe arcs & arcane rune band
+    // 3. Translucent Gothic cathedral rose-window light projection inside the expanding wave
     float insideWave = 1.0 - smoothstep(waveR - 0.045, waveR + 0.025, r);
-    float ringA = exp(-pow(r - 0.27, 2.0) * 2400.0);
-    float ringB = exp(-pow(r - 0.53, 2.0) * 2400.0);
-    float ringC = exp(-pow(r - 0.78, 2.0) * 2200.0);
+    float a1 = ang + uTime * 0.24;
+    float a2 = ang - uTime * 0.18;
+    float n1 = fract(a1 * 0.15915494 + 0.5);
+    float n2 = fract(a2 * 0.15915494 + 0.5);
 
-    float a1 = ang + uTime * 0.38;
-    float a2 = ang - uTime * 0.29;
-    float lotusR = 0.38 + 0.145 * cos(a1 * 6.0);
-    float lotusArc = exp(-pow(r - lotusR, 2.0) * 1650.0) * 0.68;
-    float starR = 0.64 + 0.12 * cos(a2 * 12.0);
-    float starArc = exp(-pow(r - starR, 2.0) * 1850.0) * 0.58;
+    // Concentric rose-window tracery rings
+    float ringA = exp(-pow(r - 0.31, 2.0) * 2600.0);
+    float ringB = exp(-pow(r - 0.58, 2.0) * 2600.0);
+    float ringC = exp(-pow(r - 0.84, 2.0) * 2400.0);
 
-    float runeBand = smoothstep(0.29, 0.33, r) * (1.0 - smoothstep(0.47, 0.51, r));
-    float runeGlyph =
-      smoothstep(0.30, 0.72, sin(a2 * 24.0)) *
-      smoothstep(0.10, 0.62, cos(a2 * 12.0 + r * 44.0));
-    float outerTicks =
-      smoothstep(0.75, 0.77, r) * (1.0 - smoothstep(0.82, 0.85, r)) *
-      smoothstep(0.55, 0.85, sin(a1 * 36.0));
-    float rays =
-      pow(max(0.0, cos(a1 * 6.0)), 18.0) *
-      smoothstep(0.08, 0.22, r) *
-      (1.0 - smoothstep(0.74, 0.94, r));
+    // Pointed Gothic trefoil rosette (inner 12 petals) & outer 24-lancet cathedral arcade
+    float innerArchR = 0.27 + 0.065 * pow(abs(cos(a1 * 6.0)), 0.72);
+    float innerArchLine = exp(-pow(r - innerArchR, 2.0) * 2100.0) * 0.54;
 
-    float mandala =
-      (ringA * 0.55 + ringB * 0.52 + ringC * 0.42 + lotusArc + starArc +
-       runeBand * runeGlyph * 0.58 + outerTicks * 0.45 + rays * 0.46) *
-      insideWave;
+    float midArchR = 0.46 + 0.105 * (1.0 - abs(sin(a2 * 6.0)));
+    float midArchLine = exp(-pow(r - midArchR, 2.0) * 1950.0) * 0.52;
 
-    // 4. Radiant impact core halo where the heavenly column strikes the earth
-    float coreHalo = exp(-r * r * 24.0) * 0.95;
+    float outerOgiveR = 0.71 + 0.125 * pow(abs(cos(a1 * 12.0)), 0.68);
+    float outerOgiveLine = exp(-pow(r - outerOgiveR, 2.0) * 2050.0) * 0.48;
 
+    // Gossamer radial mullions framing the stained-glass lancet panes
+    float spoke12 = pow(abs(cos(a1 * 6.0)), 48.0) * smoothstep(0.09, 0.14, r) * (1.0 - smoothstep(0.57, 0.61, r));
+    float spoke24 = pow(abs(cos(a1 * 12.0)), 56.0) * smoothstep(0.56, 0.60, r) * (1.0 - smoothstep(0.83, 0.87, r));
+
+    // Subtle stained-glass quatrefoil jewel medallions in the middle gallery
+    float quatrefoil =
+      smoothstep(0.34, 0.38, r) * (1.0 - smoothstep(0.52, 0.56, r)) *
+      smoothstep(0.32, 0.76, cos(a2 * 12.0)) *
+      smoothstep(0.15, 0.72, sin(r * 42.0 - a2 * 6.0));
+
+    // Translucent coloured stained-glass pane light (airy & misty so terrain shows clearly beneath)
+    float paneShimmer = 0.68 + 0.32 * sin(ang * 9.0 - uTime * 1.8 + r * 16.0);
+    float innerBand = smoothstep(0.09, 0.13, r) * (1.0 - smoothstep(0.28, 0.32, r));
+    float midBand = smoothstep(0.32, 0.36, r) * (1.0 - smoothstep(0.55, 0.59, r));
+    float outerBand = smoothstep(0.59, 0.63, r) * (1.0 - smoothstep(0.81, 0.85, r));
+
+    // Soft mullion margin attenuation gives each glass pane its cathedral leaded-window definition
+    float mullionGapInner = smoothstep(0.06, 0.28, abs(sin(a1 * 6.0)));
+    float mullionGapMid = smoothstep(0.06, 0.28, abs(sin(a2 * 6.0)));
+    float mullionGapOuter = smoothstep(0.06, 0.30, abs(sin(a1 * 12.0)));
+
+    // Distinct jewel hues per cathedral pane sector, gently rotating like sunlit refracted glass
+    float innerSector = floor(n1 * 12.0) / 12.0;
+    float midSector = floor(n2 * 12.0) / 12.0;
+    float outerSector = floor(n1 * 24.0) / 24.0;
+
+    vec3 innerGlassCol = sampleRoseGlass(innerSector * 3.0 + 0.05, uColor, uGlassD, uGlassB, uGlassC);
+    vec3 midGlassCol = sampleRoseGlass(midSector * 3.0 + 0.38, uGlassB, uGlassC, uGlassD, uColor);
+    vec3 outerGlassCol = sampleRoseGlass(outerSector * 6.0 + 0.66, uGlassC, uColor, uGlassB, uGlassD);
+
+    float innerPaneAlpha = innerBand * mullionGapInner * 0.22 * paneShimmer;
+    float midPaneAlpha = (midBand * mullionGapMid * 0.19 + quatrefoil * 0.14) * paneShimmer;
+    float outerPaneAlpha = outerBand * mullionGapOuter * 0.17 * paneShimmer;
+
+    float tracery =
+      (ringA * 0.44 + ringB * 0.42 + ringC * 0.36 +
+       innerArchLine + midArchLine + outerOgiveLine +
+       spoke12 * 0.34 + spoke24 * 0.30) * insideWave;
+
+    // 4. Airy luminous halo where the heavenly light column meets the earth
+    float coreHalo = exp(-r * r * 22.0) * 0.62;
     float outerFade = 1.0 - smoothstep(0.88, 1.0, r);
-    float intensity = (shockwave + echo2 + echo3 + mandala + coreHalo) * outerFade;
 
-    // Prismatic celestial tint: warm-white incandescent crest + iridescent spectral filigree
-    vec3 spectral = mix(uColor * 0.65 + uColor.gbr * 0.35, vec3(0.88, 0.96, 1.0), 0.34);
-    vec3 baseCol = mix(uColor, spectral, clamp((mandala + echo2 + echo3) * 0.75, 0.0, 0.72));
-    float hotCore = clamp(crest * 0.72 + coreHalo * 0.65 + mandala * 0.28, 0.0, 1.0);
-    vec3 finalCol = mix(baseCol, vec3(1.0, 0.99, 0.93), hotCore * 0.72);
+    // Accumulate polychromatic stained-glass light layers without washing out into opaque white
+    vec3 warmGold = mix(uGlassD, vec3(1.0, 0.96, 0.84), 0.52);
+    vec3 shockCol = sampleRoseGlass(normAng * 2.0 - uTime * 0.14, uColor, uGlassD, uGlassB, uGlassC);
+    vec3 wakeCol = sampleRoseGlass(normAng * 3.0 + r * 0.8 + uTime * 0.1, uGlassC, uGlassB, uColor, uGlassD);
 
-    gl_FragColor = vec4(finalCol * 1.25, clamp(intensity * uOpacity, 0.0, 1.0));
+    vec3 rgb = vec3(0.0);
+    float alpha = 0.0;
+
+    // Translucent stained-glass panes
+    rgb += innerGlassCol * innerPaneAlpha * insideWave;
+    alpha += innerPaneAlpha * insideWave;
+    rgb += midGlassCol * midPaneAlpha * insideWave;
+    alpha += midPaneAlpha * insideWave;
+    rgb += outerGlassCol * outerPaneAlpha * insideWave;
+    alpha += outerPaneAlpha * insideWave;
+
+    // Gossamer cathedral filigree tracery
+    rgb += warmGold * tracery * 0.88;
+    alpha += tracery * 0.68;
+
+    // Multi-hue expanding shockwave & harmonic echoes
+    rgb += mix(shockCol, vec3(1.0, 0.98, 0.92), 0.36) * crest;
+    rgb += uGlassB * leadPrism;
+    rgb += uGlassC * trailPrism;
+    rgb += wakeCol * wakeEnergy;
+    rgb += mix(uGlassB, uGlassD, 0.25) * echo2;
+    rgb += mix(uGlassC, uColor, 0.25) * echo3;
+    rgb += mix(uColor, warmGold, 0.45) * coreHalo;
+
+    alpha += crest * 0.72 + leadPrism * 0.42 + trailPrism * 0.44 + wakeEnergy * 0.68 + echo2 * 0.58 + echo3 * 0.48 + coreHalo * 0.62;
+
+    vec3 finalCol = rgb / max(alpha, 0.001);
+    float finalAlpha = clamp(alpha * outerFade * uOpacity, 0.0, 0.74);
+    gl_FragColor = vec4(finalCol, finalAlpha);
   }
 `;
 
@@ -421,28 +552,55 @@ const DIVINE_WALL_VERTEX_SHADER = /* glsl */ `
 
 const DIVINE_WALL_FRAGMENT_SHADER = /* glsl */ `
   uniform vec3 uColor;
+  uniform vec3 uGlassB;
+  uniform vec3 uGlassC;
+  uniform vec3 uGlassD;
   uniform float uOpacity;
   uniform float uTime;
   varying vec2 vUv;
   varying vec3 vWorldNormal;
   varying vec3 vWorldPos;
 
+  vec3 sampleCurtainGlass(float phase, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
+    float p = fract(phase) * 4.0;
+    if (p < 1.0) return mix(c0, c1, smoothstep(0.12, 0.88, p));
+    if (p < 2.0) return mix(c1, c2, smoothstep(0.12, 0.88, p - 1.0));
+    if (p < 3.0) return mix(c2, c3, smoothstep(0.12, 0.88, p - 2.0));
+    return mix(c3, c0, smoothstep(0.12, 0.88, p - 3.0));
+  }
+
   void main() {
     vec3 viewDir = normalize(cameraPosition - vWorldPos);
     float grazing = 1.0 - abs(dot(normalize(vWorldNormal), viewDir));
-    float rimBoost = 0.42 + pow(grazing, 1.35) * 0.95;
+    // Sheer through the center, softly gleaming along grazing atmospheric edges
+    float rimBoost = 0.24 + pow(grazing, 1.45) * 0.96;
 
-    // Rising translucent aurora ribbons streaming skyward along the expanding perimeter
-    float vFade = smoothstep(0.0, 0.12, vUv.y) * pow(1.0 - vUv.y, 1.55);
-    float baseFlame = exp(-vUv.y * 8.5) * 1.15;
-    float curtainA = 0.5 + 0.5 * sin(vUv.x * 37.6991 + uTime * 1.6 + sin(vUv.y * 5.0 - uTime * 2.4) * 1.4);
-    float curtainB = 0.5 + 0.5 * cos(vUv.x * 62.8318 - uTime * 2.3 + vUv.y * 9.0);
+    // Translucent Gothic clerestory stained-glass lancet light shafts rising into thin air
+    float sway = sin(vUv.y * 4.5 - uTime * 1.8) * 0.014;
+    float panelU = fract(vUv.x + sway);
+    float lancetArch = 0.70 + 0.22 * pow(abs(sin(panelU * 50.2655)), 0.7);
+    float topDissolve = 1.0 - smoothstep(lancetArch * 0.45, lancetArch, vUv.y);
+    float vFade = smoothstep(0.0, 0.14, vUv.y) * pow(1.0 - vUv.y, 1.65) * topDissolve;
+    float baseFlame = exp(-vUv.y * 9.0) * 0.85;
+    float lancetPane = smoothstep(0.06, 0.24, abs(sin(panelU * 50.2655)));
+    float mullionGlint = pow(abs(cos(panelU * 50.2655)), 32.0) * 0.35;
+
+    float curtainA = 0.5 + 0.5 * sin(vUv.x * 37.6991 + uTime * 1.4 + sin(vUv.y * 5.0 - uTime * 2.1) * 1.2);
+    float curtainB = 0.5 + 0.5 * cos(vUv.x * 62.8318 - uTime * 2.0 + vUv.y * 8.5);
     float riseWave = 0.65 + 0.35 * sin(vUv.y * 18.0 - uTime * 5.8 + vUv.x * 12.5663);
 
-    float energy = (vFade * (0.45 + 0.85 * curtainA * (0.55 + 0.45 * curtainB)) * riseWave + baseFlame) * rimBoost;
-    vec3 spectral = mix(uColor, uColor.gbr * 0.4 + vec3(0.75, 0.92, 1.0) * 0.6, vUv.y * 0.48);
-    vec3 col = mix(spectral, vec3(1.0, 0.99, 0.94), clamp(baseFlame * 0.72, 0.0, 0.85));
-    gl_FragColor = vec4(col * 1.15, clamp(energy * uOpacity, 0.0, 1.0));
+    float panelSector = floor(panelU * 16.0) / 16.0;
+    vec3 lowerJewel = sampleCurtainGlass(panelSector * 4.0 + uTime * 0.03, uColor, uGlassD, uGlassB, uGlassC);
+    vec3 upperJewel = sampleCurtainGlass(panelSector * 4.0 + 0.35 - uTime * 0.02, uGlassB, uGlassC, uColor, uGlassD);
+    vec3 glassCol = mix(lowerJewel, upperJewel, smoothstep(0.05, 0.78, vUv.y));
+    vec3 warmFiligree = mix(uGlassD, vec3(1.0, 0.96, 0.86), 0.55);
+
+    float veilEnergy = vFade * (0.34 + 0.72 * curtainA * (0.55 + 0.45 * curtainB)) * riseWave * (0.45 + 0.55 * lancetPane);
+    float seamEnergy = vFade * mullionGlint;
+    float energy = (veilEnergy + seamEnergy + baseFlame * 0.72) * rimBoost;
+
+    vec3 col = mix(glassCol, warmFiligree, clamp(seamEnergy * 1.8 + baseFlame * 0.45, 0.0, 0.72));
+    gl_FragColor = vec4(col, clamp(energy * uOpacity, 0.0, 0.64));
   }
 `;
 
@@ -456,17 +614,29 @@ const DIVINE_HALO_VERTEX_SHADER = /* glsl */ `
 
 const DIVINE_HALO_FRAGMENT_SHADER = /* glsl */ `
   uniform vec3 uColor;
+  uniform vec3 uGlassB;
+  uniform vec3 uGlassC;
+  uniform vec3 uGlassD;
   uniform float uOpacity;
   uniform float uTime;
   varying vec2 vUv;
 
+  vec3 sampleHaloGlass(float phase, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
+    float p = fract(phase) * 4.0;
+    if (p < 1.0) return mix(c0, c1, smoothstep(0.1, 0.9, p));
+    if (p < 2.0) return mix(c1, c2, smoothstep(0.1, 0.9, p - 1.0));
+    if (p < 3.0) return mix(c2, c3, smoothstep(0.1, 0.9, p - 2.0));
+    return mix(c3, c0, smoothstep(0.1, 0.9, p - 3.0));
+  }
+
   void main() {
-    // Orbiting celestial beads & harmonic shimmer along the armillary halo
+    // Orbiting polychromatic cathedral jewels & delicate gilded beads along the armillary halo
     float beads = pow(0.5 + 0.5 * sin(vUv.x * 75.3982 - uTime * 4.2), 2.2);
     float pulse = 0.62 + 0.38 * sin(vUv.x * 18.8495 + uTime * 2.6);
-    float glow = (0.48 + 0.72 * beads) * pulse;
-    vec3 col = mix(uColor, vec3(1.0, 0.99, 0.94), 0.35 + beads * 0.55);
-    gl_FragColor = vec4(col * 1.35, clamp(glow * uOpacity, 0.0, 1.0));
+    float glow = (0.36 + 0.58 * beads) * pulse;
+    vec3 jewel = sampleHaloGlass(vUv.x * 3.0 + uTime * 0.08, uColor, uGlassB, uGlassC, uGlassD);
+    vec3 col = mix(jewel, vec3(1.0, 0.97, 0.88), 0.22 + beads * 0.45);
+    gl_FragColor = vec4(col, clamp(glow * uOpacity, 0.0, 0.72));
   }
 `;
 
@@ -482,6 +652,7 @@ const DIVINE_MOTES_VERTEX_SHADER = /* glsl */ `
 
   varying float vAlpha;
   varying float vTwinkle;
+  varying float vColorPhase;
 
   void main() {
     float cycle = fract(aPhase + uTime * mix(0.28, 0.44, aSeed));
@@ -502,6 +673,7 @@ const DIVINE_MOTES_VERTEX_SHADER = /* glsl */ `
 
     vAlpha = sin(cycle * 3.14159265) * uOpacity;
     vTwinkle = 0.6 + 0.4 * sin(uTime * (6.0 + aSeed * 6.0) + aAngle * 3.0);
+    vColorPhase = fract(aSeed * 3.7 + aAngle * 0.15915494);
 
     vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
     float baseSize = mix(11.0, 22.0, aSeed) * (0.65 + 0.35 * vTwinkle);
@@ -512,8 +684,20 @@ const DIVINE_MOTES_VERTEX_SHADER = /* glsl */ `
 
 const DIVINE_MOTES_FRAGMENT_SHADER = /* glsl */ `
   uniform vec3 uColor;
+  uniform vec3 uGlassB;
+  uniform vec3 uGlassC;
+  uniform vec3 uGlassD;
   varying float vAlpha;
   varying float vTwinkle;
+  varying float vColorPhase;
+
+  vec3 sampleMoteJewel(float phase, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
+    float p = fract(phase) * 4.0;
+    if (p < 1.0) return mix(c0, c1, smoothstep(0.15, 0.85, p));
+    if (p < 2.0) return mix(c1, c2, smoothstep(0.15, 0.85, p - 1.0));
+    if (p < 3.0) return mix(c2, c3, smoothstep(0.15, 0.85, p - 2.0));
+    return mix(c3, c0, smoothstep(0.15, 0.85, p - 3.0));
+  }
 
   void main() {
     vec2 p = gl_PointCoord - vec2(0.5);
@@ -526,8 +710,9 @@ const DIVINE_MOTES_FRAGMENT_SHADER = /* glsl */ `
     float glintY = exp(-abs(p.x) * 26.0) * exp(-abs(p.y) * 6.5);
     float star = core + (glintX + glintY) * 0.48 * vTwinkle;
 
-    vec3 col = mix(uColor, vec3(1.0, 0.99, 0.95), clamp(core * 0.85, 0.0, 1.0));
-    gl_FragColor = vec4(col * 1.3, clamp(star * vAlpha, 0.0, 1.0));
+    vec3 jewel = sampleMoteJewel(vColorPhase, uColor, uGlassD, uGlassB, uGlassC);
+    vec3 col = mix(jewel, vec3(1.0, 0.98, 0.93), clamp(core * 0.65, 0.0, 1.0));
+    gl_FragColor = vec4(col, clamp(star * vAlpha, 0.0, 0.78));
   }
 `;
 
@@ -915,27 +1100,27 @@ export class AtmosphereSystem {
       const burstFade = Math.sin(Math.pow(pct, 0.72) * Math.PI);
       const ease = 1 - Math.pow(1 - pct, 2.15);
 
-      v.outerMat.uniforms.uOpacity.value = fade * 0.36;
+      v.outerMat.uniforms.uOpacity.value = fade * 0.30;
       v.outerMat.uniforms.uTime.value = t;
-      v.coreMat.uniforms.uOpacity.value = fade * 0.56;
+      v.coreMat.uniforms.uOpacity.value = fade * 0.46;
       v.coreMat.uniforms.uTime.value = t;
 
-      // Stationary full-influence ground disc with GPU-driven expanding shockwaves & sharp sacred mandala
+      // Stationary full-influence ground disc with translucent stained-glass rose-window light & polychromatic waves
       const discRadius = Math.max(8, beam.maxRadius * 1.35);
       v.ringMesh.scale.set(discRadius, 1, discRadius);
-      v.ringMat.uniforms.uOpacity.value = burstFade * 0.92;
+      v.ringMat.uniforms.uOpacity.value = burstFade * 0.72;
       v.ringMat.uniforms.uTime.value = t;
       v.ringMat.uniforms.uProgress.value = ease;
 
-      // Volumetric aurora shockwave wall locked to the exact expanding shockwave crest on the ground
+      // Sheer stained-glass clerestory aurora curtain locked to the expanding shockwave crest
       const waveWorldRadius = discRadius * (0.08 + 0.86 * ease);
       const wallHeight = 4.2 + 5.8 * fade;
       v.wallMesh.scale.set(waveWorldRadius, wallHeight, waveWorldRadius);
-      v.wallMat.uniforms.uOpacity.value = burstFade * 0.62;
+      v.wallMat.uniforms.uOpacity.value = burstFade * 0.46;
       v.wallMat.uniforms.uTime.value = t;
 
-      // Twin counter-rotating celestial armillary halos hovering & precessing around the lower shaft
-      v.haloMat.uniforms.uOpacity.value = fade * 0.88;
+      // Twin counter-rotating prismatic armillary halos hovering & precessing around the lower shaft
+      v.haloMat.uniforms.uOpacity.value = fade * 0.66;
       v.haloMat.uniforms.uTime.value = t;
       const haloScaleA = 4.2 + ease * 4.4;
       v.haloMeshA.scale.set(haloScaleA, haloScaleA, haloScaleA);
@@ -949,13 +1134,15 @@ export class AtmosphereSystem {
       v.haloMeshB.rotation.y = -t * 0.82;
       v.haloMeshB.rotation.z = -0.24 + Math.cos(t * 0.9) * 0.16;
 
-      // GPU-driven shockwave stardust & ascending helical embers
-      v.motesMat.uniforms.uOpacity.value = burstFade * 0.95;
+      // GPU-driven polychromatic stained-glass stardust & ascending helical embers
+      v.motesMat.uniforms.uOpacity.value = burstFade * 0.85;
       v.motesMat.uniforms.uTime.value = t;
       v.motesMat.uniforms.uWaveRadius.value = waveWorldRadius;
 
-      // Supernatural local illumination bathing terrain, trees, and villages in divine light
-      v.glowLight.intensity = fade * 22.0;
+      // Subtle polychromatic supernatural illumination bathing nearby trees, terrain, and cottages
+      v.glowLight.intensity = fade * 20.0;
+      const tintCycle = 0.5 + 0.5 * Math.sin(t * 1.35);
+      v.glowLight.color.copy(v.palette.primary).lerp(v.palette.jewelD, tintCycle * 0.25);
     }
   }
 
