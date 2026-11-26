@@ -7,6 +7,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { QUALITY_PRESETS, type QualityPreset } from '@core/Config';
 import type { SelectionTarget } from '@core/Types';
 import type { WorldState } from '@simulation/WorldState';
+import { nextPaintFrame, type LoadProgressCallback } from '@ui/SplashScreen';
 import { AtmosphereSystem } from './AtmosphereSystem';
 import { CameraController } from './CameraController';
 import { CreatureRenderer } from './CreatureRenderer';
@@ -89,6 +90,7 @@ export class SceneManager {
     private readonly canvas: HTMLCanvasElement,
     private world: WorldState,
     initialQuality: QualityPreset = 'high',
+    deferBuild = false,
   ) {
     this.quality = initialQuality;
     const q = QUALITY_PRESETS[initialQuality];
@@ -116,8 +118,10 @@ export class SceneManager {
     this.cameraController = new CameraController(this.camera, canvas);
 
     this.setupPostProcessing();
-    this.buildWorldScene(world);
-    this.focusFoundingVillage(world, true);
+    if (!deferBuild) {
+      this.buildWorldScene(world);
+      this.focusFoundingVillage(world, true);
+    }
 
     this.onResizeBound = () => this.handleResize();
     this.onPointerDownBound = (e: PointerEvent) => {
@@ -149,6 +153,15 @@ export class SceneManager {
     this.setupPostProcessing();
   }
 
+  async setQualityAsync(preset: QualityPreset, onProgress?: LoadProgressCallback): Promise<void> {
+    if (preset === this.quality) return;
+    this.quality = preset;
+    const q = QUALITY_PRESETS[preset];
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.pixelRatioCap));
+    this.setupPostProcessing();
+    await this.rebuildWorldSceneAsync(this.world, onProgress, true);
+  }
+
   setSelection(target: SelectionTarget): void {
     this.selection = target;
   }
@@ -170,6 +183,65 @@ export class SceneManager {
     this.focusFoundingVillage(newWorld, false);
   }
 
+  async rebuildWorldSceneAsync(
+    newWorld: WorldState,
+    onProgress?: LoadProgressCallback,
+    immediateFocus = false,
+  ): Promise<void> {
+    this.povCreatureId = null;
+    this.disposeWorldScene();
+    this.world = newWorld;
+    await this.buildWorldSceneAsync(newWorld, onProgress, immediateFocus);
+  }
+
+  async buildWorldSceneAsync(
+    world: WorldState,
+    onProgress?: LoadProgressCallback,
+    immediateFocus = true,
+  ): Promise<void> {
+    const q = QUALITY_PRESETS[this.quality];
+    this.cameraController.setWorldSize(world.config.worldSize);
+
+    onProgress?.(30, 'Mixing moss, granite, bark & timber pigments…');
+    await nextPaintFrame();
+    this.textures = createTextureLibrary(q.textureResolution);
+
+    onProgress?.(44, 'Raising the sky dome & brewing drifting clouds…');
+    await nextPaintFrame();
+    this.atmosphere = new AtmosphereSystem(
+      this.scene,
+      this.renderer,
+      q.shadowMapSize,
+      this.textures.softParticle,
+    );
+
+    onProgress?.(60, 'Pouring the rivers & rolling the endless sea…');
+    await nextPaintFrame();
+    this.terrainRenderer = new TerrainRenderer(this.scene, world, this.textures);
+
+    onProgress?.(76, 'Growing every pine, bough & blade of grass uniquely…');
+    await nextPaintFrame();
+    this.floraRenderer = new FloraRenderer(this.scene, world, this.textures, q.grassMultiplier);
+
+    onProgress?.(86, 'Thatching cottages & lighting the founding hearth…');
+    await nextPaintFrame();
+    this.settlementRenderer = new SettlementRenderer(this.scene, world, this.textures);
+
+    onProgress?.(92, 'Tailoring cloaks for foxes, badgers, owls & otters…');
+    await nextPaintFrame();
+    this.creatureRenderer = new CreatureRenderer(this.scene, world, this.textures);
+
+    this.bindWorldEvents(world);
+    this.focusFoundingVillage(world, immediateFocus);
+
+    onProgress?.(98, 'Opening the canopy to morning light…');
+    await nextPaintFrame();
+    // Compile GPU shaders and paint the first live frame behind the splash before revealing it
+    this.renderFrame(0.016);
+
+    onProgress?.(100, 'The realm awaits.');
+  }
+
   private focusFoundingVillage(world: WorldState, immediate: boolean): void {
     const founding = world.settlements[0];
     if (!founding) {
@@ -186,6 +258,9 @@ export class SceneManager {
   }
 
   renderFrame(dt: number): void {
+    if (!this.atmosphere || !this.terrainRenderer || !this.floraRenderer || !this.settlementRenderer || !this.creatureRenderer) {
+      return;
+    }
     this.cameraController.update(dt);
     this.atmosphere.update(this.world, dt, this.camera, this.cameraController.controls.target);
     const sky = this.atmosphere.getSkyLightingState();
@@ -264,7 +339,10 @@ export class SceneManager {
     this.floraRenderer = new FloraRenderer(this.scene, world, this.textures, q.grassMultiplier);
     this.settlementRenderer = new SettlementRenderer(this.scene, world, this.textures);
     this.creatureRenderer = new CreatureRenderer(this.scene, world, this.textures);
+    this.bindWorldEvents(world);
+  }
 
+  private bindWorldEvents(world: WorldState): void {
     this.unsubscribes.push(
       world.bus.on('divine:effect', (fx) => {
         const gy = world.terrain.getHeightAt(fx.position.x, fx.position.z);
@@ -332,6 +410,7 @@ export class SceneManager {
   }
 
   private handleClickPick(event: PointerEvent): void {
+    if (!this.creatureRenderer || !this.settlementRenderer) return;
     const rect = this.canvas.getBoundingClientRect();
     const ndc = new THREE.Vector2(
       ((event.clientX - rect.left) / rect.width) * 2 - 1,

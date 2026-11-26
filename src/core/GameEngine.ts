@@ -7,6 +7,7 @@ import { SceneManager } from '@rendering/SceneManager';
 import type { Creature } from '@simulation/creatures/Creature';
 import { WorldState } from '@simulation/WorldState';
 import { HudManager } from '@ui/HudManager';
+import { nextPaintFrame, type SplashScreen } from '@ui/SplashScreen';
 
 /**
  * Picks the starting world seed on page load: respects an explicit `?seed=<int>`
@@ -30,25 +31,66 @@ function resolveInitialSeed(): number {
  * and minimalist spectator HUD.
  */
 export class GameEngine {
-  readonly bus = new EventBus();
+  readonly bus: EventBus;
   private world: WorldState;
   private readonly sceneManager: SceneManager;
   private readonly hud: HudManager;
+  private readonly splash: SplashScreen | null;
 
   private simSpeed = 1;
   private selection: SelectionTarget = null;
   private povCreatureId: string | null = null;
   private zenMode = false;
   private enteredFullscreenForZen = false;
+  private isRebuilding = false;
   private rafId: number | null = null;
   private lastFrameMs = 0;
 
   private readonly onKeyDownBound: (e: KeyboardEvent) => void;
   private readonly onFullscreenChangeBound: () => void;
 
-  constructor(canvas: HTMLCanvasElement, hudRoot: HTMLElement) {
-    this.world = new WorldState(this.bus, { seed: resolveInitialSeed() });
-    this.sceneManager = new SceneManager(canvas, this.world, 'high');
+  static async create(
+    canvas: HTMLCanvasElement,
+    hudRoot: HTMLElement,
+    splash?: SplashScreen | null,
+  ): Promise<GameEngine> {
+    const bus = new EventBus();
+    splash?.setProgress(10, 'Carving alpine peaks, watersheds & sunlit shores…');
+    await nextPaintFrame();
+
+    const world = new WorldState(bus, { seed: resolveInitialSeed() });
+    splash?.setProgress(22, 'Awakening the woodland sovereign & setting the stage…');
+    await nextPaintFrame();
+
+    const engine = new GameEngine(canvas, hudRoot, {
+      bus,
+      world,
+      deferSceneBuild: true,
+      splash: splash ?? null,
+    });
+    await engine.sceneManager.buildWorldSceneAsync(
+      world,
+      (pct, label) => splash?.setProgress(pct, label),
+      true,
+    );
+    engine.refreshHudNow();
+    return engine;
+  }
+
+  constructor(
+    canvas: HTMLCanvasElement,
+    hudRoot: HTMLElement,
+    init?: {
+      bus?: EventBus;
+      world?: WorldState;
+      deferSceneBuild?: boolean;
+      splash?: SplashScreen | null;
+    },
+  ) {
+    this.bus = init?.bus ?? new EventBus();
+    this.splash = init?.splash ?? null;
+    this.world = init?.world ?? new WorldState(this.bus, { seed: resolveInitialSeed() });
+    this.sceneManager = new SceneManager(canvas, this.world, 'high', init?.deferSceneBuild ?? false);
 
     this.hud = new HudManager(hudRoot, {
       onSetSpeed: (speed) => {
@@ -89,10 +131,10 @@ export class GameEngine {
         this.sceneManager.cameraController.resetOverview();
       },
       onNewWorld: () => {
-        this.resetWorld(generateRandomSeed(this.world.config.seed));
+        void this.resetWorldAsync(generateRandomSeed(this.world.config.seed));
       },
       onChangeQuality: (preset: QualityPreset) => {
-        this.sceneManager.setQuality(preset);
+        void this.changeQualityAsync(preset);
       },
       onWhisper: (intent) => this.world.deity.receiveSpectatorWhisper(intent, this.world),
       onFocusPosition: (pos) => {
@@ -379,7 +421,7 @@ export class GameEngine {
       const realDt = Math.min(0.05, Math.max(0.001, (now - this.lastFrameMs) / 1000));
       this.lastFrameMs = now;
 
-      if (this.simSpeed > 0) {
+      if (!this.isRebuilding && this.simSpeed > 0) {
         const simDt = realDt * this.simSpeed;
         const steps = Math.max(1, Math.ceil(simDt / 0.05));
         const stepDt = simDt / steps;
@@ -389,7 +431,7 @@ export class GameEngine {
       }
 
       // If the currently viewed creature fell, smoothly jump to the next living creature or return to world view
-      if (this.povCreatureId) {
+      if (!this.isRebuilding && this.povCreatureId) {
         const host = this.world.getCreature(this.povCreatureId);
         if (!host || !host.alive) {
           const nextAlive = this.world.creatures.find((c) => c.alive);
@@ -401,14 +443,16 @@ export class GameEngine {
         }
       }
 
-      this.sceneManager.renderFrame(realDt);
-      this.hud.update(
-        realDt,
-        this.world,
-        this.selection,
-        this.sceneManager.cameraController.isFollowing(),
-        this.povCreatureId,
-      );
+      if (!this.isRebuilding) {
+        this.sceneManager.renderFrame(realDt);
+        this.hud.update(
+          realDt,
+          this.world,
+          this.selection,
+          this.sceneManager.cameraController.isFollowing(),
+          this.povCreatureId,
+        );
+      }
 
       this.rafId = requestAnimationFrame(loop);
     };
@@ -426,6 +470,54 @@ export class GameEngine {
     this.sceneManager.rebuildWorldScene(this.world);
     this.bus.emit('world:reset', { seed });
     this.refreshHudNow();
+  }
+
+  async resetWorldAsync(seed: number): Promise<void> {
+    if (this.isRebuilding) return;
+    this.isRebuilding = true;
+    try {
+      this.splash?.show('Dreaming up a brand-new valley…');
+      this.splash?.setProgress(10, 'Carving alpine peaks, watersheds & sunlit shores…');
+      await nextPaintFrame();
+
+      this.povCreatureId = null;
+      this.selection = null;
+      this.sceneManager.setPovCreatureId(null);
+      this.sceneManager.setSelection(null);
+      this.sceneManager.cameraController.exitCreaturePov(false);
+      this.sceneManager.cameraController.follow(null);
+
+      this.world = new WorldState(this.bus, { seed });
+      await this.sceneManager.rebuildWorldSceneAsync(
+        this.world,
+        (pct, label) => this.splash?.setProgress(pct, label),
+        true,
+      );
+      this.bus.emit('world:reset', { seed });
+      this.refreshHudNow();
+      this.lastFrameMs = performance.now();
+      await this.splash?.dismiss(220);
+    } finally {
+      this.isRebuilding = false;
+    }
+  }
+
+  private async changeQualityAsync(preset: QualityPreset): Promise<void> {
+    if (this.isRebuilding || preset === this.sceneManager.getQuality()) return;
+    this.isRebuilding = true;
+    try {
+      this.splash?.show('Refining woodland craft & morning light…');
+      this.splash?.setProgress(16, 'Recalibrating shadows, textures & optical lens…');
+      await nextPaintFrame();
+
+      await this.sceneManager.setQualityAsync(preset, (pct, label) =>
+        this.splash?.setProgress(pct, label),
+      );
+      this.lastFrameMs = performance.now();
+      await this.splash?.dismiss(200);
+    } finally {
+      this.isRebuilding = false;
+    }
   }
 
   private refreshHudNow(): void {

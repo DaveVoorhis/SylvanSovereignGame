@@ -42,6 +42,7 @@ import {
   createPineFrondGeo,
   generateProceduralPineSpec,
 } from '@rendering/ProceduralPineBuilder';
+import { nextPaintFrame, SplashScreen, WHIMSICAL_HINTS } from '@ui/SplashScreen';
 import type { PbrTextureSet, TextureLibrary } from '@rendering/ProceduralTextures';
 import { SettlementRenderer } from '@rendering/SettlementRenderer';
 import { TerrainRenderer } from '@rendering/TerrainRenderer';
@@ -1104,5 +1105,67 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     for (const d of [...forest.disposables, ...horizon.disposables, barkMat, foliageMat, depthMat]) {
       d.dispose();
     }
+  });
+
+  it('tracks monotonic loading progress, whimsical hints, and dismissal on SplashScreen', async () => {
+    expect(WHIMSICAL_HINTS.length).toBeGreaterThanOrEqual(4);
+    await expect(nextPaintFrame()).resolves.toBeUndefined();
+
+    const attrs = new Map<string, string>();
+    const classes = new Set<string>();
+    const makeNode = () => ({
+      style: { width: '' },
+      textContent: '',
+      setAttribute: (k: string, v: string) => attrs.set(k, v),
+    });
+    const fillNode = makeNode();
+    const trackNode = makeNode();
+    const pctNode = makeNode();
+    const stageNode = makeNode();
+    const hintNode = makeNode();
+    const subtitleNode = makeNode();
+
+    const fakeRoot = {
+      classList: {
+        add: (c: string) => classes.add(c),
+        remove: (c: string) => classes.delete(c),
+      },
+      setAttribute: (k: string, v: string) => attrs.set(k, v),
+      querySelector: (sel: string) => {
+        if (sel === '[data-splash-fill]') return fillNode;
+        if (sel === '[data-splash-track]') return trackNode;
+        if (sel === '[data-splash-pct]') return pctNode;
+        if (sel === '[data-splash-stage]') return stageNode;
+        if (sel === '[data-splash-hint]') return hintNode;
+        if (sel === '[data-splash-subtitle]') return subtitleNode;
+        return null;
+      },
+    } as unknown as HTMLElement;
+
+    const splash = new SplashScreen(fakeRoot);
+    expect(hintNode.textContent.length).toBeGreaterThan(20);
+
+    splash.setProgress(32, 'Mixing moss, granite, bark & timber pigments…');
+    expect(splash.getPercent()).toBe(32);
+    expect(fillNode.style.width).toBe('32%');
+    expect(pctNode.textContent).toBe('32%');
+    expect(attrs.get('aria-valuenow')).toBe('32');
+    expect(stageNode.textContent).toContain('pigments');
+
+    // Progress should never regress mid-load
+    splash.setProgress(15, 'Should clamp monotonically');
+    expect(splash.getPercent()).toBe(32);
+
+    splash.setProgress(100, 'The realm awaits.');
+    expect(splash.getPercent()).toBe(100);
+    await splash.dismiss(0);
+    expect(classes.has('splash-hidden')).toBe(true);
+    expect(attrs.get('aria-hidden')).toBe('true');
+
+    // Re-showing resets progress cleanly for New World / quality transitions
+    splash.show('Dreaming up a brand-new valley…');
+    expect(classes.has('splash-hidden')).toBe(false);
+    expect(subtitleNode.textContent).toBe('Dreaming up a brand-new valley…');
+    expect(splash.getPercent()).toBe(2);
   });
 });

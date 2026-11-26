@@ -9,11 +9,140 @@
       type="image/svg+xml"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%234e8f52'/%3E%3Cstop offset='100%25' stop-color='%231e3d28'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Cpath d='M32 10 L46 32 H39 L49 48 H15 L25 32 H18 Z' fill='%23d8e7c5'/%3E%3Crect x='29' y='48' width='6' height='8' rx='1' fill='%238b5a2b'/%3E%3C/svg%3E"
     />
+    <style>
+      /* Critical first-paint splash styling so the screen is immediately alive before JS boots */
+      html, body, #app { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #0b1410; }
+      #splash-screen {
+        position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center;
+        background: radial-gradient(ellipse at 50% 34%, #1a3026 0%, #0e1c16 54%, #08100d 100%);
+        color: #edf2ea; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      }
+    </style>
   </head>
   <body>
     <div id="app">
       <canvas id="forest-canvas"></canvas>
       <div id="hud-root" aria-live="polite"></div>
+      <div id="splash-screen" role="status" aria-live="polite" aria-label="Loading Sylvan Sovereign">
+        <div class="splash-fireflies" aria-hidden="true">
+          <span class="splash-mote m1"></span>
+          <span class="splash-mote m2"></span>
+          <span class="splash-mote m3"></span>
+          <span class="splash-mote m4"></span>
+          <span class="splash-mote m5"></span>
+          <span class="splash-mote m6"></span>
+        </div>
+        <div class="splash-card">
+          <div class="splash-emblem" aria-hidden="true">
+            <svg viewBox="0 0 220 220" width="168" height="168" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <radialGradient id="sp-sky" cx="50%" cy="32%" r="68%">
+                  <stop offset="0%" stop-color="#2c5766" />
+                  <stop offset="52%" stop-color="#193433" />
+                  <stop offset="100%" stop-color="#0d1b17" />
+                </radialGradient>
+                <linearGradient id="sp-beam" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#f8e3a1" stop-opacity="0.05" />
+                  <stop offset="45%" stop-color="#f7dc8e" stop-opacity="0.34" />
+                  <stop offset="100%" stop-color="#ffe7a6" stop-opacity="0.62" />
+                </linearGradient>
+                <linearGradient id="sp-river" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stop-color="#7ec4c8" stop-opacity="0.88" />
+                  <stop offset="100%" stop-color="#2e6b78" stop-opacity="0.92" />
+                </linearGradient>
+                <linearGradient id="sp-ring" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stop-color="#f0d28c" stop-opacity="0.85" />
+                  <stop offset="50%" stop-color="#7cb889" stop-opacity="0.6" />
+                  <stop offset="100%" stop-color="#e5be6d" stop-opacity="0.85" />
+                </linearGradient>
+                <clipPath id="sp-clip">
+                  <circle cx="110" cy="110" r="94" />
+                </clipPath>
+              </defs>
+
+              <!-- Outer gilded compass medallion -->
+              <circle cx="110" cy="110" r="102" fill="none" stroke="url(#sp-ring)" stroke-width="1.2" stroke-dasharray="3 5" opacity="0.55" />
+              <circle cx="110" cy="110" r="95.5" fill="none" stroke="url(#sp-ring)" stroke-width="2" />
+
+              <g clip-path="url(#sp-clip)">
+                <!-- Dawn twilight sky -->
+                <rect x="14" y="14" width="192" height="192" fill="url(#sp-sky)" />
+
+                <!-- Tiny dawn stars & crescent moon -->
+                <circle cx="56" cy="48" r="1.2" fill="#f7eed1" opacity="0.75" />
+                <circle cx="152" cy="42" r="1.4" fill="#f7eed1" opacity="0.8" />
+                <circle cx="168" cy="64" r="1.0" fill="#d9eef5" opacity="0.65" />
+                <circle cx="72" cy="36" r="0.9" fill="#d9eef5" opacity="0.6" />
+                <path d="M150 56 A12 12 0 1 1 138 42 A9.5 9.5 0 1 0 150 56 Z" fill="#f6e3aa" opacity="0.88" />
+
+                <!-- Subtle celestial god-beam descending into the founding valley -->
+                <polygon class="splash-beam" points="103,14 117,14 123,148 97,148" fill="url(#sp-beam)" />
+
+                <!-- Craggy snow-dusted alpine peaks -->
+                <path d="M12 132 L54 74 L84 106 L112 64 L144 102 L172 78 L210 132 Z" fill="#233d3a" />
+                <path d="M54 74 L43 91 L52 88 L59 94 L66 86 Z" fill="#d9e4e8" opacity="0.72" />
+                <path d="M112 64 L99 86 L108 82 L115 88 L124 81 Z" fill="#e6eef2" opacity="0.82" />
+                <path d="M172 78 L162 93 L170 90 L178 95 Z" fill="#d4e0e5" opacity="0.66" />
+
+                <!-- Rolling forested foothills & winding river valley -->
+                <path d="M10 144 Q64 116 114 134 T212 136 L212 208 L10 208 Z" fill="#1e3d2b" />
+                <path d="M10 158 Q74 136 132 152 T212 154 L212 208 L10 208 Z" fill="#162e20" />
+                <path d="M96 138 C108 148, 86 164, 114 176 C132 184, 122 198, 108 208 L138 208 C148 194, 146 178, 126 169 C104 160, 122 146, 107 136 Z" fill="url(#sp-river)" />
+
+                <!-- Tiny arched wooden footbridge spanning the stream -->
+                <path d="M96 168 Q112 159 128 168" fill="none" stroke="#a67a4d" stroke-width="2.6" stroke-linecap="round" />
+                <path d="M98 164 Q112 156 126 164" fill="none" stroke="#c79e6e" stroke-width="1" stroke-linecap="round" />
+
+                <!-- Asymmetric hand-grown pine silhouettes -->
+                <path d="M44 156 L51 130 L47 132 L54 114 L58 131 L55 130 L61 156 Z" fill="#102519" />
+                <path d="M64 162 L70 139 L67 140 L72 126 L77 141 L74 140 L80 162 Z" fill="#142d1f" />
+                <path d="M156 158 L163 128 L159 130 L166 112 L171 130 L168 129 L176 158 Z" fill="#102519" />
+                <path d="M174 166 L181 144 L178 145 L183 132 L188 146 L185 145 L191 166 Z" fill="#0d1f15" />
+
+                <!-- Cozy thatched storybook cottage with warm glowing window & curling smoke -->
+                <g transform="translate(124, 134)">
+                  <path class="splash-smoke" d="M15 2 C15 -3, 19 -5, 17 -10 C15 -14, 20 -17, 19 -22" fill="none" stroke="#dfe8e2" stroke-width="1.5" stroke-linecap="round" opacity="0.55" />
+                  <rect x="13" y="2" width="3.5" height="7" rx="0.8" fill="#73665b" />
+                  <path d="M1 12 Q10 1 20 12 Z" fill="#7c6c46" />
+                  <rect x="4" y="12" width="12" height="9" rx="1" fill="#d9cfb8" />
+                  <circle cx="10" cy="16" r="2.2" fill="#ffd676" />
+                  <circle cx="10" cy="16" r="4.5" fill="#ffb84d" opacity="0.32" />
+                </g>
+
+                <!-- Foreground fireflies inside medallion -->
+                <circle class="splash-spark s1" cx="78" cy="144" r="1.7" fill="#ffe48c" />
+                <circle class="splash-spark s2" cx="144" cy="128" r="1.5" fill="#ffe48c" />
+                <circle class="splash-spark s3" cx="106" cy="116" r="1.6" fill="#fff0b5" />
+              </g>
+            </svg>
+          </div>
+
+          <p class="splash-kicker">A Living Procedural Woodland Realm</p>
+          <h1 class="splash-title">Sylvan Sovereign</h1>
+          <p class="splash-subtitle" data-splash-subtitle>Weaving a living woodland realm…</p>
+
+          <div class="splash-progress-wrap">
+            <div
+              class="splash-progress-track"
+              data-splash-track
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="4"
+            >
+              <div class="splash-progress-fill" data-splash-fill style="width: 4%"></div>
+            </div>
+            <div class="splash-progress-meta">
+              <span class="splash-stage" data-splash-stage>Gathering dawn mist over the valley…</span>
+              <span class="splash-pct" data-splash-pct>4%</span>
+            </div>
+          </div>
+
+          <p class="splash-hint" data-splash-hint>
+            Every pine on these ridges is grown uniquely from seed — no two share the same silhouette.
+          </p>
+        </div>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
