@@ -4,6 +4,7 @@ import { EventBus } from '@core/EventBus';
 import type { BiomeType, ConstructionStage, CreatureRole } from '@core/Types';
 import { createDivineBeamVisual, DIVINE_BEAM_HEIGHT } from '@rendering/AtmosphereSystem';
 import { CreatureRenderer } from '@rendering/CreatureRenderer';
+import { CameraController } from '@rendering/CameraController';
 import { DistanceFocusBlurPass } from '@rendering/DistanceFocusBlurPass';
 import { FloraRenderer } from '@rendering/FloraRenderer';
 import {
@@ -236,6 +237,8 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     expect(pass.material.uniforms.uTaps.value).toBe(16);
     pass.setSize(1920, 1080);
     expect(pass.material.uniforms.uAspect.value).toBeCloseTo(16 / 9, 4);
+    // Reconstructed view normals must scale finite differences before crossing to prevent HiDPI close-up underflow
+    expect(pass.material.fragmentShader).toContain('float invScale = 1.0 / max(-centerPos.z * uTexelSize.y, 1e-5);');
 
     pass.dispose();
   });
@@ -1273,6 +1276,106 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     expect(world.creatures).toContain(elder);
 
     creatureRenderer.dispose();
+    textures.dispose();
+  });
+
+  it('anchors CameraController focus target ahead of the creature during Eye View instead of stale world target', () => {
+    const hadWindow = 'window' in globalThis;
+    const prevWindow = (globalThis as { window?: unknown }).window;
+    const fakeWindow = {
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    };
+    if (!hadWindow) {
+      (globalThis as { window?: unknown }).window = fakeWindow;
+    }
+    const fakeDom = {
+      style: { touchAction: '' },
+      clientWidth: 1280,
+      clientHeight: 720,
+      ownerDocument: {
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        pointerLockElement: null,
+      },
+      getRootNode: () => ({
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      setPointerCapture: () => {},
+      releasePointerCapture: () => {},
+    } as unknown as HTMLElement;
+
+    try {
+      const camera = new THREE.PerspectiveCamera(46, 16 / 9, 0.22, 1000);
+      const controller = new CameraController(camera, fakeDom);
+      controller.controls.target.set(-220, 4, 180);
+
+      const worldFocus = controller.getFocusTarget();
+      expect(worldFocus.x).toBeCloseTo(-220, 3);
+      expect(worldFocus.z).toBeCloseTo(180, 3);
+
+      controller.enterCreaturePov(() => ({
+        x: 85,
+        y: 6,
+        z: -40,
+        heading: Math.PI / 2, // facing +X
+        eyeHeight: 0.72,
+        bobOffset: 0,
+        alive: true,
+      }));
+      controller.update(0.016);
+
+      const povFocus = controller.getFocusTarget();
+      // Focus target should sit ~16m ahead of the creature (+X), far from the stale world target (-220, 180)
+      expect(povFocus.x).toBeGreaterThan(98);
+      expect(povFocus.x).toBeLessThan(104);
+      expect(povFocus.z).toBeCloseTo(-40, 1);
+      expect(camera.position.distanceTo(povFocus)).toBeCloseTo(16, 1);
+
+      controller.exitCreaturePov(false);
+      expect(controller.isInCreaturePov()).toBe(false);
+      controller.dispose();
+    } finally {
+      if (!hadWindow) {
+        delete (globalThis as { window?: unknown }).window;
+      } else {
+        (globalThis as { window?: unknown }).window = prevWindow;
+      }
+    }
+  });
+
+  it('keeps dry terrain matte with attenuated grazing Fresnel glare and non-black grass roots', () => {
+    const world = new WorldState(new EventBus(), { seed: 314159 });
+    const scene = new THREE.Scene();
+    const textures = createStubTextureLibrary();
+    const terrain = new TerrainRenderer(scene, world, textures);
+    const mat = terrain.terrainMesh.material as THREE.MeshStandardMaterial;
+    expect(mat.roughness).toBeGreaterThanOrEqual(0.95);
+    expect(mat.metalness).toBe(0);
+
+    const fakeShader = {
+      uniforms: {} as Record<string, { value: unknown }>,
+      vertexShader: '#include <common>\n#include <begin_vertex>',
+      fragmentShader:
+        '#include <common>\n#include <color_fragment>\n#include <roughnessmap_fragment>\n#include <lights_physical_fragment>\n#include <opaque_fragment>',
+    };
+    mat.onBeforeCompile(fakeShader as unknown as THREE.WebGLProgramParametersWithUniforms, {} as THREE.WebGLRenderer);
+    expect(fakeShader.fragmentShader).toContain('material.specularF90');
+    expect(fakeShader.fragmentShader).toContain('terrainSpecScale');
+
+    // Grass blade vertex colors should supply gentle root-to-tip shading without crushing bases to black
+    const grass = createCurvedGrassTuftGeo();
+    const col = grass.attributes.color as THREE.BufferAttribute;
+    let minGreen = Infinity;
+    for (let i = 0; i < col.count; i++) {
+      minGreen = Math.min(minGreen, col.getY(i));
+    }
+    expect(minGreen).toBeGreaterThan(0.25);
+    grass.dispose();
+    terrain.dispose();
     textures.dispose();
   });
 });

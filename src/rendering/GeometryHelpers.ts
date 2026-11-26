@@ -1452,8 +1452,9 @@ export function createCurvedGrassTuftGeo(): THREE.BufferGeometry {
     blade.setIndex(indices);
     blade.computeVertexNormals();
 
-    const base = new THREE.Color(0x475438);
-    const tip = new THREE.Color(0xb8c28a);
+    // Neutral root-to-tip shading (biome instance colors & seasonal material tint supply chlorophyll hue)
+    const base = new THREE.Color(0x9ea892);
+    const tip = new THREE.Color(0xf4f7e4);
     paintVertexColors(blade, (_x, y, _z, _nx, _ny, _nz, out) => {
       out.copy(base).lerp(tip, THREE.MathUtils.clamp(y / h, 0, 1));
     });

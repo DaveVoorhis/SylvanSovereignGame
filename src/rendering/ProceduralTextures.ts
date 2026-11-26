@@ -231,7 +231,7 @@ function createForestFloor(size: number): PbrTextureSet {
 
       const bumpVal = Math.max(0, Math.min(255, Math.round(h * 255)));
       // Damp crevices slightly less rough, raised soil/litter matte
-      const roughVal = Math.max(150, Math.min(248, Math.round(182 + (1 - macro) * 32 + fine * 34)));
+      const roughVal = Math.max(205, Math.min(252, Math.round(212 + (1 - macro) * 20 + fine * 20)));
 
       const idx = (y * size + x) * 4;
       dMap[idx] = r;

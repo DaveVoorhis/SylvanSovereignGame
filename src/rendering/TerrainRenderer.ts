@@ -41,7 +41,7 @@ function enhanceTerrainMaterial(
   mat: THREE.MeshStandardMaterial,
   uniforms: TerrainShaderUniforms,
 ): void {
-  mat.customProgramCacheKey = () => 'forest-realistic-terrain-v2';
+  mat.customProgramCacheKey = () => 'forest-realistic-terrain-v3';
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uWaterLevel = uniforms.uWaterLevel;
     shader.uniforms.uRainWetness = uniforms.uRainWetness;
@@ -159,6 +159,16 @@ function enhanceTerrainMaterial(
         roughnessFactor = mix(roughnessFactor, 0.20, rTotalWet * 0.82);`,
       )
       .replace(
+        '#include <lights_physical_fragment>',
+        `#include <lights_physical_fragment>
+        // Dry grass/soil has micro-occluding fibers that suppress grazing-angle Fresnel glare;
+        // wet shoreline and rain-soaked earth restore dielectric water-film specular reflection.
+        float drySpec = mix(0.12, 0.24, uWinter);
+        float terrainSpecScale = mix(drySpec, 1.0, rTotalWet);
+        material.specularColor *= terrainSpecScale;
+        material.specularF90 = terrainSpecScale;`,
+      )
+      .replace(
         '#include <opaque_fragment>',
         `// 4. Drifting cumulus cloud shadows synchronized with AtmosphereSystem sky dome (linear HDR space)
         vec2 cShadowUv = vTerrainWorldPos.xz * 0.0046 + vec2(uCloudTime * 0.011, uCloudTime * 0.0045);
@@ -243,8 +253,8 @@ export class TerrainRenderer {
             bumpScale: 0.24,
           }),
       roughnessMap: textures.forestFloor.roughnessMap,
-      roughness: 0.94,
-      metalness: 0.01,
+      roughness: 0.96,
+      metalness: 0.0,
       vertexColors: true,
     });
     enhanceTerrainMaterial(this.terrainMaterial, this.terrainUniforms);

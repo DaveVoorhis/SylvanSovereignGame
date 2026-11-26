@@ -115,6 +115,7 @@ export class SceneManager {
   private selection: SelectionTarget = null;
   private povCreatureId: string | null = null;
   private pointerDownPos = new THREE.Vector2();
+  private readonly focusTargetScratch = new THREE.Vector3();
   private readonly raycaster = new THREE.Raycaster();
   private readonly unsubscribes: (() => void)[] = [];
 
@@ -335,11 +336,12 @@ export class SceneManager {
       return;
     }
     this.cameraController.update(dt);
-    this.atmosphere.update(this.world, dt, this.camera, this.cameraController.controls.target);
+    const focusTarget = this.cameraController.getFocusTarget(this.focusTargetScratch);
+    this.atmosphere.update(this.world, dt, this.camera, focusTarget);
     const sky = this.atmosphere.getSkyLightingState();
     this.terrainRenderer.update(dt, sky);
     this.floraRenderer.update(dt, sky);
-    this.settlementRenderer.update(dt, sky, this.cameraController.controls.target);
+    this.settlementRenderer.update(dt, sky, focusTarget);
     this.creatureRenderer.update(dt, this.selection, this.povCreatureId);
 
     if (this.dofPass) {

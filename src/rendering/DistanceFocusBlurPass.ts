@@ -91,8 +91,11 @@ const FRAGMENT_SHADER = /* glsl */ `
     vec3 posU = getViewPos(uvU, texture2D(tDepth, uvU).x);
     vec3 posD = getViewPos(uvD, texture2D(tDepth, uvD).x);
 
-    vec3 dPx = abs(posR.z - centerPos.z) < abs(centerPos.z - posL.z) ? (posR - centerPos) : (centerPos - posL);
-    vec3 dPy = abs(posU.z - centerPos.z) < abs(centerPos.z - posD.z) ? (posU - centerPos) : (centerPos - posD);
+    // Normalize finite-difference scale into ~O(1) units before crossing so high-DPI close-ups
+    // never underflow dot(n, n) < 1e-10 and snap to a bogus camera-facing (0, 0, 1) normal.
+    float invScale = 1.0 / max(-centerPos.z * uTexelSize.y, 1e-5);
+    vec3 dPx = (abs(posR.z - centerPos.z) < abs(centerPos.z - posL.z) ? (posR - centerPos) : (centerPos - posL)) * invScale;
+    vec3 dPy = (abs(posU.z - centerPos.z) < abs(centerPos.z - posD.z) ? (posU - centerPos) : (centerPos - posD)) * invScale;
 
     vec3 n = cross(dPx, dPy);
     float lenSq = dot(n, n);

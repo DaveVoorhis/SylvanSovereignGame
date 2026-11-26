@@ -149,6 +149,24 @@ export class CameraController {
     return this.camera.position.distanceTo(this.controls.target);
   }
 
+  /**
+   * World-space focus anchor for directional shadow frustums, local weather/fireflies,
+   * and hearth light prioritization. In Creature Eye View, tracks a point ahead of the
+   * creature along its horizontal gaze instead of the paused World View orbit target.
+   */
+  getFocusTarget(out: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+    if (this.mode === 'creature_pov') {
+      const yaw = this.povSmoothedHeading + this.povLookYaw;
+      const ahead = 16.0;
+      return out.set(
+        this.camera.position.x + Math.sin(yaw) * ahead,
+        this.camera.position.y,
+        this.camera.position.z + Math.cos(yaw) * ahead,
+      );
+    }
+    return out.copy(this.controls.target);
+  }
+
   /** Enters first-person eye view of a creature. */
   enterCreaturePov(provider: () => CreaturePovPose | null): void {
     if (this.mode !== 'creature_pov') {

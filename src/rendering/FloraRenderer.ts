@@ -311,7 +311,7 @@ function enhanceGrassWindMaterial(
   mat: THREE.MeshStandardMaterial,
   uniforms: FoliageUniforms,
 ): void {
-  mat.customProgramCacheKey = () => 'forest-prairie-grass-wind-v2';
+  mat.customProgramCacheKey = () => 'forest-prairie-grass-wind-v3';
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = uniforms.uTime;
     shader.uniforms.uWindStrength = uniforms.uWindStrength;
@@ -365,7 +365,7 @@ function enhanceGrassWindMaterial(
         '#include <opaque_fragment>',
         `vec3 gViewDir = normalize(cameraPosition - vGrassWorldPos);
         float gBackLit = pow(clamp(dot(gViewDir, -normalize(uSunDir)), 0.0, 1.0), 3.5);
-        outgoingLight += diffuseColor.rgb * uSunColor * gBackLit * uDaylight * 0.24;
+        outgoingLight += diffuseColor.rgb * uSunColor * (0.08 + 0.92 * gBackLit) * uDaylight * 0.28;
         #include <opaque_fragment>`,
       );
   };
@@ -524,8 +524,8 @@ export class FloraRenderer {
     enhanceFoliageDepthMaterial(birchDepthMat, this.foliageUniforms, 0.15);
 
     this.grassMat = new THREE.MeshStandardMaterial({
-      color: 0x628141,
-      roughness: 0.84,
+      color: 0x9bb572,
+      roughness: 0.86,
       side: THREE.DoubleSide,
       vertexColors: true,
     });
@@ -1351,7 +1351,7 @@ export class FloraRenderer {
       this.birchFoliageMat.color.setHex(0x74994a);
       this.distantPineMat.color.setHex(0x284d35);
       this.distantBroadleafMat.color.setHex(0x456b36);
-      this.grassMat.color.setHex(0x698845);
+      this.grassMat.color.setHex(0xa8c27e);
       this.fernMat.color.setHex(0xf2f5ee);
       this.bushMat.color.setHex(0x486e36);
     } else if (season === 'summer') {
@@ -1360,7 +1360,7 @@ export class FloraRenderer {
       this.birchFoliageMat.color.setHex(0x5e8542);
       this.distantPineMat.color.setHex(0x21442f);
       this.distantBroadleafMat.color.setHex(0x385c2d);
-      this.grassMat.color.setHex(0x5b7a3c);
+      this.grassMat.color.setHex(0x96b36e);
       this.fernMat.color.setHex(0xe2ebd9);
       this.bushMat.color.setHex(0x3c5f2f);
     } else if (season === 'autumn') {
@@ -1369,7 +1369,7 @@ export class FloraRenderer {
       this.birchFoliageMat.color.setHex(0xcfa544);
       this.distantPineMat.color.setHex(0x2b4535);
       this.distantBroadleafMat.color.setHex(0x9a5c30);
-      this.grassMat.color.setHex(0x887141);
+      this.grassMat.color.setHex(0xbda068);
       this.fernMat.color.setHex(0xb8965d);
       this.bushMat.color.setHex(0x9e6e42);
     } else {
@@ -1378,7 +1378,7 @@ export class FloraRenderer {
       this.birchFoliageMat.color.setHex(0xbec8d0);
       this.distantPineMat.color.setHex(0x48625e);
       this.distantBroadleafMat.color.setHex(0x99a6b0);
-      this.grassMat.color.setHex(0xa8b4bc);
+      this.grassMat.color.setHex(0xc2ccd2);
       this.fernMat.color.setHex(0x8b9ea6);
       this.bushMat.color.setHex(0x98a8b2);
     }
