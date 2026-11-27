@@ -14,6 +14,13 @@ import type { Settlement } from '@simulation/settlements/Settlement';
 import type { WorldState } from '@simulation/WorldState';
 import { DIVINE_EVENT_CATALOG } from './DivineEvents';
 
+export const PRAYER_INTENT_LABELS: Readonly<Record<PrayerIntent, string>> = {
+  prosperity: 'Stewardship',
+  peace: 'Shelter',
+  drama: 'Upheaval',
+  mystery: 'Change',
+};
+
 export interface DeityTraits {
   benevolence: number; // 0..1
   wrath: number; // 0..1
@@ -185,15 +192,16 @@ export class ProceduralGod {
     const soon = Math.max(4, Math.min(10, world.config.deityDecisionIntervalSec * 0.12));
     this.decisionTimer = Math.min(this.decisionTimer, soon);
 
+    const intentLabel = PRAYER_INTENT_LABELS[intent].toLowerCase();
     world.chronicle.record(
       world.day,
       world.season,
       'deity',
       'A Whisper Reaches the Canopy',
-      `An unseen spectator whispered of ${intent}; ${this.name} (${this.aspect}) weighed the balance of the realm.`,
+      `An unseen spectator whispered of ${intentLabel}; ${this.name} (${this.aspect}) weighed the balance of the realm.`,
     );
 
-    return `${this.name} heard your whisper of ${intent}.`;
+    return `${this.name} heard your whisper of ${intentLabel}.`;
   }
 
   tick(world: WorldState, dt: number): void {

@@ -1,5 +1,6 @@
 import type { PrayerIntent, Vec2 } from '@core/Types';
 import { DIVINE_EVENT_CATALOG } from '@simulation/deity/DivineEvents';
+import { PRAYER_INTENT_LABELS } from '@simulation/deity/ProceduralGod';
 import type { WorldState } from '@simulation/WorldState';
 
 export class DeityPanel {
@@ -57,10 +58,10 @@ export class DeityPanel {
     btnGrid.className = 'whisper-grid';
 
     const intents: [PrayerIntent, string, string][] = [
-      ['prosperity', '🌿 Stewardship', 'Encourage restoration, rewilding & recovery'],
-      ['peace', '🕊 Shelter', 'Encourage refuge, corridors & harmony'],
-      ['drama', '⚡ Upheaval', 'Risk rare ecological tests that force adaptation'],
-      ['mystery', '✨ Change', 'Shift the unseen hand toward unexpected ecological turns'],
+      ['prosperity', `🌿 ${PRAYER_INTENT_LABELS.prosperity}`, 'Encourage restoration, rewilding & recovery'],
+      ['peace', `🕊 ${PRAYER_INTENT_LABELS.peace}`, 'Encourage refuge, corridors & harmony'],
+      ['drama', `⚡ ${PRAYER_INTENT_LABELS.drama}`, 'Risk rare ecological tests that force adaptation'],
+      ['mystery', `✨ ${PRAYER_INTENT_LABELS.mystery}`, 'Shift the unseen hand toward unexpected ecological turns'],
     ];
 
     for (const [intent, label, tip] of intents) {

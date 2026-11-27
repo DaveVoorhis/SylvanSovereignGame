@@ -187,8 +187,22 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     const response = world.deity.receiveSpectatorWhisper('prosperity', world);
 
     expect(response).toContain(world.deity.name);
+    expect(response).toContain('whisper of stewardship.');
     expect(world.deity.traits.benevolence).toBeGreaterThanOrEqual(beforeBenevolence);
     expect(world.deity.whisperCooldown).toBeGreaterThan(0);
+
+    const expectedLabels = [
+      ['peace', 'shelter'],
+      ['drama', 'upheaval'],
+      ['mystery', 'change'],
+    ] as const;
+    for (const [intent, label] of expectedLabels) {
+      world.deity.whisperCooldown = 0;
+      const msg = world.deity.receiveSpectatorWhisper(intent, world);
+      expect(msg).toBe(`${world.deity.name} heard your whisper of ${label}.`);
+      const latestEntry = world.chronicle.entries[0];
+      expect(latestEntry?.detail).toContain(`whispered of ${label}`);
+    }
   });
 
   it('steers creatures smoothly around settlement hearth fires instead of walking through them', () => {
