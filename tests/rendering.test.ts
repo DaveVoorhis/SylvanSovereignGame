@@ -836,9 +836,37 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     let parabolicStreams = 0;
     let dropletSprayCount = 0;
     let solidWaterConeCount = 0;
+    const fountainLayers = new Map<string, number>();
+    const particleKinds = new Set<number>();
+    const shaderMaterials = new Set<THREE.ShaderMaterial>();
+    let maxMicroSpraySize = 0;
     fountainGroup!.traverse((obj) => {
+      const layer = obj.userData.fountainLayer as string | undefined;
+      if (layer) {
+        fountainLayers.set(layer, (fountainLayers.get(layer) ?? 0) + 1);
+      }
+      if ((obj instanceof THREE.Mesh || obj instanceof THREE.Points) && obj.material instanceof THREE.ShaderMaterial) {
+        if (layer) {
+          shaderMaterials.add(obj.material);
+        }
+      }
       if (obj instanceof THREE.Points) {
-        dropletSprayCount += obj.geometry.getAttribute('position').count;
+        const posAttr = obj.geometry.getAttribute('position');
+        dropletSprayCount += posAttr.count;
+        for (let i = 0; i < posAttr.array.length; i++) {
+          expect(Number.isFinite(posAttr.array[i])).toBe(true);
+        }
+        const kindAttr = obj.geometry.getAttribute('aKind');
+        const seedAttr = obj.geometry.getAttribute('aSeed');
+        if (kindAttr) {
+          for (let i = 0; i < kindAttr.count; i++) {
+            const kind = Math.round(kindAttr.getX(i));
+            particleKinds.add(kind);
+            if (kind === 1 && seedAttr) {
+              maxMicroSpraySize = Math.max(maxMicroSpraySize, seedAttr.getZ(i));
+            }
+          }
+        }
       } else if (obj instanceof THREE.Mesh) {
         if (obj.geometry instanceof THREE.TubeGeometry) {
           parabolicStreams++;
@@ -852,8 +880,21 @@ describe('High-Resolution Whimsical Procedural Models', () => {
       }
     });
     expect(parabolicStreams).toBe(14);
-    expect(dropletSprayCount).toBeGreaterThanOrEqual(80);
+    expect(dropletSprayCount).toBeGreaterThanOrEqual(400);
     expect(solidWaterConeCount).toBe(0);
+    expect(fountainLayers.get('caustics_floor')).toBe(2);
+    expect(fountainLayers.get('caustics_wall')).toBe(1);
+    expect(fountainLayers.get('water_surface')).toBe(2);
+    expect(fountainLayers.get('splash_foam')).toBe(2);
+    expect(fountainLayers.get('volumetric_mist')).toBe(1);
+    expect(particleKinds).toEqual(new Set([0, 1, 2, 3]));
+    expect(maxMicroSpraySize).toBeGreaterThan(0);
+    expect(maxMicroSpraySize).toBeLessThanOrEqual(0.2);
+    expect(shaderMaterials.size).toBe(7);
+    for (const mat of shaderMaterials) {
+      expect(mat.fragmentShader).toContain('#include <tonemapping_fragment>');
+      expect(mat.fragmentShader).toContain('#include <colorspace_fragment>');
+    }
 
     // Verify cylindrical house front doorstep sits strictly above the earthen leveling pad (no coplanar z-fighting)
     const cottageGroup = settlementRenderer.rootGroup.children.find(
