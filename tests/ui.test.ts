@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { EventBus } from '@core/EventBus';
 import { WorldState } from '@simulation/WorldState';
+import { ConfirmModal } from '@ui/ConfirmModal';
 import { CreaturePovBar } from '@ui/CreaturePovBar';
+import { DeityPanel } from '@ui/DeityPanel';
 import { bindDialogPill, type DialogPillButton } from '@ui/DialogPillController';
 import {
   buildBuildingsSummary,
@@ -605,6 +607,442 @@ describe('RealmOverviewLogic', () => {
       expect(fsBtn.title).toContain('Enter full-screen');
 
       topBar.dispose();
+    } finally {
+      if (prevDocument === undefined) {
+        delete (globalThis as { document?: unknown }).document;
+      } else {
+        (globalThis as { document?: unknown }).document = prevDocument;
+      }
+    }
+  });
+
+  it('requires explicit confirmation in ConfirmModal before firing destructive actions like New World', () => {
+    type FakeNode = {
+      tagName: string;
+      className: string;
+      textContent: string;
+      title: string;
+      type: string;
+      children: FakeNode[];
+      attrs: Map<string, string>;
+      classSet: Set<string>;
+      listeners: Map<string, Array<(e: { target: FakeNode; stopPropagation: () => void }) => void>>;
+      focused: boolean;
+      classList: {
+        add: (token: string) => void;
+        remove: (token: string) => void;
+        toggle: (token: string, force?: boolean) => boolean;
+        contains: (token: string) => boolean;
+      };
+      setAttribute: (name: string, value: string) => void;
+      addEventListener: (
+        type: string,
+        fn: (e: { target: FakeNode; stopPropagation: () => void }) => void,
+      ) => void;
+      append: (...nodes: FakeNode[]) => void;
+      appendChild: (node: FakeNode) => FakeNode;
+      focus: () => void;
+      click: (target?: FakeNode) => void;
+    };
+
+    const makeNode = (tagName: string): FakeNode => {
+      const classSet = new Set<string>();
+      const attrs = new Map<string, string>();
+      const listeners = new Map<string, Array<(e: { target: FakeNode; stopPropagation: () => void }) => void>>();
+      const node: FakeNode = {
+        tagName,
+        className: '',
+        textContent: '',
+        title: '',
+        type: '',
+        children: [],
+        attrs,
+        classSet,
+        listeners,
+        focused: false,
+        classList: {
+          add(token: string) {
+            classSet.add(token);
+          },
+          remove(token: string) {
+            classSet.delete(token);
+          },
+          toggle(token: string, force?: boolean) {
+            const next = force !== undefined ? force : !classSet.has(token);
+            if (next) classSet.add(token);
+            else classSet.delete(token);
+            return next;
+          },
+          contains(token: string) {
+            return classSet.has(token);
+          },
+        },
+        setAttribute(name: string, value: string) {
+          attrs.set(name, value);
+        },
+        addEventListener(type, fn) {
+          const list = listeners.get(type) ?? [];
+          list.push(fn);
+          listeners.set(type, list);
+        },
+        append(...nodes: FakeNode[]) {
+          node.children.push(...nodes);
+        },
+        appendChild(child: FakeNode) {
+          node.children.push(child);
+          return child;
+        },
+        focus() {
+          node.focused = true;
+        },
+        click(target?: FakeNode) {
+          const ev = { target: target ?? node, stopPropagation: () => {} };
+          for (const fn of listeners.get('click') ?? []) {
+            fn(ev);
+          }
+        },
+      };
+      return node;
+    };
+
+    const prevDocument = (globalThis as { document?: unknown }).document;
+    (globalThis as { document?: unknown }).document = {
+      createElement: (tag: string) => makeNode(tag),
+    };
+
+    try {
+      const modal = new ConfirmModal();
+      const backdrop = modal.element as unknown as FakeNode;
+      const card = backdrop.children[0];
+      const header = card.children[0];
+      const closeBtn = header.children[1];
+      const actions = card.children[2];
+      const cancelBtn = actions.children[0];
+      const confirmBtn = actions.children[1];
+
+      let confirmed = 0;
+      expect(modal.isOpen()).toBe(false);
+
+      // Opening focuses Cancel by default; clicking Cancel or backdrop does NOT fire onConfirm
+      modal.openModal({
+        title: '🌱 Generate a New World?',
+        message: 'Replace current world?',
+        confirmLabel: '🌱 Create New World',
+        cancelLabel: 'Keep Current World',
+        tone: 'danger',
+        onConfirm: () => {
+          confirmed++;
+        },
+      });
+      expect(modal.isOpen()).toBe(true);
+      expect(cancelBtn.focused).toBe(true);
+      cancelBtn.click();
+      expect(modal.isOpen()).toBe(false);
+      expect(confirmed).toBe(0);
+
+      // Clicking backdrop or close button also cancels safely
+      modal.openModal({
+        title: '🌱 Generate a New World?',
+        message: 'Replace current world?',
+        confirmLabel: '🌱 Create New World',
+        onConfirm: () => {
+          confirmed++;
+        },
+      });
+      backdrop.click(backdrop);
+      expect(modal.isOpen()).toBe(false);
+      expect(confirmed).toBe(0);
+
+      modal.openModal({
+        title: '🌱 Generate a New World?',
+        message: 'Replace current world?',
+        confirmLabel: '🌱 Create New World',
+        onConfirm: () => {
+          confirmed++;
+        },
+      });
+      closeBtn.click();
+      expect(modal.isOpen()).toBe(false);
+      expect(confirmed).toBe(0);
+
+      // Explicit confirmation closes modal and invokes callback exactly once
+      modal.openModal({
+        title: '🌱 Generate a New World?',
+        message: 'Replace current world?',
+        confirmLabel: '🌱 Create New World',
+        tone: 'danger',
+        onConfirm: () => {
+          confirmed++;
+        },
+      });
+      confirmBtn.click();
+      expect(modal.isOpen()).toBe(false);
+      expect(confirmed).toBe(1);
+    } finally {
+      if (prevDocument === undefined) {
+        delete (globalThis as { document?: unknown }).document;
+      } else {
+        (globalThis as { document?: unknown }).document = prevDocument;
+      }
+    }
+  });
+
+  it('orders DeityPanel with trait bars on top, Disposition and environmental acts in the middle, and dynamic status/events at the bottom', () => {
+    type FakeNode = {
+      tagName: string;
+      className: string;
+      textContent: string;
+      innerHTML: string;
+      title: string;
+      type: string;
+      disabled: boolean;
+      children: FakeNode[];
+      attrs: Map<string, string>;
+      listeners: Map<string, Array<(ev: unknown) => void>>;
+      classList: {
+        toggle: (token: string, force?: boolean) => boolean;
+      };
+      setAttribute: (name: string, value: string) => void;
+      addEventListener: (type: string, fn: (ev: unknown) => void) => void;
+      append: (...nodes: FakeNode[]) => void;
+      appendChild: (node: FakeNode) => FakeNode;
+      dispatchClick: (ev: unknown) => void;
+    };
+
+    const makeNode = (tagName: string): FakeNode => {
+      const classes = new Set<string>();
+      const attrs = new Map<string, string>();
+      const listeners = new Map<string, Array<(ev: unknown) => void>>();
+      const node: FakeNode = {
+        tagName,
+        className: '',
+        textContent: '',
+        innerHTML: '',
+        title: '',
+        type: '',
+        disabled: false,
+        children: [],
+        attrs,
+        listeners,
+        classList: {
+          toggle(token: string, force?: boolean) {
+            const next = force !== undefined ? force : !classes.has(token);
+            if (next) classes.add(token);
+            else classes.delete(token);
+            return next;
+          },
+        },
+        setAttribute(name: string, value: string) {
+          attrs.set(name, value);
+        },
+        addEventListener(type: string, fn: (ev: unknown) => void) {
+          const list = listeners.get(type) ?? [];
+          list.push(fn);
+          listeners.set(type, list);
+        },
+        append(...nodes: FakeNode[]) {
+          node.children.push(...nodes);
+        },
+        appendChild(child: FakeNode) {
+          node.children.push(child);
+          return child;
+        },
+        dispatchClick(ev: unknown) {
+          for (const fn of listeners.get('click') ?? []) fn(ev);
+        },
+      };
+      return node;
+    };
+
+    const prevDocument = (globalThis as { document?: unknown }).document;
+    (globalThis as { document?: unknown }).document = {
+      createElement: (tag: string) => makeNode(tag),
+    };
+
+    try {
+      const world = new WorldState(new EventBus(), {
+        seed: 202607,
+        initialSettlements: 2,
+        initialWaterwaySettlements: 0,
+        initialCreaturesPerSettlement: 4,
+      });
+      world.deity.receiveSpectatorWhisper('prosperity', world);
+
+      let focusedPos: { x: number; z: number } | null = null;
+      const panel = new DeityPanel(
+        () => '',
+        () => {},
+        (pos) => {
+          focusedPos = pos;
+        },
+        () => '',
+      );
+      panel.update(world);
+
+      const root = panel.element as unknown as FakeNode;
+      expect(root.children.map((c) => c.className)).toEqual([
+        'panel-header',
+        'deity-body',
+        'whisper-section',
+        'deity-status',
+      ]);
+
+      const [, bodyEl, whisperSection, statusEl] = root.children;
+      expect(bodyEl.innerHTML).toContain('deity-bars');
+      expect(bodyEl.innerHTML).toContain('Benevolence');
+      expect(bodyEl.innerHTML).toContain('Verdancy');
+      expect(bodyEl.innerHTML).not.toContain('deity-ecology-strip');
+      expect(bodyEl.innerHTML).not.toContain('deity-epoch-banner');
+      expect(bodyEl.innerHTML).not.toContain('deity-omen');
+
+      expect(whisperSection.children[0].textContent).toBe('Disposition');
+      expect(whisperSection.children[2].textContent).toBe('Invoke Environmental Act');
+
+      expect(statusEl.innerHTML).toContain('deity-ecology-strip');
+      expect(statusEl.innerHTML).toContain('deity-epoch-banner');
+      expect(statusEl.innerHTML).toContain('deity-omen');
+
+      statusEl.dispatchClick({
+        target: {
+          closest: (selector: string) => (selector === '.deity-epoch-banner' ? {} : null),
+        },
+      });
+      expect(focusedPos).not.toBeNull();
+    } finally {
+      if (prevDocument === undefined) {
+        delete (globalThis as { document?: unknown }).document;
+      } else {
+        (globalThis as { document?: unknown }).document = prevDocument;
+      }
+    }
+  });
+
+  it('focuses map locations when clicking DeityPanel status pills such as Rewilding, Cleared Scars, and Border War', () => {
+    type FakeNode = {
+      tagName: string;
+      className: string;
+      textContent: string;
+      innerHTML: string;
+      title: string;
+      type: string;
+      disabled: boolean;
+      children: FakeNode[];
+      attrs: Map<string, string>;
+      listeners: Map<string, Array<(ev: unknown) => void>>;
+      classList: {
+        toggle: (token: string, force?: boolean) => boolean;
+      };
+      setAttribute: (name: string, value: string) => void;
+      addEventListener: (type: string, fn: (ev: unknown) => void) => void;
+      append: (...nodes: FakeNode[]) => void;
+      appendChild: (node: FakeNode) => FakeNode;
+      dispatchClick: (ev: unknown) => void;
+    };
+
+    const makeNode = (tagName: string): FakeNode => {
+      const classes = new Set<string>();
+      const attrs = new Map<string, string>();
+      const listeners = new Map<string, Array<(ev: unknown) => void>>();
+      const node: FakeNode = {
+        tagName,
+        className: '',
+        textContent: '',
+        innerHTML: '',
+        title: '',
+        type: '',
+        disabled: false,
+        children: [],
+        attrs,
+        listeners,
+        classList: {
+          toggle(token: string, force?: boolean) {
+            const next = force !== undefined ? force : !classes.has(token);
+            if (next) classes.add(token);
+            else classes.delete(token);
+            return next;
+          },
+        },
+        setAttribute(name: string, value: string) {
+          attrs.set(name, value);
+        },
+        addEventListener(type: string, fn: (ev: unknown) => void) {
+          const list = listeners.get(type) ?? [];
+          list.push(fn);
+          listeners.set(type, list);
+        },
+        append(...nodes: FakeNode[]) {
+          node.children.push(...nodes);
+        },
+        appendChild(child: FakeNode) {
+          node.children.push(child);
+          return child;
+        },
+        dispatchClick(ev: unknown) {
+          for (const fn of listeners.get('click') ?? []) fn(ev);
+        },
+      };
+      return node;
+    };
+
+    const prevDocument = (globalThis as { document?: unknown }).document;
+    (globalThis as { document?: unknown }).document = {
+      createElement: (tag: string) => makeNode(tag),
+    };
+
+    try {
+      const world = new WorldState(new EventBus(), {
+        seed: 202609,
+        initialSettlements: 2,
+        initialWaterwaySettlements: 0,
+        initialCreaturesPerSettlement: 4,
+      });
+      const [sA, sB] = world.settlements;
+
+      // Trigger rewilding, add a scar, and start a border war between sA and sB
+      const rewildInf = world.deity.triggerInfluence('sanctuary_rewilding', world, sA);
+      world.rewildingBoost = 0.65;
+      const scar = world.addHabitatScar(sB.center.x + 12, sB.center.z - 8, 24, 180);
+      world.diplomacy.adjustRelation(sA, sB, -100, world, 'border dispute');
+      const fighter = world.creatures[0];
+      fighter.activity = 'fighting';
+      fighter.x = (sA.center.x + sB.center.x) * 0.5;
+      fighter.z = (sA.center.z + sB.center.z) * 0.5;
+
+      const focused: Array<{ x: number; z: number }> = [];
+      const panel = new DeityPanel(
+        () => '',
+        () => {},
+        (pos) => focused.push(pos),
+        () => '',
+      );
+      panel.update(world);
+
+      const root = panel.element as unknown as FakeNode;
+      const statusEl = root.children[3];
+      expect(statusEl.innerHTML).toContain('data-eco-key="rewilding"');
+      expect(statusEl.innerHTML).toContain('data-eco-key="scars"');
+      expect(statusEl.innerHTML).toContain('data-eco-key="wars"');
+
+      const clickChip = (ecoKey: string) => {
+        statusEl.dispatchClick({
+          target: {
+            closest: (selector: string) =>
+              selector === '.eco-chip[data-eco-key]' ? { dataset: { ecoKey } } : null,
+          },
+        });
+      };
+
+      clickChip('rewilding');
+      expect(focused[0]).toEqual({ x: rewildInf.position.x, z: rewildInf.position.z });
+
+      clickChip('scars');
+      expect(focused[1]).toEqual({ x: scar.x, z: scar.z });
+
+      // Border war focuses active skirmish first, then cycles to warring settlements
+      clickChip('wars');
+      expect(focused[2]).toEqual({ x: fighter.x, z: fighter.z });
+      clickChip('wars');
+      expect(focused[3]).toEqual({ x: sA.center.x, z: sA.center.z });
     } finally {
       if (prevDocument === undefined) {
         delete (globalThis as { document?: unknown }).document;

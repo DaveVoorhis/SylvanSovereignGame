@@ -319,6 +319,15 @@ export class FestivalSystem {
 
     if (world.settlements.length === 0) return;
 
+    // Severe destructive conflict & climate crisis dampen festive revelry
+    const moralAlign = world.deity.getMoralAlignment(world);
+    const suppressFestivals =
+      moralAlign < -0.55 &&
+      (world.diplomacy.getRealmCounts(world.settlements).wars > 0 ||
+        world.climateHeat > 0.45 ||
+        world.miasmaIntensity > 0.45);
+    if (suppressFestivals) return;
+
     const hasNational = this.getNationalHoliday() !== undefined;
 
     // 1. Very occasional National Holidays (everyone across the realm celebrates together)

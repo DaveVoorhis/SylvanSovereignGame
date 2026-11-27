@@ -1379,16 +1379,14 @@ export class SettlementManager {
           ? world.rng.pick(residents).species
           : world.rng.pick(settlement.foundingSpecies);
 
-      const role = world.rng.pick([
-        'builder',
-        'builder',
-        'forager',
-        'forager',
-        'artisan',
-        'merchant',
-        'guard',
-        'mystic',
-      ] as const);
+      const moralAlign = world.deity.getMoralAlignment(world);
+      const rolePool =
+        moralAlign < -0.35
+          ? (['guard', 'guard', 'guard', 'forager', 'forager', 'builder', 'artisan'] as const)
+          : moralAlign > 0.35
+            ? (['builder', 'builder', 'forager', 'forager', 'merchant', 'merchant', 'artisan', 'mystic'] as const)
+            : (['builder', 'builder', 'forager', 'forager', 'artisan', 'merchant', 'guard', 'mystic'] as const);
+      const role = world.rng.pick(rolePool);
       const newcomer = world.spawnCreature(settlement, species, role, {
         ageDays: world.rng.range(2.0, 4.2),
         reproductionCooldown: world.rng.range(10, 22),

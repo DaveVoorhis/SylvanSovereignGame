@@ -1,8 +1,9 @@
 import type { QualityPreset } from '@core/Config';
 import type { SaveGameRecord, SaveSlotMeta } from '@core/SaveStore';
-import type { PrayerIntent, SelectionTarget, Vec2 } from '@core/Types';
+import type { DeityStance, PrayerIntent, SelectionTarget, Vec2 } from '@core/Types';
 import type { WorldState } from '@simulation/WorldState';
 import { ChroniclePanel } from './ChroniclePanel';
+import { ConfirmModal } from './ConfirmModal';
 import { CreatureDirectoryModal } from './CreatureDirectoryModal';
 import { CreaturePovBar } from './CreaturePovBar';
 import { DeityPanel } from './DeityPanel';
@@ -27,6 +28,7 @@ export interface HudCallbacks {
   onNewWorld: () => void;
   onChangeQuality: (preset: QualityPreset) => void;
   onWhisper: (intent: PrayerIntent) => string;
+  onSetDeityStance: (stance: DeityStance) => string;
   onFocusPosition: (pos: Vec2) => void;
   onFocusSettlement: (settlementId: string) => void;
   onInspectCreature: (creatureId: string) => void;
@@ -55,6 +57,7 @@ export class HudManager {
   private readonly directoryModal: CreatureDirectoryModal;
   private readonly realmOverviewModal: RealmOverviewModal;
   private readonly saveLoadModal: SaveLoadModal;
+  private readonly confirmModal: ConfirmModal;
   private readonly povBar: CreaturePovBar;
   private readonly footerHint: HTMLElement;
   private readonly zenToast: HTMLElement;
@@ -72,6 +75,7 @@ export class HudManager {
       callbacks.onWhisper,
       () => this.setDeityPanelOpen(false),
       callbacks.onFocusPosition,
+      callbacks.onSetDeityStance,
     );
     this.chroniclePanel = new ChroniclePanel(callbacks.onFocusPosition, () =>
       this.setChroniclePanelOpen(false),
@@ -123,6 +127,8 @@ export class HudManager {
       onImportRecord: callbacks.onImportSaveRecord,
     });
 
+    this.confirmModal = new ConfirmModal();
+
     this.povBar = new CreaturePovBar({
       onPrevCreature: callbacks.onPrevCreature,
       onNextCreature: callbacks.onNextCreature,
@@ -149,7 +155,7 @@ export class HudManager {
       onToggleFullscreen: callbacks.onToggleFullscreen,
       onToggleZenMode: callbacks.onToggleZenMode,
       onResetOverview: callbacks.onResetOverview,
-      onNewWorld: callbacks.onNewWorld,
+      onNewWorld: () => this.openNewWorldConfirm(callbacks.onNewWorld),
       onChangeQuality: callbacks.onChangeQuality,
       onFocusSettlement: callbacks.onFocusSettlement,
       onFocusPosition: callbacks.onFocusPosition,
@@ -176,6 +182,7 @@ export class HudManager {
       this.directoryModal.element,
       this.realmOverviewModal.element,
       this.saveLoadModal.element,
+      this.confirmModal.element,
     );
 
     if (typeof ResizeObserver !== 'undefined') {
@@ -247,7 +254,8 @@ export class HudManager {
     return (
       this.directoryModal.isOpen() ||
       this.realmOverviewModal.isOpen() ||
-      this.saveLoadModal.isOpen()
+      this.saveLoadModal.isOpen() ||
+      this.confirmModal.isOpen()
     );
   }
 
@@ -261,6 +269,37 @@ export class HudManager {
     if (this.saveLoadModal.isOpen()) {
       this.saveLoadModal.close();
     }
+    if (this.confirmModal.isOpen()) {
+      this.confirmModal.close();
+    }
+    this.topBar.syncDialogPills();
+  }
+
+  openNewWorldConfirm(onConfirm: () => void): void {
+    if (this.directoryModal.isOpen()) {
+      this.directoryModal.close();
+    }
+    if (this.realmOverviewModal.isOpen()) {
+      this.realmOverviewModal.close();
+    }
+    if (this.saveLoadModal.isOpen()) {
+      this.saveLoadModal.close();
+    }
+    const world = this.lastWorld;
+    let summary = 'the current realm';
+    if (world) {
+      const alive = world.creatures.filter((c) => c.alive).length;
+      const settlements = world.settlements.length;
+      summary = `Day ${world.day} (${settlements} settlement${settlements === 1 ? '' : 's'}, ${alive} kin)`;
+    }
+    this.confirmModal.openModal({
+      title: '🌱 Generate a New World?',
+      message: `This will replace ${summary} with a brand-new procedural valley. Any unsaved changes to this realm will be lost unless you save it first.`,
+      confirmLabel: '🌱 Create New World',
+      cancelLabel: 'Keep Current World',
+      tone: 'danger',
+      onConfirm,
+    });
     this.topBar.syncDialogPills();
   }
 
@@ -272,6 +311,9 @@ export class HudManager {
       }
       if (this.saveLoadModal.isOpen()) {
         this.saveLoadModal.close();
+      }
+      if (this.confirmModal.isOpen()) {
+        this.confirmModal.close();
       }
       this.directoryModal.openModal(this.lastWorld);
     } else if (this.directoryModal.isOpen()) {
@@ -292,6 +334,9 @@ export class HudManager {
     if (this.saveLoadModal.isOpen()) {
       this.saveLoadModal.close();
     }
+    if (this.confirmModal.isOpen()) {
+      this.confirmModal.close();
+    }
     this.realmOverviewModal.openTab(this.lastWorld, tab);
     this.topBar.syncDialogPills();
   }
@@ -310,6 +355,9 @@ export class HudManager {
       if (this.realmOverviewModal.isOpen()) {
         this.realmOverviewModal.close();
       }
+      if (this.confirmModal.isOpen()) {
+        this.confirmModal.close();
+      }
       this.saveLoadModal.openModal();
     } else if (this.saveLoadModal.isOpen()) {
       this.saveLoadModal.close();
@@ -324,6 +372,9 @@ export class HudManager {
     }
     if (this.saveLoadModal.isOpen()) {
       this.saveLoadModal.close();
+    }
+    if (this.confirmModal.isOpen()) {
+      this.confirmModal.close();
     }
     this.directoryModal.openModal(this.lastWorld, { mode: 'tree', focusCreatureId: creatureId });
     this.topBar.syncDialogPills();

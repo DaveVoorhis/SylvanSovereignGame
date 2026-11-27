@@ -150,6 +150,8 @@ export type DivineEventType =
 
 export type DivineImpactPolarity = 'disruptive' | 'restorative';
 
+export type DeityStance = 'benevolent' | 'neutral' | 'destructive';
+
 export type PrayerIntent = 'prosperity' | 'peace' | 'drama' | 'mystery';
 
 export type ChronicleCategory =

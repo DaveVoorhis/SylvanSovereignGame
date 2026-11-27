@@ -2,6 +2,7 @@ import { SeededRandom } from '@core/SeededRandom';
 import type {
   ActiveDivineInfluence,
   DeityAspect,
+  DeityStance,
   DivineEventType,
   PrayerIntent,
   SpeciesId,
@@ -14,11 +15,17 @@ import type { Settlement } from '@simulation/settlements/Settlement';
 import type { WorldState } from '@simulation/WorldState';
 import { DIVINE_EVENT_CATALOG } from './DivineEvents';
 
+export const DEITY_STANCE_LABELS: Readonly<Record<DeityStance, string>> = {
+  benevolent: 'Steward',
+  neutral: 'Balanced',
+  destructive: 'Exploiter',
+};
+
 export const PRAYER_INTENT_LABELS: Readonly<Record<PrayerIntent, string>> = {
-  prosperity: 'Stewardship',
-  peace: 'Shelter',
-  drama: 'Upheaval',
-  mystery: 'Change',
+  prosperity: 'Rewilding',
+  peace: 'Climate Healing',
+  drama: 'Habitat Destruction',
+  mystery: 'Climate Crisis',
 };
 
 export interface DeityTraits {
@@ -34,6 +41,7 @@ export interface DeitySnapshot {
   readonly epithet: string;
   readonly traits: DeityTraits;
   readonly aspect: DeityAspect;
+  readonly stance?: DeityStance;
   readonly energy: number;
   readonly lastOmen: string;
   readonly lastActionName: string;
@@ -96,6 +104,7 @@ export class ProceduralGod {
   readonly traits: DeityTraits;
 
   aspect: DeityAspect = 'The Whispering Canopy';
+  stance: DeityStance = 'neutral';
   energy = 36; // 0..100
   lastOmen = 'The valley rests in quiet balance beneath the ancient canopy.';
   lastActionName = 'Quiet Watch';
@@ -156,52 +165,232 @@ export class ProceduralGod {
   }
 
   /**
-   * Optional spectator nudge ("Prayer Whisper").
-   * Because the god is procedural and autonomous, it interprets the whisper
-   * through its current temperament rather than obeying blindly.
+   * Continuous moral/ecological alignment in [-1, +1]:
+   * +1 = Benevolent Steward (rewilding, climate healing, peaceful cooperation)
+   *  0 = Neutral Balance
+   * -1 = Destructive Exploiter (habitat destruction, climate crisis, warlike conflict)
+   */
+  getMoralAlignment(world?: WorldState): number {
+    const traitBalance =
+      (this.traits.benevolence + this.traits.verdancy) * 0.5 -
+      (this.traits.wrath + this.traits.chaos) * 0.5;
+    const stanceAnchor =
+      this.stance === 'benevolent' ? 0.42 : this.stance === 'destructive' ? -0.42 : 0;
+    const ecoBalance = world
+      ? world.rewildingBoost * 0.16 -
+        (world.climateHeat + world.climateFreeze * 0.7 + world.miasmaIntensity) * 0.18 -
+        Math.min(0.28, world.habitatScars.length * 0.09)
+      : 0;
+    return Math.max(-1, Math.min(1, traitBalance + stanceAnchor + ecoBalance));
+  }
+
+  /** Summarizes how the deity's current moral/ecological influence shapes creature society. */
+  getSocialClimate(world?: WorldState): {
+    readonly label: string;
+    readonly icon: string;
+    readonly tone: 'good' | 'calm' | 'warn' | 'bad';
+  } {
+    const a = this.getMoralAlignment(world);
+    if (a >= 0.35) {
+      return { label: 'Peaceful & Cooperative', icon: '🕊', tone: 'good' };
+    }
+    if (a <= -0.45) {
+      return { label: 'Warlike & Fractured', icon: '⚔️', tone: 'bad' };
+    }
+    if (a <= -0.18) {
+      return { label: 'Tense & Competitive', icon: '⚡', tone: 'warn' };
+    }
+    return { label: 'Balanced & Cautious', icon: '⚖️', tone: 'calm' };
+  }
+
+  /**
+   * Dynamically steers the deity's ongoing moral disposition (Good Steward, Neutral Balance,
+   * or Destructive Exploiter) — immediately reshaping temperament, diplomatic tone, and upcoming acts.
+   */
+  setStance(stance: DeityStance, world: WorldState): string {
+    const prev = this.stance;
+    this.stance = stance;
+
+    if (stance === 'benevolent') {
+      this.traits.benevolence = this.clamp01(Math.max(0.80, this.traits.benevolence + 0.32));
+      this.traits.verdancy = this.clamp01(Math.max(0.78, this.traits.verdancy + 0.30));
+      this.traits.wrath = this.clamp01(Math.min(0.18, this.traits.wrath - 0.32));
+      this.traits.chaos = this.clamp01(Math.min(0.22, this.traits.chaos - 0.28));
+      this.energy = Math.max(this.energy, 68);
+      this.decisionTimer = Math.min(this.decisionTimer, 5);
+      this.lastOmen =
+        'A sheltering stillness settles over the watershed; the unseen hand turns toward rewilding and climate healing.';
+      if (prev !== stance) {
+        world.diplomacy.applyRealmMoralShift(18, world, 'age of stewardship');
+        this.shiftCreatureRelationships(16, world);
+        world.chronicle.record(
+          world.day,
+          world.season,
+          'deity',
+          '🌱 A Turning Toward Stewardship',
+          `${this.name} embraced benevolence and renewal — forests mend, skies clear, and woodland kin grow cooperative.`,
+        );
+      }
+    } else if (stance === 'destructive') {
+      this.traits.wrath = this.clamp01(Math.max(0.82, this.traits.wrath + 0.36));
+      this.traits.chaos = this.clamp01(Math.max(0.78, this.traits.chaos + 0.32));
+      this.traits.benevolence = this.clamp01(Math.min(0.16, this.traits.benevolence - 0.34));
+      this.traits.verdancy = this.clamp01(Math.min(0.18, this.traits.verdancy - 0.32));
+      this.energy = Math.max(this.energy, 68);
+      this.decisionTimer = Math.min(this.decisionTimer, 5);
+      this.lastOmen =
+        'Smoke-tinged winds and restless ambition grip the realm; habitat destruction and climate crisis loom ahead.';
+      if (prev !== stance) {
+        world.diplomacy.applyRealmMoralShift(-26, world, 'scarcity and territorial strife');
+        this.shiftCreatureRelationships(-22, world);
+        world.chronicle.record(
+          world.day,
+          world.season,
+          'deity',
+          '🔥 An Era of Reckless Exploitation',
+          `${this.name} turned ruthless and exploitative — habitats face clearing, climate stress mounts, and factions turn competitive and warlike.`,
+        );
+      }
+    } else {
+      this.traits.benevolence = this.clamp01(this.traits.benevolence * 0.5 + 0.27);
+      this.traits.verdancy = this.clamp01(this.traits.verdancy * 0.5 + 0.28);
+      this.traits.wrath = this.clamp01(this.traits.wrath * 0.5 + 0.19);
+      this.traits.chaos = this.clamp01(this.traits.chaos * 0.5 + 0.21);
+      this.lastOmen = 'The unseen hand releases its grip, letting woodland nature ebb and flow on its own.';
+      if (prev !== stance) {
+        world.chronicle.record(
+          world.day,
+          world.season,
+          'deity',
+          '⚖️ Return to Natural Balance',
+          `${this.name} stepped back into neutral balance, letting seasons, diplomacy, and wild ecosystems unfold freely.`,
+        );
+      }
+    }
+
+    this.recomputeAspect();
+    const label = DEITY_STANCE_LABELS[stance];
+    return `${this.name} is now steered toward ${label}.`;
+  }
+
+  /**
+   * Direct high-impact spectator invocation.
+   * Immediately reshapes the deity's temperament AND manifests a visible ecological act
+   * (rewilding, climate healing, habitat destruction, or climate crisis) with social fallout.
    */
   receiveSpectatorWhisper(intent: PrayerIntent, world: WorldState): string {
     if (this.whisperCooldown > 0) {
       return `${this.name} is still pondering the last whisper.`;
     }
-    this.whisperCooldown = 30;
-    this.energy = Math.min(100, this.energy + 28);
+    this.whisperCooldown = 10;
+    this.energy = Math.min(100, Math.max(this.energy + 45, 72));
+
+    const activeTypes = new Set(world.activeInfluences.map((inf) => inf.type));
+    let chosenAct: DivineEventType;
 
     if (intent === 'prosperity') {
-      this.traits.benevolence = this.clamp01(this.traits.benevolence + 0.12);
-      this.traits.verdancy = this.clamp01(this.traits.verdancy + 0.14);
-      this.traits.wrath = this.clamp01(this.traits.wrath - 0.06);
-      this.lastOmen = 'A quiet plea for stewardship and renewal drifted through the high canopy.';
+      // Rewilding: restore scarred woods, replant dense groves, foster harmony
+      this.traits.benevolence = this.clamp01(this.traits.benevolence + 0.24);
+      this.traits.verdancy = this.clamp01(this.traits.verdancy + 0.28);
+      this.traits.wrath = this.clamp01(this.traits.wrath - 0.20);
+      this.traits.chaos = this.clamp01(this.traits.chaos - 0.14);
+      if (this.stance === 'destructive') this.stance = 'neutral';
+      chosenAct = activeTypes.has('sanctuary_rewilding') ? 'migration_corridor' : 'sanctuary_rewilding';
+      world.diplomacy.applyRealmMoralShift(14, world, 'shared rewilding effort');
+      this.shiftCreatureRelationships(12, world);
     } else if (intent === 'peace') {
-      this.traits.benevolence = this.clamp01(this.traits.benevolence + 0.12);
-      this.traits.wrath = this.clamp01(this.traits.wrath - 0.14);
-      this.traits.chaos = this.clamp01(this.traits.chaos - 0.06);
-      this.lastOmen = 'Soft chimes of shelter and reconciliation reached the ancient shrine.';
+      // Climate Healing: actively quell ongoing climate crises, clear skies, reconcile rivals
+      this.traits.benevolence = this.clamp01(this.traits.benevolence + 0.26);
+      this.traits.verdancy = this.clamp01(this.traits.verdancy + 0.20);
+      this.traits.wrath = this.clamp01(this.traits.wrath - 0.28);
+      this.traits.chaos = this.clamp01(this.traits.chaos - 0.22);
+      if (this.stance === 'destructive') this.stance = 'neutral';
+      for (let i = world.activeInfluences.length - 1; i >= 0; i--) {
+        if (world.activeInfluences[i].polarity === 'disruptive') {
+          this.concludeInfluence(world.activeInfluences[i], world);
+          world.activeInfluences.splice(i, 1);
+        }
+      }
+      world.climateHeat *= 0.35;
+      world.climateFreeze *= 0.35;
+      world.miasmaIntensity *= 0.35;
+      world.floodSurge *= 0.35;
+      chosenAct = activeTypes.has('sunlit_blessing') ? 'migration_corridor' : 'sunlit_blessing';
+      world.diplomacy.applyRealmMoralShift(26, world, 'climate healing accord');
+      this.shiftCreatureRelationships(18, world);
     } else if (intent === 'drama') {
-      this.traits.chaos = this.clamp01(this.traits.chaos + 0.16);
-      this.traits.wrath = this.clamp01(this.traits.wrath + 0.14);
-      this.traits.benevolence = this.clamp01(this.traits.benevolence - 0.06);
-      this.lastOmen = 'Heavy storm-pressure gathered beyond the ridges, portending sudden upheaval.';
+      // Habitat Destruction: immediately strip woodland canopy, scar earth, spark territorial competition
+      this.traits.chaos = this.clamp01(this.traits.chaos + 0.26);
+      this.traits.wrath = this.clamp01(this.traits.wrath + 0.24);
+      this.traits.benevolence = this.clamp01(this.traits.benevolence - 0.22);
+      this.traits.verdancy = this.clamp01(this.traits.verdancy - 0.26);
+      if (this.stance === 'benevolent') this.stance = 'neutral';
+      chosenAct = 'habitat_clearing';
+      world.diplomacy.applyRealmMoralShift(-22, world, 'bitter habitat destruction');
+      this.shiftCreatureRelationships(-18, world);
     } else {
-      this.traits.curiosity = this.clamp01(this.traits.curiosity + 0.14);
-      this.traits.chaos = this.clamp01(this.traits.chaos + 0.08);
-      this.lastOmen = 'Unfamiliar winds stirred the watershed, carrying omens of change.';
+      // Climate Crisis: trigger scorching drought, ashen smog, rising deluge, or polar snap
+      this.traits.wrath = this.clamp01(this.traits.wrath + 0.28);
+      this.traits.chaos = this.clamp01(this.traits.chaos + 0.24);
+      this.traits.benevolence = this.clamp01(this.traits.benevolence - 0.24);
+      this.traits.verdancy = this.clamp01(this.traits.verdancy - 0.22);
+      if (this.stance === 'benevolent') this.stance = 'neutral';
+      const climateDisasters: DivineEventType[] = [
+        'scorching_drought',
+        'ashen_miasma',
+        'great_deluge',
+        'polar_snap',
+      ];
+      const freshDisasters = climateDisasters.filter((t) => !activeTypes.has(t));
+      chosenAct = world.rng.pick(freshDisasters.length > 0 ? freshDisasters : climateDisasters);
+      world.diplomacy.applyRealmMoralShift(-24, world, 'climate crisis scarcity');
+      this.shiftCreatureRelationships(-20, world);
     }
 
     this.recomputeAspect();
-    const soon = Math.max(4, Math.min(10, world.config.deityDecisionIntervalSec * 0.12));
-    this.decisionTimer = Math.min(this.decisionTimer, soon);
+    // Keep active influence stack tidy so immediate spectator acts always manifest cleanly
+    while (world.activeInfluences.length >= 2) {
+      const oldest = world.activeInfluences.shift();
+      if (oldest) this.concludeInfluence(oldest, world);
+    }
 
     const intentLabel = PRAYER_INTENT_LABELS[intent].toLowerCase();
+    const act = this.executeDivineAct(chosenAct, world);
     world.chronicle.record(
       world.day,
       world.season,
       'deity',
-      'A Whisper Reaches the Canopy',
-      `An unseen spectator whispered of ${intentLabel}; ${this.name} (${this.aspect}) weighed the balance of the realm.`,
+      'A Call Shapes the Canopy',
+      `An unseen spectator whispered of ${intentLabel}; ${this.name} (${this.aspect}) answered with ${act.label}.`,
+      act.position,
     );
 
-    return `${this.name} heard your whisper of ${intentLabel}.`;
+    return `${this.name} heard your whisper of ${intentLabel} — ${act.icon} ${act.label}!`;
+  }
+
+  /** Shifts creature-to-creature friendships or rivalries across the realm when moral climate pivots. */
+  private shiftCreatureRelationships(delta: number, world: WorldState): void {
+    const alive = world.creatures.filter((c) => c.alive && c.isAdult());
+    for (let i = 0; i < alive.length; i++) {
+      const a = alive[i];
+      // Adjust existing relationships
+      for (const [otherId, score] of a.relationships.entries()) {
+        const next = Math.max(-100, Math.min(100, score + delta * 0.7));
+        a.relationships.set(otherId, next);
+      }
+      // Seed fresh rivalries or camaraderie among nearby peers so behavioral shift shows up fast
+      for (let j = i + 1; j < alive.length; j++) {
+        const b = alive[j];
+        if (a.mateId === b.id || a.isCloseKinOf(b)) continue;
+        const dx = a.x - b.x;
+        const dz = a.z - b.z;
+        if (dx * dx + dz * dz > 26 * 26) continue;
+        if (world.rng.chance(0.32)) {
+          a.adjustRelationship(b.id, delta);
+          b.adjustRelationship(a.id, delta);
+        }
+      }
+    }
   }
 
   tick(world: WorldState, dt: number): void {
@@ -209,30 +398,49 @@ export class ProceduralGod {
 
     // Charge energy smoothly in proportion to the configured rarity interval
     const baseChargeRate = Math.max(0.68, 56 / Math.max(4, world.config.deityDecisionIntervalSec));
-    this.energy = Math.min(100, this.energy + dt * (baseChargeRate + this.traits.curiosity * 0.12));
+    const stanceRateBoost = this.stance === 'neutral' ? 1.0 : 1.45;
+    this.energy = Math.min(
+      100,
+      this.energy + dt * (baseChargeRate * stanceRateBoost + this.traits.curiosity * 0.12),
+    );
 
     // Advance any ongoing ecological upheavals / restorations
     this.tickActiveInfluences(world, dt);
 
-    // Slow procedural personality drift so the deity's temperament evolves over seasons
-    const drift = dt * 0.007;
-    this.traits.benevolence = this.clamp01(this.traits.benevolence + (world.rng.next() - 0.5) * drift);
-    this.traits.wrath = this.clamp01(this.traits.wrath + (world.rng.next() - 0.495) * drift);
-    this.traits.chaos = this.clamp01(this.traits.chaos + (world.rng.next() - 0.495) * drift);
-    this.traits.verdancy = this.clamp01(this.traits.verdancy + (world.rng.next() - 0.5) * drift);
-    this.traits.curiosity = this.clamp01(this.traits.curiosity + (world.rng.next() - 0.495) * drift);
+    // Personality evolution: follows spectator's chosen stance, or drifts organically when balanced
+    if (this.stance === 'benevolent') {
+      const pull = dt * 0.032;
+      this.traits.benevolence = this.clamp01(this.traits.benevolence + (0.88 - this.traits.benevolence) * pull);
+      this.traits.verdancy = this.clamp01(this.traits.verdancy + (0.86 - this.traits.verdancy) * pull);
+      this.traits.wrath = this.clamp01(this.traits.wrath + (0.12 - this.traits.wrath) * pull);
+      this.traits.chaos = this.clamp01(this.traits.chaos + (0.16 - this.traits.chaos) * pull);
+    } else if (this.stance === 'destructive') {
+      const pull = dt * 0.032;
+      this.traits.wrath = this.clamp01(this.traits.wrath + (0.90 - this.traits.wrath) * pull);
+      this.traits.chaos = this.clamp01(this.traits.chaos + (0.86 - this.traits.chaos) * pull);
+      this.traits.benevolence = this.clamp01(this.traits.benevolence + (0.10 - this.traits.benevolence) * pull);
+      this.traits.verdancy = this.clamp01(this.traits.verdancy + (0.12 - this.traits.verdancy) * pull);
+    } else {
+      const drift = dt * 0.007;
+      this.traits.benevolence = this.clamp01(this.traits.benevolence + (world.rng.next() - 0.5) * drift);
+      this.traits.wrath = this.clamp01(this.traits.wrath + (world.rng.next() - 0.495) * drift);
+      this.traits.chaos = this.clamp01(this.traits.chaos + (world.rng.next() - 0.495) * drift);
+      this.traits.verdancy = this.clamp01(this.traits.verdancy + (world.rng.next() - 0.5) * drift);
+      this.traits.curiosity = this.clamp01(this.traits.curiosity + (world.rng.next() - 0.495) * drift);
+    }
 
     this.decisionTimer -= dt;
     if (this.decisionTimer > 0) return;
 
     const interval = world.config.deityDecisionIntervalSec;
-    this.decisionTimer = interval * world.rng.range(0.85, 1.35);
+    const stanceIntervalMult = this.stance === 'neutral' ? 1.0 : 0.56;
+    this.decisionTimer = interval * stanceIntervalMult * world.rng.range(0.85, 1.3);
 
     this.recomputeAspect();
     if (this.energy < 52 || world.settlements.length === 0) return;
 
-    // Keep major turning points rare and uncluttered: at most 1 active epoch in normal play
-    const maxConcurrent = interval >= 20 ? 1 : 2;
+    // Neutral stays uncluttered (1 epoch); active Exploiter/Steward steering allows up to 2 compounding epochs
+    const maxConcurrent = this.stance !== 'neutral' || interval < 20 ? 2 : 1;
     if (world.activeInfluences.length >= maxConcurrent) return;
 
     const chosenEvent = this.chooseDivineAct(world);
@@ -330,8 +538,16 @@ export class ProceduralGod {
       },
     ];
 
-    const filtered = weighted.filter((w) => !activeTypes.has(w.item));
-    return world.rng.weightedPick(filtered.length > 0 ? filtered : weighted);
+    // Honor explicit spectator moral stance: Steward exclusively heals; Exploiter exclusively disrupts
+    const stancePool =
+      this.stance === 'benevolent'
+        ? weighted.filter((w) => DIVINE_EVENT_CATALOG[w.item].polarity === 'restorative')
+        : this.stance === 'destructive'
+          ? weighted.filter((w) => DIVINE_EVENT_CATALOG[w.item].polarity === 'disruptive')
+          : weighted;
+
+    const filtered = stancePool.filter((w) => !activeTypes.has(w.item));
+    return world.rng.weightedPick(filtered.length > 0 ? filtered : stancePool);
   }
 
   private executeDivineAct(
@@ -404,12 +620,14 @@ export class ProceduralGod {
 
     // Natural cyclic ebb & flow: severe disruption softens wrath slightly so recovery can follow,
     // while restorative epochs let ecological tension slowly gather again later.
-    if (def.polarity === 'disruptive') {
-      this.traits.wrath = this.clamp01(this.traits.wrath - 0.08);
-      this.traits.benevolence = this.clamp01(this.traits.benevolence + 0.05);
-    } else {
-      this.traits.verdancy = this.clamp01(this.traits.verdancy - 0.04);
-      this.traits.chaos = this.clamp01(this.traits.chaos + 0.04);
+    if (this.stance === 'neutral') {
+      if (def.polarity === 'disruptive') {
+        this.traits.wrath = this.clamp01(this.traits.wrath - 0.08);
+        this.traits.benevolence = this.clamp01(this.traits.benevolence + 0.05);
+      } else {
+        this.traits.verdancy = this.clamp01(this.traits.verdancy - 0.04);
+        this.traits.chaos = this.clamp01(this.traits.chaos + 0.04);
+      }
     }
     this.recomputeAspect();
 
@@ -948,10 +1166,10 @@ export class ProceduralGod {
   private tickActiveInfluences(world: WorldState, dt: number): void {
     // 1. Compute target global environmental anomaly levels from active influences
     let targetFlood = 0;
-    let targetHeat = 0;
+    let targetHeat = this.stance === 'destructive' ? 0.28 : 0;
     let targetFreeze = 0;
-    let targetMiasma = 0;
-    let targetRewilding = 0;
+    let targetMiasma = this.stance === 'destructive' ? 0.22 : 0;
+    let targetRewilding = this.stance === 'benevolent' ? 0.28 : 0;
 
     for (let i = world.activeInfluences.length - 1; i >= 0; i--) {
       const inf = world.activeInfluences[i];
@@ -984,7 +1202,8 @@ export class ProceduralGod {
       }
     }
 
-    const rate = Math.min(1, dt * 0.45);
+    const healRateBoost = this.stance === 'benevolent' ? 1.85 : 1.0;
+    const rate = Math.min(1, dt * 0.45 * healRateBoost);
     world.floodSurge += (targetFlood - world.floodSurge) * rate;
     world.climateHeat += (targetHeat - world.climateHeat) * rate;
     world.climateFreeze += (targetFreeze - world.climateFreeze) * rate;
@@ -1440,6 +1659,7 @@ export class ProceduralGod {
       epithet: this.epithet,
       traits: { ...this.traits },
       aspect: this.aspect,
+      stance: this.stance,
       energy: this.energy,
       lastOmen: this.lastOmen,
       lastActionName: this.lastActionName,
@@ -1457,6 +1677,7 @@ export class ProceduralGod {
     this.epithet = snapshot.epithet;
     Object.assign(this.traits, snapshot.traits);
     this.aspect = snapshot.aspect;
+    this.stance = snapshot.stance ?? 'neutral';
     this.energy = snapshot.energy;
     this.lastOmen = snapshot.lastOmen;
     this.lastActionName = snapshot.lastActionName;

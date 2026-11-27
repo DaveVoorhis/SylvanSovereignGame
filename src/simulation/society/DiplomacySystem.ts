@@ -115,10 +115,81 @@ export class DiplomacySystem {
     return null;
   }
 
+  /** Finds an enemy settlement at war, or optionally a tense rival when destructive pressure peaks. */
+  findRivalTarget(
+    settlementId: string,
+    settlements: readonly Settlement[],
+    includeTense = false,
+  ): Settlement | null {
+    const warTarget = this.findWarTarget(settlementId, settlements);
+    if (warTarget) return warTarget;
+    if (!includeTense) return null;
+    let mostTense: Settlement | null = null;
+    let lowestScore = -18;
+    for (const other of settlements) {
+      if (other.id === settlementId) continue;
+      const score = this.getScore(settlementId, other.id);
+      if (score < lowestScore) {
+        lowestScore = score;
+        mostTense = other;
+      }
+    }
+    return mostTense;
+  }
+
+  /** Shifts diplomatic relations across all settlement pairs in response to major ecological/moral turns. */
+  applyRealmMoralShift(delta: number, world: WorldState, reason: string): void {
+    const list = world.settlements;
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const variance = world.rng.range(0.75, 1.25);
+        this.adjustRelation(list[i], list[j], delta * variance, world, reason);
+      }
+    }
+  }
+
+  /** Counts active inter-settlement wars and alliances across the realm. */
+  getRealmCounts(settlements: readonly Settlement[]): { wars: number; tense: number; alliances: number } {
+    let wars = 0;
+    let tense = 0;
+    let alliances = 0;
+    for (let i = 0; i < settlements.length; i++) {
+      for (let j = i + 1; j < settlements.length; j++) {
+        const st = this.getStance(settlements[i].id, settlements[j].id);
+        if (st === 'war') wars++;
+        else if (st === 'tense') tense++;
+        else if (st === 'allied') alliances++;
+      }
+    }
+    return { wars, tense, alliances };
+  }
+
+  /** Returns all unordered settlement pairs currently matching a given diplomatic stance. */
+  getPairsByStance(
+    settlements: readonly Settlement[],
+    stance: DiplomaticStance,
+  ): Array<[Settlement, Settlement]> {
+    const pairs: Array<[Settlement, Settlement]> = [];
+    for (let i = 0; i < settlements.length; i++) {
+      for (let j = i + 1; j < settlements.length; j++) {
+        if (this.getStance(settlements[i].id, settlements[j].id) === stance) {
+          pairs.push([settlements[i], settlements[j]]);
+        }
+      }
+    }
+    return pairs;
+  }
+
   tick(world: WorldState, dt: number): void {
     this.timer -= dt;
     if (this.timer > 0) return;
-    this.timer = world.config.diplomacyIntervalSec;
+    const alignment = world.deity.getMoralAlignment(world);
+    const ecoStress = Math.min(
+      1.5,
+      world.climateHeat + world.climateFreeze * 0.7 + world.miasmaIntensity + world.habitatScars.length * 0.28,
+    );
+    const tempoMult = Math.abs(alignment) > 0.35 || ecoStress > 0.45 ? 0.62 : 1.0;
+    this.timer = Math.max(4, world.config.diplomacyIntervalSec * tempoMult);
 
     const list = world.settlements;
     if (list.length < 2) return;
@@ -129,23 +200,40 @@ export class DiplomacySystem {
 
     const currentStance = this.getStance(a.id, b.id);
     if (currentStance === 'war') {
-      // Wars eventually exhaust themselves into truces
-      if (world.rng.chance(0.32)) {
-        this.adjustRelation(a, b, 34, world, 'war weariness');
+      // Benevolent stewardship fosters swift reconciliation; destructive scarcity prolongs conflict
+      const truceChance = alignment > 0.25 ? 0.68 : alignment < -0.25 ? 0.08 : 0.32;
+      if (world.rng.chance(truceChance)) {
+        this.adjustRelation(
+          a,
+          b,
+          alignment > 0.25 ? 46 : 34,
+          world,
+          alignment > 0.25 ? 'stewardship reconciliation' : 'war weariness',
+        );
       }
       return;
     }
 
-    // Subtle organic drift influenced by the Procedural God's chaos/wrath vs benevolence
-    const tensionBias = (world.deity.traits.wrath + world.deity.traits.chaos) * 0.5 - world.deity.traits.benevolence * 0.6;
-    const roll = world.rng.gaussian(-tensionBias * 14, 16);
-    if (Math.abs(roll) > 9) {
+    // Diplomatic drift strongly shaped by human-influence alignment & ecological scarcity/abundance
+    const meanShift = alignment * 26 - ecoStress * 10;
+    const roll = world.rng.gaussian(meanShift, 14);
+    if (Math.abs(roll) > 7) {
+      const negReason =
+        world.habitatScars.length > 0
+          ? 'clash over shrinking woodland'
+          : world.climateHeat > 0.25 || world.miasmaIntensity > 0.25
+            ? 'scarcity-driven border raid'
+            : 'foraging border dispute';
+      const posReason =
+        alignment > 0.3 || world.rewildingBoost > 0.2
+          ? 'shared rewilding pact'
+          : 'shared harvest festival';
       this.adjustRelation(
         a,
         b,
         roll,
         world,
-        roll < 0 ? 'foraging border dispute' : 'shared harvest festival',
+        roll < 0 ? negReason : posReason,
       );
     }
   }

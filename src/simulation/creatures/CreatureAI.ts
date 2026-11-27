@@ -299,6 +299,12 @@ export class CreatureAI {
     ) {
       creature.mood = Math.min(100, creature.mood + dt * (0.5 + world.rewildingBoost * 0.6));
     }
+    const moralAlign = world.deity.getMoralAlignment(world);
+    if (moralAlign < -0.25 && creature.activity !== 'resting') {
+      creature.mood = Math.max(8, creature.mood - dt * Math.abs(moralAlign) * 0.55);
+    } else if (moralAlign > 0.25) {
+      creature.mood = Math.min(100, creature.mood + dt * moralAlign * 0.45);
+    }
 
     // Eat carried berries/acorns if hungry
     if (creature.hunger > 65) {
@@ -392,6 +398,11 @@ export class CreatureAI {
     const minCz = Math.floor((creature.z - sightRange) * INV_CREATURE_CELL_SIZE);
     const maxCz = Math.floor((creature.z + sightRange) * INV_CREATURE_CELL_SIZE);
 
+    const moralAlign = world.deity.getMoralAlignment(world);
+    const allowLocalClash = moralAlign < -0.42 && creature.isAdult();
+    const rivalryThreshold = moralAlign > 0.35 ? -82 : moralAlign < -0.25 ? -26 : -55;
+    const braveryThreshold = Math.max(0.45, 0.78 + moralAlign * 0.28);
+
     for (let cx = minCx; cx <= maxCx; cx++) {
       for (let cz = minCz; cz <= maxCz; cz++) {
         const bucket = this.creatureCells.get(creatureCellKey(cx, cz));
@@ -399,27 +410,40 @@ export class CreatureAI {
         for (let i = 0; i < bucket.length; i++) {
           const other = bucket[i];
           if (!other.alive || other.id === creature.id) continue;
-          if (other.settlementId === creature.settlementId) continue;
+          const sameSettlement = other.settlementId === creature.settlementId;
+          if (sameSettlement && (!allowLocalClash || !other.isAdult() || creature.mateId === other.id || creature.isCloseKinOf(other))) {
+            continue;
+          }
 
           const dx = other.x - creature.x;
           const dz = other.z - creature.z;
           if (dx * dx + dz * dz > sightRangeSq) continue;
 
-          const stance = world.diplomacy.getStance(creature.settlementId, other.settlementId);
           const personalScore = creature.relationships.get(other.id) ?? 0;
-          const hostile = stance === 'war' || personalScore <= -55;
+          let hostile = false;
+          if (sameSettlement) {
+            hostile = personalScore <= -34;
+          } else {
+            const stance = world.diplomacy.getStance(creature.settlementId, other.settlementId);
+            const tenseHostile = moralAlign < -0.42 && stance === 'tense';
+            hostile = stance === 'war' || tenseHostile || personalScore <= rivalryThreshold;
+          }
           if (!hostile) continue;
 
           const braveEnough =
             creature.isAdult() &&
             creature.health > creature.maxHealth * 0.42 &&
             (creature.role === 'guard' ||
-              creature.def.courage + creature.personality.bravery * 0.4 > 0.78);
+              creature.def.courage + creature.personality.bravery * 0.4 > braveryThreshold);
 
           if (braveEnough) {
             creature.activity = 'fighting';
             creature.targetCreatureId = other.id;
-            creature.thought = `Defending kin against ${other.name}!`;
+            creature.thought = sameSettlement
+              ? `Clashing with ${other.name} over scarce stores!`
+              : moralAlign < -0.35
+                ? `Charging rival ${other.name} for territory!`
+                : `Defending kin against ${other.name}!`;
             creature.actionTimer = 10;
           } else {
             creature.activity = 'fleeing';
@@ -705,28 +729,54 @@ export class CreatureAI {
       return;
     }
 
-    // 7. Guard patrol or raid if at war
-    if (creature.role === 'guard') {
+    // 7. Guard patrol / warlike raiding parties (intensified under destructive deity, peaceful under steward)
+    const moralAlign = world.deity.getMoralAlignment(world);
+    const warlikeMilitia =
+      moralAlign < -0.35 &&
+      creature.isAdult() &&
+      !creature.def.strictlyAquatic &&
+      (creature.role === 'forager' || creature.role === 'artisan') &&
+      creature.personality.bravery > 0.55;
+
+    if (creature.role === 'guard' || warlikeMilitia) {
+      const includeTense = moralAlign < -0.4;
       const enemySettlement = !creature.def.strictlyAquatic
-        ? world.diplomacy.findWarTarget(home.id, world.settlements)
+        ? world.diplomacy.findRivalTarget(home.id, world.settlements, includeTense)
         : undefined;
-      if (enemySettlement && world.rng.chance(0.32)) {
+      const raidChance =
+        creature.role === 'guard'
+          ? moralAlign > 0.35
+            ? 0.06
+            : moralAlign < -0.25
+              ? 0.36 + Math.abs(moralAlign) * 0.34
+              : 0.32
+          : Math.abs(moralAlign) * 0.24;
+      if (enemySettlement && world.rng.chance(raidChance)) {
         creature.targetX = enemySettlement.center.x + world.rng.range(-8, 8);
         creature.targetZ = enemySettlement.center.z + world.rng.range(-8, 8);
-        creature.thought = `Marching toward ${enemySettlement.name}'s border`;
+        creature.thought =
+          moralAlign < -0.35
+            ? `Raiding ${enemySettlement.name} for scarce woodland stores!`
+            : `Marching toward ${enemySettlement.name}'s border`;
         creature.actionTimer = 14;
         return;
       }
-      const angle = world.rng.range(0, Math.PI * 2);
-      const r = home.radius + world.rng.range(2, 7);
-      creature.targetX = home.center.x + Math.cos(angle) * r;
-      creature.targetZ = home.center.z + Math.sin(angle) * r;
-      creature.thought =
-        world.rng.chance(0.35) && profile.thoughts.length > 0
-          ? world.rng.pick(profile.thoughts)
-          : `Patrolling the edges of ${home.name}`;
-      creature.actionTimer = 8;
-      return;
+      if (creature.role === 'guard') {
+        const angle = world.rng.range(0, Math.PI * 2);
+        const r = home.radius + world.rng.range(2, 7);
+        creature.targetX = home.center.x + Math.cos(angle) * r;
+        creature.targetZ = home.center.z + Math.sin(angle) * r;
+        creature.thought =
+          moralAlign > 0.35
+            ? `Guiding neighbors peacefully around ${home.name}`
+            : moralAlign < -0.35
+              ? `Stalking the border of ${home.name} for rivals`
+              : world.rng.chance(0.35) && profile.thoughts.length > 0
+                ? world.rng.pick(profile.thoughts)
+                : `Patrolling the edges of ${home.name}`;
+        creature.actionTimer = 8;
+        return;
+      }
     }
 
     // 8. Gather resources actively needed for the city's next planned building & food supply
@@ -932,7 +982,9 @@ export class CreatureAI {
       }
       const profile = home.getAdaptationProfile();
       const styleMult = profile.buildSpeedBonus[bp.frameStyle];
-      const stewardshipBoost = 1 + world.rewildingBoost * 0.42;
+      const moralAlign = world.deity.getMoralAlignment(world);
+      const stewardshipBoost =
+        1 + world.rewildingBoost * 0.42 + Math.max(0, moralAlign) * 0.25 - Math.max(0, -moralAlign) * 0.14;
       const work = dt * (11.0 + creature.def.buildSkill * 11.0) * styleMult * stewardshipBoost;
       if (bld.disassembling) {
         const repName = bld.replacementType
@@ -1052,14 +1104,38 @@ export class CreatureAI {
         }
         if (nearby) {
           const sameFaction = nearby.settlementId === creature.settlementId;
-          const compat =
-            (creature.personality.friendliness + nearby.personality.friendliness) * 0.5 +
-            (sameFaction ? 0.2 : -0.05);
+          const moralAlign = world.deity.getMoralAlignment(world);
+          const ecoStress = Math.min(
+            1.2,
+            world.climateHeat + world.miasmaIntensity + world.habitatScars.length * 0.25,
+          );
+          const compat = Math.max(
+            0.12,
+            Math.min(
+              0.96,
+              (creature.personality.friendliness + nearby.personality.friendliness) * 0.5 +
+                (sameFaction ? 0.2 : -0.05) +
+                moralAlign * 0.36 -
+                ecoStress * 0.16,
+            ),
+          );
 
           if (world.rng.chance(compat)) {
-            const score = creature.adjustRelationship(nearby.id, 10);
-            nearby.adjustRelationship(creature.id, 10);
-            creature.thought = `Laughing with ${nearby.name}`;
+            const gain = moralAlign > 0.25 ? 14 : 10;
+            const score = creature.adjustRelationship(nearby.id, gain);
+            nearby.adjustRelationship(creature.id, gain);
+            if (moralAlign > 0.25 && nearby.hunger > 45) {
+              nearby.hunger = Math.max(10, nearby.hunger - 22);
+              nearby.mood = Math.min(100, nearby.mood + 10);
+              creature.mood = Math.min(100, creature.mood + 8);
+              creature.thought = `Sharing warm berries in fellowship with ${nearby.name}`;
+              nearby.thought = `Grateful for ${creature.name}'s shared harvest`;
+            } else {
+              creature.thought =
+                moralAlign > 0.3
+                  ? `Cooperating joyfully with ${nearby.name}`
+                  : `Laughing with ${nearby.name}`;
+            }
             // Same-species unbonded adults who grow fond of one another can pair off naturally!
             if (
               sameFaction &&
@@ -1073,7 +1149,7 @@ export class CreatureAI {
               const home = world.getSettlement(creature.settlementId);
               world.pairCreatures(creature, nearby, home?.name);
             }
-            if (score >= 45 && score - 10 < 45) {
+            if (score >= 45 && score - gain < 45) {
               world.chronicle.record(
                 world.day,
                 world.season,
@@ -1084,10 +1160,14 @@ export class CreatureAI {
               );
             }
           } else {
-            const score = creature.adjustRelationship(nearby.id, -14);
-            nearby.adjustRelationship(creature.id, -14);
-            creature.thought = `Arguing with ${nearby.name} over acorns`;
-            if (score <= -45 && score + 14 > -45) {
+            const drop = moralAlign < -0.25 ? 20 : 14;
+            const score = creature.adjustRelationship(nearby.id, -drop);
+            nearby.adjustRelationship(creature.id, -drop);
+            creature.thought =
+              moralAlign < -0.25
+                ? `Feuding with ${nearby.name} over scarce woodland stores`
+                : `Arguing with ${nearby.name} over acorns`;
+            if (score <= -45 && score + drop > -45) {
               world.chronicle.record(
                 world.day,
                 world.season,
@@ -1369,9 +1449,17 @@ export class CreatureAI {
       });
 
       world.deity.observeConflict(0.6);
+      const sameSettlementClash = creature.settlementId === target.settlementId;
+      if (!sameSettlementClash) {
+        const homeS = world.getSettlement(creature.settlementId);
+        const otherS = world.getSettlement(target.settlementId);
+        if (homeS && otherS) {
+          world.diplomacy.adjustRelation(homeS, otherS, -3, world, 'border skirmish');
+        }
+      }
 
       if (target.health <= 0) {
-        if (world.rng.chance(0.28)) {
+        if (!sameSettlementClash && world.rng.chance(0.24)) {
           target.alive = false;
           target.health = 0;
           world.chronicle.record(
@@ -1384,7 +1472,7 @@ export class CreatureAI {
           );
           world.deity.observeConflict(2.5);
         } else {
-          target.health = target.maxHealth * 0.22;
+          target.health = target.maxHealth * 0.24;
           target.activity = 'fleeing';
           target.actionTimer = 7;
           target.thought = `Yielding to ${creature.name}!`;
@@ -1393,7 +1481,9 @@ export class CreatureAI {
             world.season,
             'combat',
             'Woodland Clash',
-            `${creature.name} drove ${target.name} back in a fierce territorial clash.`,
+            sameSettlementClash
+              ? `${creature.name} drove ${target.name} back in a fierce scramble over scarce forage.`
+              : `${creature.name} drove ${target.name} back in a fierce territorial clash.`,
             creature.position2D,
           );
         }

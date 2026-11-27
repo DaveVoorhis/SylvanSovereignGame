@@ -218,7 +218,16 @@ export class GameEngine {
       onChangeQuality: (preset: QualityPreset) => {
         void this.changeQualityAsync(preset);
       },
-      onWhisper: (intent) => this.world.deity.receiveSpectatorWhisper(intent, this.world),
+      onWhisper: (intent) => {
+        const msg = this.world.deity.receiveSpectatorWhisper(intent, this.world);
+        this.refreshHudNow();
+        return msg;
+      },
+      onSetDeityStance: (stance) => {
+        const msg = this.world.deity.setStance(stance, this.world);
+        this.refreshHudNow();
+        return msg;
+      },
       onFocusPosition: (pos) => {
         this.exitCreaturePov(false);
         const y = Math.max(

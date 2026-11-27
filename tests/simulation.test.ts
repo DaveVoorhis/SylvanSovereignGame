@@ -187,22 +187,85 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     const response = world.deity.receiveSpectatorWhisper('prosperity', world);
 
     expect(response).toContain(world.deity.name);
-    expect(response).toContain('whisper of stewardship.');
+    expect(response).toContain('whisper of rewilding');
+    expect(world.activeInfluences.some((inf) => inf.polarity === 'restorative')).toBe(true);
     expect(world.deity.traits.benevolence).toBeGreaterThanOrEqual(beforeBenevolence);
     expect(world.deity.whisperCooldown).toBeGreaterThan(0);
 
     const expectedLabels = [
-      ['peace', 'shelter'],
-      ['drama', 'upheaval'],
-      ['mystery', 'change'],
+      ['drama', 'habitat destruction', 'disruptive'],
+      ['mystery', 'climate crisis', 'disruptive'],
+      ['peace', 'climate healing', 'restorative'],
     ] as const;
-    for (const [intent, label] of expectedLabels) {
+    for (const [intent, label, expectedPolarity] of expectedLabels) {
       world.deity.whisperCooldown = 0;
       const msg = world.deity.receiveSpectatorWhisper(intent, world);
-      expect(msg).toBe(`${world.deity.name} heard your whisper of ${label}.`);
+      expect(msg).toContain(`${world.deity.name} heard your whisper of ${label}`);
+      const latestAct = world.activeInfluences[world.activeInfluences.length - 1];
+      expect(latestAct?.polarity).toBe(expectedPolarity);
       const latestEntry = world.chronicle.entries[0];
       expect(latestEntry?.detail).toContain(`whispered of ${label}`);
     }
+    // Climate healing must actively quell prior disruptive influences
+    expect(world.activeInfluences.every((inf) => inf.polarity === 'restorative')).toBe(true);
+  });
+
+  it('lets the spectator steer the deity between Good Steward, Neutral, and Bad Exploiter with visible ecological and behavioral fallout', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 919191,
+      initialSettlements: 2,
+      initialCreaturesPerSettlement: 8,
+    });
+    const [sA, sB] = world.settlements;
+    expect(sA).toBeDefined();
+    expect(sB).toBeDefined();
+
+    // 1. Steer toward Destructive Exploiter + unleash habitat destruction & climate crisis
+    const badMsg = world.deity.setStance('destructive', world);
+    expect(badMsg).toContain('Exploiter');
+    expect(world.deity.stance).toBe('destructive');
+    expect(world.deity.getMoralAlignment(world)).toBeLessThan(-0.45);
+    expect(world.deity.getSocialClimate(world).tone).toBe('bad');
+
+    world.deity.receiveSpectatorWhisper('drama', world);
+    expect(world.habitatScars.length).toBeGreaterThan(0);
+    world.deity.whisperCooldown = 0;
+    world.deity.receiveSpectatorWhisper('mystery', world);
+
+    for (let i = 0; i < 60; i++) {
+      world.step(0.25);
+    }
+    const destructiveDiplomacy = world.diplomacy.getScore(sA.id, sB.id);
+    const destructiveClimateStress = world.climateHeat + world.miasmaIntensity + world.climateFreeze + world.floodSurge;
+    expect(destructiveClimateStress).toBeGreaterThan(0.25);
+    expect(destructiveDiplomacy).toBeLessThan(0);
+
+    // Snapshot round-trip preserves stance
+    const snap = world.deity.exportSnapshot();
+    expect(snap.stance).toBe('destructive');
+
+    // 2. Pivot dynamically to Benevolent Steward + invoke climate healing & rewilding
+    const goodMsg = world.deity.setStance('benevolent', world);
+    expect(goodMsg).toContain('Steward');
+    expect(world.deity.stance).toBe('benevolent');
+
+    world.deity.whisperCooldown = 0;
+    world.deity.receiveSpectatorWhisper('peace', world);
+    world.deity.whisperCooldown = 0;
+    world.deity.receiveSpectatorWhisper('prosperity', world);
+
+    for (let i = 0; i < 60; i++) {
+      world.step(0.25);
+    }
+    expect(world.deity.getMoralAlignment(world)).toBeGreaterThan(0.45);
+    expect(world.deity.getSocialClimate(world).tone).toBe('good');
+    expect(world.rewildingBoost).toBeGreaterThan(0.2);
+    expect(world.diplomacy.getScore(sA.id, sB.id)).toBeGreaterThan(destructiveDiplomacy + 25);
+
+    // 3. Return to Neutral Balance
+    const neutralMsg = world.deity.setStance('neutral', world);
+    expect(neutralMsg).toContain('Balanced');
+    expect(world.deity.stance).toBe('neutral');
   });
 
   it('steers creatures smoothly around settlement hearth fires instead of walking through them', () => {
