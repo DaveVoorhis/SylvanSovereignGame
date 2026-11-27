@@ -6,6 +6,7 @@ import {
   isQualityPreset,
   isValidSaveRecord,
   makeManualSlotId,
+  sanitizeHudPanelPositions,
   SaveStore,
   type SaveGameRecord,
 } from '@core/SaveStore';
@@ -143,6 +144,12 @@ describe('WorldState persistence & IndexedDB SaveStore', () => {
         deityPanelOpen: false,
         chroniclePanelOpen: true,
         qualityPreset: 'ultra',
+        panelPositions: {
+          deity: { x: 40, y: 140 },
+          chronicle: { x: 340, y: 160 },
+          inspector: { x: 920, y: 120 },
+          pov: { x: 260, y: 640 },
+        },
       },
     });
 
@@ -155,6 +162,26 @@ describe('WorldState persistence & IndexedDB SaveStore', () => {
     expect(isQualityPreset('balanced')).toBe(true);
     expect(isQualityPreset('high')).toBe(true);
     expect(isQualityPreset('invalid')).toBe(false);
+    expect(parsed.view?.panelPositions).toEqual({
+      deity: { x: 40, y: 140 },
+      chronicle: { x: 340, y: 160 },
+      inspector: { x: 920, y: 120 },
+      pov: { x: 260, y: 640 },
+    });
+    expect(
+      sanitizeHudPanelPositions({
+        deity: { x: 12.6, y: 108.4 },
+        chronicle: { x: Number.NaN, y: 100 },
+        inspector: { x: 400, y: Number.POSITIVE_INFINITY },
+        pov: { x: 200, y: 500 },
+        unknownBox: { x: 10, y: 10 },
+      }),
+    ).toEqual({
+      deity: { x: 13, y: 108 },
+      pov: { x: 200, y: 500 },
+    });
+    expect(sanitizeHudPanelPositions(undefined)).toEqual({});
+    expect(sanitizeHudPanelPositions(null)).toEqual({});
 
     const restored = WorldState.fromSnapshot(new EventBus(), parsed.world);
 

@@ -726,6 +726,50 @@ body,
   padding-bottom: 6px;
 }
 
+.hud-draggable .panel-header {
+  cursor: grab;
+  touch-action: none;
+}
+
+.hud-draggable .panel-header > span:first-child::before {
+  content: '⋮⋮';
+  display: inline-block;
+  margin-right: 5px;
+  font-size: 11px;
+  letter-spacing: -1px;
+  opacity: 0.42;
+  transition: opacity 0.15s ease;
+}
+
+.hud-draggable .panel-header:hover > span:first-child::before {
+  opacity: 0.85;
+}
+
+.hud-draggable.is-dragging {
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.52), 0 0 0 1px rgba(229, 190, 109, 0.45);
+  border-color: rgba(229, 190, 109, 0.48);
+}
+
+.hud-draggable.is-dragging .panel-header,
+.hud-draggable.hud-pov-bar.is-dragging {
+  cursor: grabbing;
+}
+
+.hud-draggable.hud-pov-bar {
+  cursor: grab;
+  touch-action: none;
+}
+
+.hud-draggable.hud-pov-bar .pov-badge::before {
+  content: '⋮⋮ ';
+  opacity: 0.65;
+  letter-spacing: -1px;
+}
+
+body.hud-panel-dragging {
+  cursor: grabbing !important;
+}
+
 .panel-header-actions {
   display: inline-flex;
   align-items: center;
@@ -1028,10 +1072,11 @@ button.eco-chip.clickable:active {
 /* Chronicle Panel */
 .hud-chronicle {
   position: absolute;
-  left: 12px;
-  bottom: 34px;
+  top: var(--hud-top-offset, 108px);
+  left: max(12px, min(298px, calc(100vw - 322px)));
   width: 310px;
-  max-height: 230px;
+  max-width: calc(100vw - 24px);
+  max-height: min(230px, calc(100vh - var(--hud-top-offset, 108px) - 48px));
   padding: 10px 12px;
   display: flex;
   flex-direction: column;

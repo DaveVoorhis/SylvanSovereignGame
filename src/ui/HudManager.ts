@@ -1,5 +1,5 @@
 import type { QualityPreset } from '@core/Config';
-import type { SaveGameRecord, SaveSlotMeta } from '@core/SaveStore';
+import type { HudPanelPositions, SaveGameRecord, SaveSlotMeta } from '@core/SaveStore';
 import type { DeityStance, PrayerIntent, SelectionTarget, Vec2 } from '@core/Types';
 import type { WorldState } from '@simulation/WorldState';
 import { ChroniclePanel } from './ChroniclePanel';
@@ -7,6 +7,7 @@ import { ConfirmModal } from './ConfirmModal';
 import { CreatureDirectoryModal } from './CreatureDirectoryModal';
 import { CreaturePovBar } from './CreaturePovBar';
 import { DeityPanel } from './DeityPanel';
+import { HudPanelDragManager } from './HudPanelDragManager';
 import { InspectorPanel } from './InspectorPanel';
 import type { RealmOverviewTab } from './RealmOverviewLogic';
 import { RealmOverviewModal } from './RealmOverviewModal';
@@ -43,6 +44,7 @@ export interface HudCallbacks {
   onDeleteSaveSlot: (slotId: string) => Promise<void>;
   onExportSaveRecord: () => SaveGameRecord;
   onImportSaveRecord: (record: SaveGameRecord) => Promise<boolean>;
+  onPanelPositionsChange?: (positions: HudPanelPositions) => void;
 }
 
 /**
@@ -62,6 +64,7 @@ export class HudManager {
   private readonly povBar: CreaturePovBar;
   private readonly footerHint: HTMLElement;
   private readonly zenToast: HTMLElement;
+  private readonly panelDragManager: HudPanelDragManager;
   private readonly topBarResizeObserver: ResizeObserver | null = null;
   private lastWorld: WorldState | null = null;
   private zenMode = false;
@@ -188,6 +191,14 @@ export class HudManager {
       this.confirmModal.element,
     );
 
+    this.panelDragManager = new HudPanelDragManager({
+      onPositionsChange: callbacks.onPanelPositionsChange,
+    });
+    this.panelDragManager.register({ id: 'deity', element: this.deityPanel.element, handleSelector: '.panel-header' });
+    this.panelDragManager.register({ id: 'chronicle', element: this.chroniclePanel.element, handleSelector: '.panel-header' });
+    this.panelDragManager.register({ id: 'inspector', element: this.inspectorPanel.element, handleSelector: '.panel-header' });
+    this.panelDragManager.register({ id: 'pov', element: this.povBar.element });
+
     if (typeof ResizeObserver !== 'undefined') {
       let lastOffsetPx = -1;
       const syncOffset = () => {
@@ -212,6 +223,14 @@ export class HudManager {
 
   isChroniclePanelOpen(): boolean {
     return this.chroniclePanel.isOpen();
+  }
+
+  getPanelPositions(): HudPanelPositions {
+    return this.panelDragManager.getPositions();
+  }
+
+  setPanelPositions(positions: HudPanelPositions | undefined): void {
+    this.panelDragManager.setPositions(positions);
   }
 
   setActiveSpeed(speed: number): void {
@@ -240,6 +259,9 @@ export class HudManager {
     if (open && this.lastWorld) {
       this.deityPanel.update(this.lastWorld);
     }
+    if (open) {
+      this.panelDragManager.clampPanel('deity');
+    }
   }
 
   toggleDeityPanel(): void {
@@ -251,6 +273,9 @@ export class HudManager {
     this.topBar.syncDialogPills();
     if (open && this.lastWorld) {
       this.chroniclePanel.update(this.lastWorld.chronicle.entries, true);
+    }
+    if (open) {
+      this.panelDragManager.clampPanel('chronicle');
     }
   }
 
@@ -441,8 +466,18 @@ export class HudManager {
     this.topBar.update(world, inPov, selection);
     this.deityPanel.update(world);
     this.chroniclePanel.update(world.chronicle.entries);
+
+    const wasInspectorVisible = this.inspectorPanel.isVisible();
     this.inspectorPanel.update(selection, world, isFollowing, povCreatureId);
+    if (this.inspectorPanel.isVisible() && (!wasInspectorVisible || force)) {
+      this.panelDragManager.clampPanel('inspector');
+    }
+
+    const wasPovVisible = this.povBar.isVisible();
     this.povBar.update(world, povCreatureId);
+    if (this.povBar.isVisible() && (!wasPovVisible || force)) {
+      this.panelDragManager.clampPanel('pov');
+    }
     if (inPov !== this.lastFooterHidden) {
       this.lastFooterHidden = inPov;
       this.footerHint.classList.toggle('hidden', inPov);
@@ -450,6 +485,7 @@ export class HudManager {
   }
 
   dispose(): void {
+    this.panelDragManager.dispose();
     this.topBar.dispose();
     if (this.topBarResizeObserver) {
       this.topBarResizeObserver.disconnect();

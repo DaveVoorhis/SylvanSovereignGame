@@ -70,6 +70,10 @@ export class InspectorPanel {
     this.element.appendChild(this.contentEl);
   }
 
+  isVisible(): boolean {
+    return this.visible;
+  }
+
   private setVisible(next: boolean): void {
     if (this.visible === next) return;
     this.visible = next;
@@ -154,9 +158,9 @@ export class InspectorPanel {
         homeId: home?.id ?? null,
       };
       this.setContentHtml(`
-        <div class="panel-header">
+        <div class="panel-header" title="Drag to move · Double-click to reset position">
           <span>🐾 ${c.name}</span>
-          <button class="close-btn" data-action="close">✕</button>
+          <button class="close-btn" data-action="close" title="Close inspector">✕</button>
         </div>
         <div class="inspector-sub">${stageLabel} ${c.def.displayName} ${c.isYoung() ? '' : c.role + ' '}· Gen ${c.generation} · ${home?.name ?? 'Wanderer'}</div>
         ${
@@ -249,9 +253,9 @@ export class InspectorPanel {
 
       this.currentActionState = { kind: 'settlement', settlementId: s.id };
       this.setContentHtml(`
-        <div class="panel-header">
+        <div class="panel-header" title="Drag to move · Double-click to reset position">
           <span>${profile.icon} ${s.name}</span>
-          <button class="close-btn" data-action="close">✕</button>
+          <button class="close-btn" data-action="close" title="Close inspector">✕</button>
         </div>
         <div class="inspector-sub">${profile.title} (${s.tier}) · ${biomeLabel}</div>
         ${warBannerHtml}
@@ -319,9 +323,9 @@ export class InspectorPanel {
           : `${getConstructionStageLabel(stage, bp.frameStyle)} · ${Math.round(foundBuilding.progress)}%`;
       this.currentActionState = { kind: 'building', ownerId: owner.id };
       this.setContentHtml(`
-        <div class="panel-header">
+        <div class="panel-header" title="Drag to move · Double-click to reset position">
           <span>🏡 ${bp.displayName}</span>
-          <button class="close-btn" data-action="close">✕</button>
+          <button class="close-btn" data-action="close" title="Close inspector">✕</button>
         </div>
         <div class="inspector-sub">${owner.name} · ${statusLabel}</div>
         <div class="adaptation-badge">${ownerProfile.icon} ${ownerProfile.title} style (${getBiomeDisplayName(owner.biome)})</div>

@@ -29,6 +29,7 @@ export class CreaturePovBar {
     const badge = document.createElement('span');
     badge.className = 'pov-badge';
     badge.textContent = '👁 EYE VIEW';
+    badge.title = 'Drag bar to move · Double-click to reset position';
 
     this.infoEl = document.createElement('div');
     this.infoEl.className = 'pov-info';
@@ -84,6 +85,10 @@ export class CreaturePovBar {
     mainRow.append(leftRow, actions);
 
     this.element.append(mainRow, hint);
+  }
+
+  isVisible(): boolean {
+    return this.visible;
   }
 
   update(world: WorldState, povCreatureId: string | null): void {

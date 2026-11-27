@@ -17,6 +17,7 @@ export class ChroniclePanel {
 
     const header = document.createElement('div');
     header.className = 'panel-header';
+    header.title = 'Drag to move · Double-click to reset position';
 
     const titleLabel = document.createElement('span');
     titleLabel.textContent = '📜 Living Chronicle';

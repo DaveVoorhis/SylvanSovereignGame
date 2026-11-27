@@ -87,6 +87,7 @@ export class GameEngine {
   private autosaveAccumSec = 0;
   private autosaveInFlight = false;
   private autosaveScheduled = false;
+  private autosaveDirtyWhileInFlight = false;
   private pendingAutosaveIdleId: number | null = null;
   private pendingAutosaveTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly povPoseScratch = {
@@ -320,6 +321,9 @@ export class GameEngine {
       onDeleteSaveSlot: (slotId) => this.saveStore.deleteSlot(slotId),
       onExportSaveRecord: () => this.buildCurrentSaveRecord(DEFAULT_AUTOSAVE_SLOT_ID, 'Exported Realm'),
       onImportSaveRecord: (record) => this.loadSaveRecordAsync(record),
+      onPanelPositionsChange: () => {
+        this.schedulePeriodicAutosave();
+      },
     });
     this.hud.setQualityPreset(initialQuality);
     this.hud.setFullscreenActive(this.isDocumentFullscreen());
@@ -826,6 +830,7 @@ export class GameEngine {
       deityPanelOpen: this.hud.isDeityPanelOpen(),
       chroniclePanelOpen: this.hud.isChroniclePanelOpen(),
       qualityPreset: this.sceneManager.getQuality(),
+      panelPositions: this.hud.getPanelPositions(),
     };
   }
 
@@ -843,6 +848,7 @@ export class GameEngine {
     this.hud.setCinematicActive(view.cinematicDrift);
     this.hud.setDeityPanelOpen(view.deityPanelOpen);
     this.hud.setChroniclePanelOpen(view.chroniclePanelOpen);
+    this.hud.setPanelPositions(view.panelPositions);
 
     if (view.povCreatureId) {
       const host = this.world.getCreature(view.povCreatureId);
@@ -880,6 +886,7 @@ export class GameEngine {
 
   private cancelScheduledAutosave(): void {
     this.autosaveScheduled = false;
+    this.autosaveDirtyWhileInFlight = false;
     if (this.pendingAutosaveIdleId !== null && typeof window !== 'undefined') {
       const cancelIdle = (window as unknown as { cancelIdleCallback?: (id: number) => void })
         .cancelIdleCallback;
@@ -893,7 +900,14 @@ export class GameEngine {
   }
 
   private schedulePeriodicAutosave(): void {
-    if (this.isRebuilding || this.autosaveInFlight || this.autosaveScheduled || !this.saveStore.isAvailable()) {
+    if (this.isRebuilding || !this.saveStore.isAvailable()) {
+      return;
+    }
+    if (this.autosaveInFlight) {
+      this.autosaveDirtyWhileInFlight = true;
+      return;
+    }
+    if (this.autosaveScheduled) {
       return;
     }
     this.autosaveScheduled = true;
@@ -927,6 +941,10 @@ export class GameEngine {
       // Swallow background autosave errors so gameplay is never interrupted
     } finally {
       this.autosaveInFlight = false;
+      if (this.autosaveDirtyWhileInFlight) {
+        this.autosaveDirtyWhileInFlight = false;
+        this.schedulePeriodicAutosave();
+      }
     }
   }
 

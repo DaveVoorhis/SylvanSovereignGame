@@ -43,6 +43,7 @@ export class DeityPanel {
 
     const title = document.createElement('div');
     title.className = 'panel-header';
+    title.title = 'Drag to move · Double-click to reset position';
 
     const titleLabel = document.createElement('span');
     titleLabel.textContent = '✦ Deity';

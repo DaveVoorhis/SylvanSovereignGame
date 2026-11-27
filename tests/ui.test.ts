@@ -4,7 +4,9 @@ import { WorldState } from '@simulation/WorldState';
 import { ConfirmModal } from '@ui/ConfirmModal';
 import { CreaturePovBar } from '@ui/CreaturePovBar';
 import { DeityPanel } from '@ui/DeityPanel';
+import { CreatureDirectoryModal } from '@ui/CreatureDirectoryModal';
 import { bindDialogPill, type DialogPillButton } from '@ui/DialogPillController';
+import { HudPanelDragManager } from '@ui/HudPanelDragManager';
 import {
   buildBuildingsSummary,
   buildPioneersSummary,
@@ -1075,6 +1077,442 @@ describe('RealmOverviewLogic', () => {
       expect(focused[2]).toEqual({ x: fighter.x, z: fighter.z });
       clickChip('wars');
       expect(focused[3]).toEqual({ x: sA.center.x, z: sA.center.z });
+    } finally {
+      if (prevDocument === undefined) {
+        delete (globalThis as { document?: unknown }).document;
+      } else {
+        (globalThis as { document?: unknown }).document = prevDocument;
+      }
+    }
+  });
+
+  it('places Living Chronicle initially to the right of the Deity box without overlapping it', async () => {
+    const fsModuleName = 'node:fs';
+    const fs = (await import(/* @vite-ignore */ fsModuleName)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const css = fs.readFileSync(new URL('../src/style.css', import.meta.url), 'utf8');
+    const deityBlock = css.match(/\.hud-deity\s*\{([^}]*)\}/)?.[1] ?? '';
+    const chronicleBlock = css.match(/\.hud-chronicle\s*\{([^}]*)\}/)?.[1] ?? '';
+
+    const deityLeft = Number(deityBlock.match(/left:\s*(\d+)px/)?.[1]);
+    const deityWidth = Number(deityBlock.match(/width:\s*(\d+)px/)?.[1]);
+    const chronicleLeft = Number(chronicleBlock.match(/min\((\d+)px,\s*calc/)?.[1]);
+
+    expect(deityLeft).toBe(12);
+    expect(deityWidth).toBe(274);
+    expect(chronicleBlock).toContain('top: var(--hud-top-offset, 108px)');
+    expect(chronicleBlock).not.toContain('bottom:');
+    expect(chronicleLeft).toBeGreaterThanOrEqual(deityLeft + deityWidth + 8);
+  });
+
+  it('supports dragging, clamping, z-index focus, double-click reset, and save/restore via HudPanelDragManager', () => {
+    type FakeTarget = {
+      closest: (selector: string) => FakeTarget | null;
+    };
+    type FakePanelEl = {
+      rect: { left: number; top: number; width: number; height: number };
+      classes: Set<string>;
+      style: Record<string, string>;
+      listeners: Map<string, Set<(ev: unknown) => void>>;
+      classList: {
+        add: (c: string) => void;
+        remove: (c: string) => void;
+        contains: (c: string) => boolean;
+      };
+      contains: (node: unknown) => boolean;
+      getBoundingClientRect: () => { left: number; top: number; width: number; height: number };
+      addEventListener: (type: string, fn: (ev: unknown) => void) => void;
+      removeEventListener: (type: string, fn: (ev: unknown) => void) => void;
+      dispatch: (type: string, ev: unknown) => void;
+    };
+
+    const makePanel = (rect: { left: number; top: number; width: number; height: number }): FakePanelEl => {
+      const classes = new Set<string>();
+      const listeners = new Map<string, Set<(ev: unknown) => void>>();
+      const style: Record<string, string> = {};
+      const el: FakePanelEl = {
+        rect,
+        classes,
+        style,
+        listeners,
+        classList: {
+          add: (c: string) => {
+            classes.add(c);
+          },
+          remove: (c: string) => {
+            classes.delete(c);
+          },
+          contains: (c: string) => classes.has(c),
+        },
+        contains: () => true,
+        getBoundingClientRect: () => ({
+          left: style.left ? Number.parseFloat(style.left) : el.rect.left,
+          top: style.top ? Number.parseFloat(style.top) : el.rect.top,
+          width: el.rect.width,
+          height: el.rect.height,
+        }),
+        addEventListener: (type, fn) => {
+          let set = listeners.get(type);
+          if (!set) {
+            set = new Set();
+            listeners.set(type, set);
+          }
+          set.add(fn);
+        },
+        removeEventListener: (type, fn) => {
+          listeners.get(type)?.delete(fn);
+        },
+        dispatch: (type, ev) => {
+          for (const fn of [...(listeners.get(type) ?? [])]) fn(ev);
+        },
+      };
+      return el;
+    };
+
+    const windowListeners = new Map<string, Set<(ev: unknown) => void>>();
+    let viewport = { width: 1280, height: 800 };
+    const prevWindow = (globalThis as { window?: unknown }).window;
+    (globalThis as { window?: unknown }).window = {
+      get innerWidth() {
+        return viewport.width;
+      },
+      get innerHeight() {
+        return viewport.height;
+      },
+      addEventListener: (type: string, fn: (ev: unknown) => void) => {
+        let set = windowListeners.get(type);
+        if (!set) {
+          set = new Set();
+          windowListeners.set(type, set);
+        }
+        set.add(fn);
+      },
+      removeEventListener: (type: string, fn: (ev: unknown) => void) => {
+        windowListeners.get(type)?.delete(fn);
+      },
+    };
+    const dispatchWindow = (type: string, ev: unknown = {}) => {
+      for (const fn of [...(windowListeners.get(type) ?? [])]) fn(ev);
+    };
+
+    const headerTarget: FakeTarget = {
+      closest: (sel: string) => (sel === '.panel-header' ? headerTarget : null),
+    };
+    const closeBtnTarget: FakeTarget = {
+      closest: (sel: string) => (sel.includes('button') || sel === '.panel-header' ? closeBtnTarget : null),
+    };
+    const bodyTarget: FakeTarget = {
+      closest: () => null,
+    };
+
+    try {
+      const deityEl = makePanel({ left: 12, top: 108, width: 274, height: 420 });
+      const chronicleEl = makePanel({ left: 298, top: 108, width: 310, height: 230 });
+      const povEl = makePanel({ left: 170, top: 700, width: 940, height: 86 });
+
+      const changeSnapshots: Array<ReturnType<HudPanelDragManager['getPositions']>> = [];
+      const manager = new HudPanelDragManager({
+        onPositionsChange: (pos) => changeSnapshots.push(pos),
+      });
+      manager.register({
+        id: 'deity',
+        element: deityEl as unknown as HTMLElement,
+        handleSelector: '.panel-header',
+      });
+      manager.register({
+        id: 'chronicle',
+        element: chronicleEl as unknown as HTMLElement,
+        handleSelector: '.panel-header',
+      });
+      manager.register({
+        id: 'pov',
+        element: povEl as unknown as HTMLElement,
+      });
+
+      expect(deityEl.classList.contains('hud-draggable')).toBe(true);
+      expect(chronicleEl.classList.contains('hud-draggable')).toBe(true);
+
+      // 1. Clicking close button inside header does NOT start a drag
+      chronicleEl.dispatch('pointerdown', {
+        pointerType: 'mouse',
+        button: 0,
+        pointerId: 1,
+        clientX: 590,
+        clientY: 120,
+        target: closeBtnTarget,
+      });
+      dispatchWindow('pointermove', { pointerId: 1, clientX: 700, clientY: 200 });
+      dispatchWindow('pointerup', { pointerId: 1 });
+      expect(manager.getPositions()).toEqual({});
+      expect(changeSnapshots.length).toBe(0);
+
+      // 2. Micro-movement under threshold does NOT freeze CSS positioning
+      chronicleEl.dispatch('pointerdown', {
+        pointerType: 'mouse',
+        button: 0,
+        pointerId: 2,
+        clientX: 350,
+        clientY: 120,
+        target: headerTarget,
+      });
+      dispatchWindow('pointermove', { pointerId: 2, clientX: 351, clientY: 121 });
+      dispatchWindow('pointerup', { pointerId: 2 });
+      expect(chronicleEl.style.left).toBeUndefined();
+      expect(manager.getPositions()).toEqual({});
+
+      // 3. Dragging Living Chronicle header moves it, brings it to front, and persists position
+      chronicleEl.dispatch('pointerdown', {
+        pointerType: 'mouse',
+        button: 0,
+        pointerId: 3,
+        clientX: 350,
+        clientY: 120,
+        target: headerTarget,
+      });
+      dispatchWindow('pointermove', { pointerId: 3, clientX: 550, clientY: 270 });
+      expect(chronicleEl.classList.contains('is-dragging')).toBe(true);
+      expect(chronicleEl.style.left).toBe('498px');
+      expect(chronicleEl.style.top).toBe('258px');
+      expect(chronicleEl.style.right).toBe('auto');
+      expect(chronicleEl.style.bottom).toBe('auto');
+      expect(chronicleEl.style.transform).toBe('none');
+      expect(Number(chronicleEl.style.zIndex)).toBeGreaterThan(Number(deityEl.style.zIndex));
+      expect(Number(chronicleEl.style.zIndex)).toBeLessThan(20);
+
+      dispatchWindow('pointerup', { pointerId: 3 });
+      expect(chronicleEl.classList.contains('is-dragging')).toBe(false);
+      expect(manager.getPositions()).toEqual({ chronicle: { x: 498, y: 258 } });
+      expect(changeSnapshots.length).toBe(1);
+
+      // 4. Dragging Deity panel past viewport bounds clamps safely inside viewport
+      deityEl.dispatch('pointerdown', {
+        pointerType: 'mouse',
+        button: 0,
+        pointerId: 4,
+        clientX: 50,
+        clientY: 120,
+        target: headerTarget,
+      });
+      dispatchWindow('pointermove', { pointerId: 4, clientX: 2500, clientY: -200 });
+      dispatchWindow('pointerup', { pointerId: 4 });
+      // maxX = 1280 - 274 - 8 = 998; minY = 8
+      expect(manager.getPositions().deity).toEqual({ x: 998, y: 8 });
+      expect(Number(deityEl.style.zIndex)).toBeGreaterThan(Number(chronicleEl.style.zIndex));
+
+      // 5. Dragging POV bar by non-button region works
+      povEl.dispatch('pointerdown', {
+        pointerType: 'mouse',
+        button: 0,
+        pointerId: 5,
+        clientX: 300,
+        clientY: 720,
+        target: bodyTarget,
+      });
+      dispatchWindow('pointermove', { pointerId: 5, clientX: 250, clientY: 620 });
+      dispatchWindow('pointerup', { pointerId: 5 });
+      expect(manager.getPositions().pov).toEqual({ x: 120, y: 600 });
+
+      // 6. Double-clicking Chronicle header resets it back to default CSS layout
+      chronicleEl.dispatch('dblclick', { target: headerTarget });
+      expect(chronicleEl.style.left).toBe('');
+      expect(chronicleEl.style.top).toBe('');
+      expect(manager.getPositions().chronicle).toBeUndefined();
+      expect(manager.getPositions().deity).toEqual({ x: 998, y: 8 });
+
+      // 7. Restoring saved positions applies present entries, resets omitted ones, and clamps on resize
+      manager.setPositions({ chronicle: { x: 1100, y: 650 } });
+      expect(deityEl.style.left).toBe('');
+      expect(povEl.style.left).toBe('');
+      // Clamped for 1280x800: maxX = 1280 - 310 - 8 = 962, maxY = 800 - 230 - 8 = 562
+      expect(chronicleEl.style.left).toBe('962px');
+      expect(chronicleEl.style.top).toBe('562px');
+
+      // Shrinking viewport re-clamps visible panels automatically
+      viewport = { width: 900, height: 600 };
+      dispatchWindow('resize');
+      expect(chronicleEl.style.left).toBe('582px');
+      expect(chronicleEl.style.top).toBe('362px');
+
+      manager.dispose();
+    } finally {
+      if (prevWindow === undefined) {
+        delete (globalThis as { window?: unknown }).window;
+      } else {
+        (globalThis as { window?: unknown }).window = prevWindow;
+      }
+    }
+  });
+
+  it('preserves horizontal scroll position of broad family trees across live refreshes in CreatureDirectoryModal', () => {
+    type FakeScroller = {
+      dataset: Record<string, string>;
+      scrollLeft: number;
+      scrollTop: number;
+      classList: { contains: (c: string) => boolean };
+      getAttribute: (name: string) => string | null;
+    };
+    type FakeNode = {
+      tagName: string;
+      type: string;
+      className: string;
+      textContent: string;
+      placeholder: string;
+      title: string;
+      value: string;
+      checked: boolean;
+      scrollTop: number;
+      scrollLeft: number;
+      children: FakeNode[];
+      scrollers: FakeScroller[];
+      listeners: Map<string, Set<(ev: unknown) => void>>;
+      classList: {
+        add: (c: string) => void;
+        remove: (c: string) => void;
+        toggle: (c: string, force?: boolean) => boolean;
+        contains: (c: string) => boolean;
+      };
+      setAttribute: (name: string, value: string) => void;
+      addEventListener: (type: string, fn: (ev: unknown) => void, opts?: unknown) => void;
+      removeEventListener: (type: string, fn: (ev: unknown) => void) => void;
+      append: (...nodes: FakeNode[]) => void;
+      appendChild: (node: FakeNode) => FakeNode;
+      querySelectorAll: (selector: string) => FakeScroller[];
+      querySelector: (selector: string) => FakeScroller | null;
+      dispatch: (type: string, ev?: unknown) => void;
+      innerHTML: string;
+    };
+
+    const makeNode = (tagName: string): FakeNode => {
+      const classes = new Set<string>();
+      const listeners = new Map<string, Set<(ev: unknown) => void>>();
+      let html = '';
+      const node: FakeNode = {
+        tagName,
+        type: '',
+        className: '',
+        textContent: '',
+        placeholder: '',
+        title: '',
+        value: '',
+        checked: false,
+        scrollTop: 0,
+        scrollLeft: 0,
+        children: [],
+        scrollers: [],
+        listeners,
+        classList: {
+          add: (c: string) => {
+            classes.add(c);
+          },
+          remove: (c: string) => {
+            classes.delete(c);
+          },
+          toggle: (c: string, force?: boolean) => {
+            const next = force !== undefined ? force : !classes.has(c);
+            if (next) classes.add(c);
+            else classes.delete(c);
+            return next;
+          },
+          contains: (c: string) => classes.has(c),
+        },
+        setAttribute: () => {},
+        addEventListener: (type, fn) => {
+          let set = listeners.get(type);
+          if (!set) {
+            set = new Set();
+            listeners.set(type, set);
+          }
+          set.add(fn);
+        },
+        removeEventListener: (type, fn) => {
+          listeners.get(type)?.delete(fn);
+        },
+        append: (...nodes) => {
+          node.children.push(...nodes);
+        },
+        appendChild: (child) => {
+          node.children.push(child);
+          return child;
+        },
+        querySelectorAll: (selector: string) => {
+          if (selector.includes('lineage-tree-scroll')) return node.scrollers;
+          return [];
+        },
+        querySelector: () => null,
+        dispatch: (type, ev = {}) => {
+          for (const fn of [...(listeners.get(type) ?? [])]) fn(ev);
+        },
+        get innerHTML() {
+          return html;
+        },
+        set innerHTML(next: string) {
+          html = next;
+          // Simulate browser replacing inner DOM and resetting new scrollers to scrollLeft = 0
+          const ids = [...next.matchAll(/class="lineage-tree-scroll"\s+data-lineage-id="([^"]+)"/g)].map(
+            (m) => m[1],
+          );
+          node.scrollers = ids.map((lineageId) => ({
+            dataset: { lineageId },
+            scrollLeft: 0,
+            scrollTop: 0,
+            classList: { contains: (c: string) => c === 'lineage-tree-scroll' },
+            getAttribute: (name: string) => (name === 'data-lineage-id' ? lineageId : null),
+          }));
+        },
+      };
+      return node;
+    };
+
+    const prevDocument = (globalThis as { document?: unknown }).document;
+    (globalThis as { document?: unknown }).document = {
+      createElement: (tag: string) => makeNode(tag),
+    };
+
+    try {
+      const world = new WorldState(new EventBus(), {
+        seed: 551199,
+        initialSettlements: 1,
+        initialWaterwaySettlements: 0,
+        initialCreaturesPerSettlement: 4,
+      });
+      const [home] = world.settlements;
+      const [parentA, parentB] = world.creatures;
+      parentA.mateId = parentB.id;
+      parentB.mateId = parentA.id;
+      const child = world.spawnCreature(home, parentA.species, 'forager', {
+        ageDays: 0.4,
+        generation: 2,
+        parentIds: [parentA.id, parentB.id],
+      });
+      parentA.offspringIds.push(child.id);
+      parentB.offspringIds.push(child.id);
+
+      const modal = new CreatureDirectoryModal({
+        onClose: () => {},
+        onInspectCreature: () => {},
+        onEnterCreaturePov: () => {},
+        onFocusSettlement: () => {},
+      });
+      modal.openModal(world, { mode: 'tree' });
+
+      const backdrop = modal.element as unknown as FakeNode;
+      const card = backdrop.children[0];
+      const bodyEl = card.children[2];
+      expect(bodyEl.scrollers.length).toBeGreaterThanOrEqual(1);
+
+      // User scrolls the family tree horizontally to the right
+      const treeScroller = bodyEl.scrollers[0];
+      treeScroller.scrollLeft = 420;
+
+      // Advance simulation so creature ages change and trigger a forced re-render
+      world.step(1.0);
+      parentA.ageDays += 1.5;
+      modal.update(1.0, world, true);
+
+      // Recreated scroller retains the user's horizontal scroll offset instead of bouncing back to 0
+      expect(bodyEl.scrollers[0]).not.toBe(treeScroller);
+      expect(bodyEl.scrollers[0].scrollLeft).toBe(420);
     } finally {
       if (prevDocument === undefined) {
         delete (globalThis as { document?: unknown }).document;

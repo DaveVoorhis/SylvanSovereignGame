@@ -5,6 +5,16 @@ import type { WorldSnapshot, WorldState } from '@simulation/WorldState';
 export const DEFAULT_AUTOSAVE_SLOT_ID = 'autosave';
 export const SAVE_FORMAT_VERSION = 1 as const;
 
+export const HUD_PANEL_IDS = ['deity', 'chronicle', 'inspector', 'pov'] as const;
+export type HudPanelId = (typeof HUD_PANEL_IDS)[number];
+
+export interface HudPanelPosition {
+  readonly x: number;
+  readonly y: number;
+}
+
+export type HudPanelPositions = Partial<Record<HudPanelId, HudPanelPosition>>;
+
 const DB_NAME = 'sylvan-sovereign-db';
 const DB_VERSION = 2;
 const STORE_NAME = 'saves';
@@ -12,6 +22,26 @@ const META_STORE_NAME = 'saves_meta';
 
 export function isQualityPreset(value: unknown): value is QualityPreset {
   return value === 'balanced' || value === 'high' || value === 'ultra';
+}
+
+export function sanitizeHudPanelPositions(value: unknown): HudPanelPositions {
+  if (!value || typeof value !== 'object') return {};
+  const raw = value as Record<string, unknown>;
+  const out: Partial<Record<HudPanelId, HudPanelPosition>> = {};
+  for (const id of HUD_PANEL_IDS) {
+    const entry = raw[id];
+    if (!entry || typeof entry !== 'object') continue;
+    const pos = entry as { x?: unknown; y?: unknown };
+    if (
+      typeof pos.x === 'number' &&
+      Number.isFinite(pos.x) &&
+      typeof pos.y === 'number' &&
+      Number.isFinite(pos.y)
+    ) {
+      out[id] = { x: Math.round(pos.x), y: Math.round(pos.y) };
+    }
+  }
+  return out;
 }
 
 export interface SaveViewState {
@@ -24,6 +54,7 @@ export interface SaveViewState {
   readonly deityPanelOpen: boolean;
   readonly chroniclePanelOpen: boolean;
   readonly qualityPreset?: QualityPreset;
+  readonly panelPositions?: HudPanelPositions;
 }
 
 export interface SaveSlotMeta {

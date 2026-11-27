@@ -117,6 +117,13 @@ export class CreatureDirectoryModal {
   private lastSnapshotHasTrees = false;
   private lastRenderedHtml = '';
   private searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly treeScrollPositions = new Map<string, { left: number; top: number }>();
+  private tableWrapScroll = { left: 0, top: 0 };
+  private lastBodyScroll = { left: 0, top: 0 };
+  private lastUserScrollMs = -Infinity;
+  private isPointerDownInBody = false;
+  private isRestoringScroll = false;
+  private readonly onWindowPointerEndBound: () => void;
 
   constructor(private readonly callbacks: CreatureDirectoryCallbacks) {
     this.element = document.createElement('div');
@@ -306,6 +313,53 @@ export class CreatureDirectoryModal {
     this.bodyEl = document.createElement('div');
     this.bodyEl.className = 'cmodal-body';
     this.bodyEl.addEventListener('click', (e) => this.handleBodyClick(e));
+    this.onWindowPointerEndBound = () => {
+      this.isPointerDownInBody = false;
+      if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+        window.removeEventListener('pointerup', this.onWindowPointerEndBound);
+        window.removeEventListener('pointercancel', this.onWindowPointerEndBound);
+        window.removeEventListener('blur', this.onWindowPointerEndBound);
+      }
+    };
+    this.bodyEl.addEventListener('pointerdown', () => {
+      this.isPointerDownInBody = true;
+      if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        window.addEventListener('pointerup', this.onWindowPointerEndBound);
+        window.addEventListener('pointercancel', this.onWindowPointerEndBound);
+        window.addEventListener('blur', this.onWindowPointerEndBound);
+      }
+    });
+    this.bodyEl.addEventListener(
+      'scroll',
+      (e) => {
+        if (this.isRestoringScroll) return;
+        const target = e.target as HTMLElement | null;
+        if (!target) return;
+        const left = target.scrollLeft ?? 0;
+        const top = target.scrollTop ?? 0;
+        let changed = false;
+        if (target === this.bodyEl) {
+          changed = left !== this.lastBodyScroll.left || top !== this.lastBodyScroll.top;
+          this.lastBodyScroll = { left, top };
+        } else if (target.classList?.contains?.('lineage-tree-scroll')) {
+          const lineageId = target.dataset?.lineageId ?? target.getAttribute?.('data-lineage-id');
+          if (lineageId) {
+            const prev = this.treeScrollPositions.get(lineageId);
+            changed = !prev || left !== prev.left || top !== prev.top;
+            this.treeScrollPositions.set(lineageId, { left, top });
+          }
+        } else if (target.classList?.contains?.('cmodal-table-wrap')) {
+          changed = left !== this.tableWrapScroll.left || top !== this.tableWrapScroll.top;
+          this.tableWrapScroll = { left, top };
+        } else {
+          changed = true;
+        }
+        if (changed) {
+          this.lastUserScrollMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        }
+      },
+      { capture: true, passive: true },
+    );
 
     this.modalCard.append(header, toolbar, this.bodyEl);
     this.element.appendChild(this.modalCard);
@@ -370,6 +424,7 @@ export class CreatureDirectoryModal {
   close(): void {
     if (!this.open) return;
     this.open = false;
+    this.onWindowPointerEndBound();
     if (this.searchDebounceTimer !== null) {
       clearTimeout(this.searchDebounceTimer);
       this.searchDebounceTimer = null;
@@ -393,6 +448,10 @@ export class CreatureDirectoryModal {
     if (!this.open) return;
     this.refreshAccumSec += dt;
     if (!force && this.refreshAccumSec < 0.65) return;
+    const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (!force && (this.isPointerDownInBody || nowMs - this.lastUserScrollMs < 450)) {
+      return;
+    }
     this.refreshAccumSec = 0;
     if (!force && this.lastSnapshot && world.elapsedSeconds === this.lastWorldElapsed) {
       return;
@@ -510,6 +569,51 @@ export class CreatureDirectoryModal {
     }
   }
 
+  private captureInnerScrollPositions(): void {
+    const treeScrollers = this.bodyEl.querySelectorAll?.<HTMLElement>(
+      '.lineage-tree-scroll[data-lineage-id]',
+    );
+    if (treeScrollers) {
+      for (const el of treeScrollers) {
+        const lineageId = el.dataset?.lineageId ?? el.getAttribute?.('data-lineage-id');
+        if (!lineageId) continue;
+        this.treeScrollPositions.set(lineageId, {
+          left: el.scrollLeft,
+          top: el.scrollTop,
+        });
+      }
+    }
+    const tableWrap = this.bodyEl.querySelector?.<HTMLElement>('.cmodal-table-wrap');
+    if (tableWrap) {
+      this.tableWrapScroll = {
+        left: tableWrap.scrollLeft,
+        top: tableWrap.scrollTop,
+      };
+    }
+  }
+
+  private restoreInnerScrollPositions(): void {
+    const treeScrollers = this.bodyEl.querySelectorAll?.<HTMLElement>(
+      '.lineage-tree-scroll[data-lineage-id]',
+    );
+    if (treeScrollers) {
+      for (const el of treeScrollers) {
+        const lineageId = el.dataset?.lineageId ?? el.getAttribute?.('data-lineage-id');
+        if (!lineageId) continue;
+        const saved = this.treeScrollPositions.get(lineageId);
+        if (saved) {
+          el.scrollLeft = saved.left;
+          el.scrollTop = saved.top;
+        }
+      }
+    }
+    const tableWrap = this.bodyEl.querySelector?.<HTMLElement>('.cmodal-table-wrap');
+    if (tableWrap) {
+      tableWrap.scrollLeft = this.tableWrapScroll.left;
+      tableWrap.scrollTop = this.tableWrapScroll.top;
+    }
+  }
+
   private renderBody(): void {
     if (!this.lastSnapshot) return;
     const nextHtml =
@@ -519,11 +623,19 @@ export class CreatureDirectoryModal {
     if (nextHtml === this.lastRenderedHtml) return;
     this.lastRenderedHtml = nextHtml;
 
+    this.captureInnerScrollPositions();
     const prevScrollTop = this.bodyEl.scrollTop;
     const prevScrollLeft = this.bodyEl.scrollLeft;
-    this.bodyEl.innerHTML = nextHtml;
-    this.bodyEl.scrollTop = prevScrollTop;
-    this.bodyEl.scrollLeft = prevScrollLeft;
+    this.isRestoringScroll = true;
+    try {
+      this.bodyEl.innerHTML = nextHtml;
+      this.bodyEl.scrollTop = prevScrollTop;
+      this.bodyEl.scrollLeft = prevScrollLeft;
+      this.lastBodyScroll = { left: prevScrollLeft, top: prevScrollTop };
+      this.restoreInnerScrollPositions();
+    } finally {
+      this.isRestoringScroll = false;
+    }
   }
 
   private renderTableView(snapshot: CreatureDirectorySnapshot): string {
@@ -777,7 +889,7 @@ export class CreatureDirectoryModal {
         ${
           collapsed
             ? ''
-            : `<div class="lineage-tree-scroll">
+            : `<div class="lineage-tree-scroll" data-lineage-id="${escapeHtml(tree.lineageId)}">
                 <div class="lineage-tree-root">
                   ${this.renderTreeNode(tree.root, highlightIds)}
                 </div>
