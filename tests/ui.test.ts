@@ -10,6 +10,7 @@ import {
   buildYoungSummary,
   type RealmOverviewTab,
 } from '@ui/RealmOverviewLogic';
+import { TopBar } from '@ui/TopBar';
 
 interface FakePillButton extends DialogPillButton {
   readonly classes: Set<string>;
@@ -445,6 +446,165 @@ describe('RealmOverviewLogic', () => {
       expect(followBtn).toBeDefined();
       followBtn!.click();
       expect(followedId).toBe(creature.id);
+    } finally {
+      if (prevDocument === undefined) {
+        delete (globalThis as { document?: unknown }).document;
+      } else {
+        (globalThis as { document?: unknown }).document = prevDocument;
+      }
+    }
+  });
+
+  it('renders Fullscreen button beside Zen in TopBar and toggles fullscreen state independently of Zen', () => {
+    type FakeNode = {
+      tagName: string;
+      type: string;
+      className: string;
+      textContent: string;
+      title: string;
+      value: string;
+      selected: boolean;
+      disabled: boolean;
+      dataset: Record<string, string>;
+      attrs: Map<string, string>;
+      children: FakeNode[];
+      classList: {
+        classes: Set<string>;
+        add: (...c: string[]) => void;
+        remove: (...c: string[]) => void;
+        toggle: (c: string, force?: boolean) => boolean;
+        contains: (c: string) => boolean;
+      };
+      append: (...nodes: FakeNode[]) => void;
+      appendChild: (node: FakeNode) => FakeNode;
+      setAttribute: (name: string, value: string) => void;
+      addEventListener: (event: string, fn: () => void) => void;
+      removeEventListener: (event: string, fn: () => void) => void;
+      click: () => void;
+    };
+    const makeNode = (tagName: string): FakeNode => {
+      const classes = new Set<string>();
+      const attrs = new Map<string, string>();
+      const listeners = new Map<string, Set<() => void>>();
+      const node: FakeNode = {
+        tagName,
+        type: '',
+        className: '',
+        textContent: '',
+        title: '',
+        value: '',
+        selected: false,
+        disabled: false,
+        dataset: {},
+        attrs,
+        children: [],
+        classList: {
+          classes,
+          add: (...c: string[]) => c.forEach((t) => classes.add(t)),
+          remove: (...c: string[]) => c.forEach((t) => classes.delete(t)),
+          toggle: (c: string, force?: boolean) => {
+            const next = force !== undefined ? force : !classes.has(c);
+            if (next) classes.add(c);
+            else classes.delete(c);
+            return next;
+          },
+          contains: (c: string) => classes.has(c),
+        },
+        append: (...nodes: FakeNode[]) => {
+          node.children.push(...nodes);
+        },
+        appendChild: (child: FakeNode) => {
+          node.children.push(child);
+          return child;
+        },
+        setAttribute: (name: string, value: string) => {
+          attrs.set(name, value);
+        },
+        addEventListener: (event: string, fn: () => void) => {
+          let set = listeners.get(event);
+          if (!set) {
+            set = new Set();
+            listeners.set(event, set);
+          }
+          set.add(fn);
+        },
+        removeEventListener: (event: string, fn: () => void) => {
+          listeners.get(event)?.delete(fn);
+        },
+        click: () => {
+          for (const fn of [...(listeners.get('click') ?? [])]) fn();
+        },
+      };
+      return node;
+    };
+
+    const prevDocument = (globalThis as { document?: unknown }).document;
+    (globalThis as { document?: unknown }).document = {
+      createElement: (tag: string) => makeNode(tag),
+    };
+
+    try {
+      let fullscreenClicks = 0;
+      let zenClicks = 0;
+      const topBar = new TopBar({
+        onSetSpeed: () => {},
+        onToggleCinematic: () => false,
+        onToggleCreatureView: () => {},
+        isCreatureDirectoryOpen: () => false,
+        onSetCreatureDirectoryOpen: () => {},
+        isRealmOverviewTabOpen: () => false,
+        onOpenRealmOverviewTab: () => {},
+        onCloseRealmOverview: () => {},
+        isDeityPanelOpen: () => true,
+        onSetDeityPanelOpen: () => {},
+        isChroniclePanelOpen: () => true,
+        onSetChroniclePanelOpen: () => {},
+        isSaveModalOpen: () => false,
+        onSetSaveModalOpen: () => {},
+        onToggleFullscreen: () => {
+          fullscreenClicks++;
+        },
+        onToggleZenMode: () => {
+          zenClicks++;
+        },
+        onResetOverview: () => {},
+        onNewWorld: () => {},
+        onChangeQuality: () => {},
+        onFocusSettlement: () => {},
+        onFocusPosition: () => {},
+        onCloseInspector: () => {},
+      });
+
+      const root = topBar.element as unknown as FakeNode;
+      const mainRow = root.children[0];
+      const controls = mainRow.children[2];
+      const viewGroup = controls.children[1];
+      const fsIdx = viewGroup.children.findIndex((n) => n.textContent.includes('Fullscreen'));
+      const zenIdx = viewGroup.children.findIndex((n) => n.textContent.includes('Zen'));
+
+      expect(fsIdx).toBeGreaterThanOrEqual(0);
+      expect(zenIdx).toBeGreaterThanOrEqual(0);
+      expect(Math.abs(fsIdx - zenIdx)).toBe(1);
+
+      const fsBtn = viewGroup.children[fsIdx];
+      expect(fsBtn.classList.contains('active')).toBe(false);
+      expect(fsBtn.attrs.get('aria-pressed')).toBe('false');
+
+      fsBtn.click();
+      expect(fullscreenClicks).toBe(1);
+      expect(zenClicks).toBe(0);
+
+      topBar.setFullscreenActive(true);
+      expect(fsBtn.classList.contains('active')).toBe(true);
+      expect(fsBtn.attrs.get('aria-pressed')).toBe('true');
+      expect(fsBtn.title).toContain('Exit full-screen');
+
+      topBar.setFullscreenActive(false);
+      expect(fsBtn.classList.contains('active')).toBe(false);
+      expect(fsBtn.attrs.get('aria-pressed')).toBe('false');
+      expect(fsBtn.title).toContain('Enter full-screen');
+
+      topBar.dispose();
     } finally {
       if (prevDocument === undefined) {
         delete (globalThis as { document?: unknown }).document;

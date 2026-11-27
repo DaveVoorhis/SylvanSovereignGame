@@ -187,6 +187,9 @@ export class GameEngine {
           this.enterSelectedOrFirstCreaturePov();
         }
       },
+      onToggleFullscreen: () => {
+        this.toggleFullscreen();
+      },
       onToggleZenMode: () => {
         this.toggleZenMode();
       },
@@ -293,6 +296,7 @@ export class GameEngine {
       onImportSaveRecord: (record) => this.loadSaveRecordAsync(record),
     });
     this.hud.setQualityPreset(initialQuality);
+    this.hud.setFullscreenActive(this.isDocumentFullscreen());
 
     this.bus.on('selection:changed', (target) => {
       // If already in Creature Eye View and the user clicks another creature, jump right into its eyes!
@@ -327,6 +331,9 @@ export class GameEngine {
       if (e.code === 'KeyZ' && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         this.toggleZenMode();
+      } else if (e.code === 'KeyF' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        this.toggleFullscreen();
       } else if (e.code === 'KeyC' && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         if (!this.zenMode) {
@@ -360,7 +367,9 @@ export class GameEngine {
 
     this.onFullscreenChangeBound = () => {
       this.sceneManager.resize();
-      if (this.zenMode && this.enteredFullscreenForZen && !this.isDocumentFullscreen()) {
+      const isFs = this.isDocumentFullscreen();
+      this.hud.setFullscreenActive(isFs);
+      if (this.zenMode && this.enteredFullscreenForZen && !isFs) {
         this.enteredFullscreenForZen = false;
         this.exitZenMode();
       }
@@ -386,6 +395,28 @@ export class GameEngine {
     return this.zenMode;
   }
 
+  isFullscreen(): boolean {
+    return this.isDocumentFullscreen();
+  }
+
+  toggleFullscreen(): void {
+    if (this.isDocumentFullscreen()) {
+      this.exitFullscreen();
+    } else {
+      this.enterFullscreen();
+    }
+  }
+
+  enterFullscreen(): boolean {
+    if (this.isDocumentFullscreen()) return true;
+    return this.requestDocumentFullscreen();
+  }
+
+  exitFullscreen(): void {
+    if (!this.isDocumentFullscreen()) return;
+    this.exitDocumentFullscreen();
+  }
+
   toggleZenMode(): void {
     if (this.zenMode) {
       this.exitZenMode();
@@ -407,23 +438,9 @@ export class GameEngine {
     this.hud.setZenMode(true);
 
     if (!this.isDocumentFullscreen()) {
-      const docEl = document.documentElement as HTMLElement & {
-        webkitRequestFullscreen?: () => Promise<void> | void;
-      };
-      const req = docEl.requestFullscreen ?? docEl.webkitRequestFullscreen;
-      if (typeof req === 'function') {
-        try {
-          const result = req.call(docEl);
-          this.enteredFullscreenForZen = true;
-          if (result && typeof (result as Promise<void>).catch === 'function') {
-            (result as Promise<void>).catch(() => {
-              this.enteredFullscreenForZen = false;
-            });
-          }
-        } catch {
-          this.enteredFullscreenForZen = false;
-        }
-      }
+      this.enteredFullscreenForZen = this.requestDocumentFullscreen(() => {
+        this.enteredFullscreenForZen = false;
+      });
     }
   }
 
@@ -438,18 +455,41 @@ export class GameEngine {
     this.refreshHudNow();
 
     if (shouldExitFs) {
-      const doc = document as Document & { webkitExitFullscreen?: () => Promise<void> | void };
-      const exitFs = doc.exitFullscreen ?? doc.webkitExitFullscreen;
-      if (typeof exitFs === 'function') {
-        try {
-          const res = exitFs.call(doc);
-          if (res && typeof (res as Promise<void>).catch === 'function') {
-            (res as Promise<void>).catch(() => {});
-          }
-        } catch {
-          // Ignore fullscreen exit errors
-        }
+      this.exitDocumentFullscreen();
+    }
+  }
+
+  private requestDocumentFullscreen(onRejected?: () => void): boolean {
+    const docEl = document.documentElement as HTMLElement & {
+      webkitRequestFullscreen?: () => Promise<void> | void;
+    };
+    const req = docEl.requestFullscreen ?? docEl.webkitRequestFullscreen;
+    if (typeof req !== 'function') return false;
+    try {
+      const result = req.call(docEl);
+      if (result && typeof (result as Promise<void>).catch === 'function') {
+        (result as Promise<void>).catch(() => {
+          onRejected?.();
+        });
       }
+      return true;
+    } catch {
+      onRejected?.();
+      return false;
+    }
+  }
+
+  private exitDocumentFullscreen(): void {
+    const doc = document as Document & { webkitExitFullscreen?: () => Promise<void> | void };
+    const exitFs = doc.exitFullscreen ?? doc.webkitExitFullscreen;
+    if (typeof exitFs !== 'function') return;
+    try {
+      const res = exitFs.call(doc);
+      if (res && typeof (res as Promise<void>).catch === 'function') {
+        (res as Promise<void>).catch(() => {});
+      }
+    } catch {
+      // Ignore fullscreen exit errors
     }
   }
 

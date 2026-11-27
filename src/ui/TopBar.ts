@@ -21,6 +21,7 @@ export interface TopBarCallbacks {
   onSetChroniclePanelOpen: (open: boolean) => void;
   isSaveModalOpen: () => boolean;
   onSetSaveModalOpen: (open: boolean) => void;
+  onToggleFullscreen: () => void;
   onToggleZenMode: () => void;
   onResetOverview: () => void;
   onNewWorld: () => void;
@@ -89,6 +90,7 @@ export class TopBar {
   private readonly povToggleBtn: HTMLButtonElement;
   private readonly deityBtn: HTMLButtonElement;
   private readonly chronicleBtn: HTMLButtonElement;
+  private readonly fullscreenBtn: HTMLButtonElement;
   private readonly zenBtn: HTMLButtonElement;
   private readonly saveBtn: HTMLButtonElement;
   private readonly qualitySelect: HTMLSelectElement;
@@ -297,6 +299,14 @@ export class TopBar {
       this.cinematicBtn.classList.toggle('active', active);
     });
 
+    this.fullscreenBtn = document.createElement('button');
+    this.fullscreenBtn.type = 'button';
+    this.fullscreenBtn.className = 'hud-btn';
+    this.fullscreenBtn.textContent = '⛶ Fullscreen';
+    this.fullscreenBtn.title = 'Enter full-screen mode (F)';
+    this.fullscreenBtn.setAttribute('aria-pressed', 'false');
+    this.fullscreenBtn.addEventListener('click', () => this.callbacks.onToggleFullscreen());
+
     this.zenBtn = document.createElement('button');
     this.zenBtn.type = 'button';
     this.zenBtn.className = 'hud-btn';
@@ -304,7 +314,13 @@ export class TopBar {
     this.zenBtn.title = 'Enter full-screen Zen Mode — hide all UI (Z)';
     this.zenBtn.addEventListener('click', () => this.callbacks.onToggleZenMode());
 
-    viewGroup.append(this.povToggleBtn, overviewBtn, this.cinematicBtn, this.zenBtn);
+    viewGroup.append(
+      this.povToggleBtn,
+      overviewBtn,
+      this.cinematicBtn,
+      this.fullscreenBtn,
+      this.zenBtn,
+    );
 
     const worldGroup = document.createElement('div');
     worldGroup.className = 'control-group';
@@ -436,6 +452,14 @@ export class TopBar {
     for (const btn of this.speedButtons) {
       btn.classList.toggle('active', Number(btn.dataset.speed) === speed);
     }
+  }
+
+  setFullscreenActive(active: boolean): void {
+    this.fullscreenBtn.classList.toggle('active', active);
+    this.fullscreenBtn.setAttribute('aria-pressed', String(active));
+    this.fullscreenBtn.title = active
+      ? 'Exit full-screen mode (F)'
+      : 'Enter full-screen mode (F)';
   }
 
   setZenActive(active: boolean): void {
