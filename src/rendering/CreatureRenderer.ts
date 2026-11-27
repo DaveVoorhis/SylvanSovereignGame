@@ -15,6 +15,7 @@ import {
   solveGroundedFootTransform,
 } from '@simulation/creatures/StrideKinematics';
 import { VILLAGE_ADAPTATION_CATALOG } from '@simulation/settlements/VillageAdaptation';
+import { getWeaponStats } from '@simulation/society/WarSystem';
 import type { WorldState } from '@simulation/WorldState';
 import {
   createOrganicPuffGeo,
@@ -30,6 +31,15 @@ interface WorkToolKit {
   readonly hammer: THREE.Group;
 }
 
+interface WarGearKit {
+  readonly sword: THREE.Group;
+  readonly spear: THREE.Group;
+  readonly battleAxe: THREE.Group;
+  readonly warClub: THREE.Group;
+  readonly bow: THREE.Group;
+  readonly shield?: THREE.Group;
+}
+
 interface CreatureRig {
   readonly root: THREE.Group;
   readonly bodyGroup: THREE.Group;
@@ -43,6 +53,8 @@ interface CreatureRig {
   readonly tail?: THREE.Object3D;
   readonly selectionGroup: THREE.Group;
   readonly workTools: WorkToolKit;
+  readonly warGear: WarGearKit;
+  readonly guardStaticGear: THREE.Object3D[];
   readonly idleBuilderMallet?: THREE.Group;
   readonly pioneerPack: THREE.Group;
   readonly seedPhase: number;
@@ -65,6 +77,7 @@ interface CreatureRig {
   headPitch: number;
   headRoll: number;
   squashY: number;
+  bodyYaw: number;
 }
 
 interface SparkVisual {
@@ -77,6 +90,16 @@ interface SparkVisual {
   readonly vz: number;
   readonly baseScale: number;
   readonly gravity: number;
+  readonly spinRate?: number;
+}
+
+interface ArrowVisual {
+  readonly mesh: THREE.Mesh;
+  readonly createdAt: number;
+  readonly duration: number;
+  readonly start: THREE.Vector3;
+  readonly end: THREE.Vector3;
+  readonly arcHeight: number;
 }
 
 interface SpeciesMaterialSet {
@@ -146,6 +169,13 @@ interface SharedGeometries {
   readonly fishPectoralFinR: THREE.BufferGeometry;
   readonly lilyHat: THREE.BufferGeometry;
   readonly swimRipple: THREE.BufferGeometry;
+  readonly swordBlade: THREE.BufferGeometry;
+  readonly spearTip: THREE.BufferGeometry;
+  readonly battleAxeHead: THREE.BufferGeometry;
+  readonly warClubHead: THREE.BufferGeometry;
+  readonly bowStave: THREE.BufferGeometry;
+  readonly arrowMesh: THREE.BufferGeometry;
+  readonly slashArc: THREE.BufferGeometry;
 }
 
 function hashString(str: string): number {
@@ -788,6 +818,142 @@ function buildHammerHeadGeo(): THREE.BufferGeometry {
   return mergePartGeometries(parts, false);
 }
 
+/** Tapered double-edged broadsword blade extending along +Z from crossguard (0) to tip (0.64). */
+function buildSwordBladeGeo(): THREE.BufferGeometry {
+  const shape = new THREE.Shape();
+  shape.moveTo(-0.044, 0.0);
+  shape.lineTo(0.044, 0.0);
+  shape.lineTo(0.036, 0.48);
+  shape.lineTo(0.0, 0.64);
+  shape.lineTo(-0.036, 0.48);
+  shape.closePath();
+
+  const blade = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.012,
+    bevelEnabled: true,
+    bevelThickness: 0.005,
+    bevelSize: 0.004,
+    bevelSegments: 1,
+  });
+  blade.translate(0, 0, -0.006);
+  blade.rotateX(Math.PI / 2);
+  blade.computeVertexNormals();
+  return blade;
+}
+
+/** Leaf-shaped forged war spearhead extending along +Z. */
+function buildSpearTipGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const shape = new THREE.Shape();
+  shape.moveTo(0.0, 0.0);
+  shape.quadraticCurveTo(0.062, 0.06, 0.042, 0.16);
+  shape.lineTo(0.0, 0.34);
+  shape.lineTo(-0.042, 0.16);
+  shape.quadraticCurveTo(-0.062, 0.06, 0.0, 0.0);
+  shape.closePath();
+
+  const tip = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.012,
+    bevelEnabled: true,
+    bevelThickness: 0.005,
+    bevelSize: 0.004,
+    bevelSegments: 1,
+  });
+  tip.translate(0, 0, -0.006);
+  tip.rotateX(Math.PI / 2);
+  parts.push(tip);
+
+  const socket = new THREE.CylinderGeometry(0.025, 0.029, 0.09, 8);
+  socket.rotateX(Math.PI / 2);
+  socket.translate(0, 0, -0.025);
+  parts.push(socket);
+  return mergePartGeometries(parts, false);
+}
+
+/** Heavy bearded war-axe head sweeping downward (-Y) with a curved chopping bit. */
+function buildBattleAxeHeadGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const shape = new THREE.Shape();
+  shape.moveTo(-0.03, 0.05);
+  shape.lineTo(0.06, 0.08);
+  shape.quadraticCurveTo(0.16, 0.02, 0.19, -0.14);
+  shape.quadraticCurveTo(0.08, -0.24, -0.07, -0.22);
+  shape.quadraticCurveTo(-0.1, -0.1, -0.05, -0.04);
+  shape.lineTo(-0.05, 0.05);
+  shape.closePath();
+
+  const blade = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.022,
+    bevelEnabled: true,
+    bevelThickness: 0.007,
+    bevelSize: 0.006,
+    bevelSegments: 1,
+  });
+  blade.translate(0, 0, -0.011);
+  blade.rotateY(Math.PI / 2);
+  parts.push(blade);
+
+  // Back spike / counterweight poll
+  const spike = new THREE.ConeGeometry(0.028, 0.12, 6);
+  spike.translate(0, 0.09, 0);
+  parts.push(spike);
+  return mergePartGeometries(parts, false);
+}
+
+/** Flared heavy oak war-club head extending along +Z. */
+function buildWarClubHeadGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const club = new THREE.CylinderGeometry(0.078, 0.03, 0.52, 10);
+  club.rotateX(Math.PI / 2);
+  club.translate(0, 0, 0.34);
+  parts.push(club);
+
+  const cap = new THREE.SphereGeometry(0.078, 10, 8);
+  cap.translate(0, 0, 0.59);
+  parts.push(cap);
+  return mergePartGeometries(parts, false);
+}
+
+/** Curved recurve wooden bow stave centered in the Y-Z plane. */
+function buildBowStaveGeo(): THREE.BufferGeometry {
+  const curve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, -0.42, -0.06),
+    new THREE.Vector3(0, -0.24, 0.08),
+    new THREE.Vector3(0, 0.0, 0.13),
+    new THREE.Vector3(0, 0.24, 0.08),
+    new THREE.Vector3(0, 0.42, -0.06),
+  ]);
+  return createTaperedTubeGeo(
+    curve,
+    16,
+    8,
+    (t) => 0.016 + Math.sin(t * Math.PI) * 0.014,
+    true,
+  );
+}
+
+/** Complete war arrow pointing along +Z (fletching at -0.24, steel tip at +0.28). */
+function buildArrowGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const shaft = new THREE.CylinderGeometry(0.011, 0.011, 0.48, 6);
+  shaft.rotateX(Math.PI / 2);
+  parts.push(shaft);
+
+  const head = new THREE.ConeGeometry(0.028, 0.1, 4);
+  head.rotateX(Math.PI / 2);
+  head.translate(0, 0, 0.26);
+  parts.push(head);
+
+  // Crossed fletching fins at the tail
+  const finA = new THREE.BoxGeometry(0.075, 0.006, 0.1);
+  finA.translate(0, 0, -0.2);
+  parts.push(finA);
+  const finB = new THREE.BoxGeometry(0.006, 0.075, 0.1);
+  finB.translate(0, 0, -0.2);
+  parts.push(finB);
+  return mergePartGeometries(parts, false);
+}
+
 function createSharedGeometries(): SharedGeometries {
   // Pear-shaped cozy pleated woodland tunic (knee/shin hem at y = 0.24 so legs & feet show cleanly)
   const tunicPts = [
@@ -1002,6 +1168,8 @@ function createSharedGeometries(): SharedGeometries {
   const swimRipple = new THREE.RingGeometry(0.42, 0.54, 24);
   swimRipple.rotateX(-Math.PI / 2);
 
+  const slashArc = new THREE.RingGeometry(0.24, 0.54, 16, 1, -Math.PI * 0.42, Math.PI * 0.84);
+
   return {
     tunic,
     mantle,
@@ -1061,6 +1229,13 @@ function createSharedGeometries(): SharedGeometries {
     fishPectoralFinR: buildFishPectoralFinGeo(1),
     lilyHat: buildLilyHatGeo(),
     swimRipple,
+    swordBlade: buildSwordBladeGeo(),
+    spearTip: buildSpearTipGeo(),
+    battleAxeHead: buildBattleAxeHeadGeo(),
+    warClubHead: buildWarClubHeadGeo(),
+    bowStave: buildBowStaveGeo(),
+    arrowMesh: buildArrowGeo(),
+    slashArc,
   };
 }
 
@@ -1074,6 +1249,7 @@ export class CreatureRenderer {
 
   private readonly rigs = new Map<string, CreatureRig>();
   private readonly sparks: SparkVisual[] = [];
+  private readonly arrows: ArrowVisual[] = [];
   private readonly geo: SharedGeometries;
   private readonly speciesMats = new Map<SpeciesId, SpeciesMaterialSet>();
   private readonly adaptationMats = new Map<
@@ -1116,6 +1292,9 @@ export class CreatureRenderer {
   private readonly lilyPadHatMat: THREE.MeshPhysicalMaterial;
   private readonly lotusPinkMat: THREE.MeshPhysicalMaterial;
   private readonly swimRippleMat: THREE.MeshBasicMaterial;
+  private readonly ironMat: THREE.MeshStandardMaterial;
+  private readonly crimsonMat: THREE.MeshStandardMaterial;
+  private readonly bowstringMat: THREE.MeshStandardMaterial;
 
   constructor(
     scene: THREE.Scene,
@@ -1334,6 +1513,21 @@ export class CreatureRenderer {
       side: THREE.DoubleSide,
       depthWrite: false,
     });
+    this.ironMat = new THREE.MeshStandardMaterial({
+      color: 0x4b535e,
+      roughness: 0.38,
+      metalness: 0.82,
+    });
+    this.crimsonMat = new THREE.MeshStandardMaterial({
+      color: 0xa62626,
+      roughness: 0.62,
+      metalness: 0.08,
+    });
+    this.bowstringMat = new THREE.MeshStandardMaterial({
+      color: 0xe6dcc7,
+      roughness: 0.85,
+      metalness: 0.0,
+    });
 
     this.trackDisposables(
       this.eyeMat,
@@ -1367,6 +1561,9 @@ export class CreatureRenderer {
       this.lilyPadHatMat,
       this.lotusPinkMat,
       this.swimRippleMat,
+      this.ironMat,
+      this.crimsonMat,
+      this.bowstringMat,
     );
 
     scene.add(this.rootGroup);
@@ -1381,15 +1578,87 @@ export class CreatureRenderer {
   }
 
   spawnCombatSpark(spark: CombatSparkVisual): void {
-    const colors = [0xffcf5c, 0xff8b47, 0xfff3a8];
-    for (let i = 0; i < 3; i++) {
+    const kind = spark.kind ?? 'clash';
+
+    // 3D parabolic arrow flight from archer to target
+    if (kind === 'arrow' && spark.targetPosition) {
+      const start = new THREE.Vector3(spark.position.x, spark.position.y, spark.position.z);
+      const end = new THREE.Vector3(spark.targetPosition.x, spark.targetPosition.y, spark.targetPosition.z);
+      const dist = start.distanceTo(end);
+      const mesh = new THREE.Mesh(this.geo.arrowMesh, this.ironMat);
+      mesh.name = 'war_arrow';
+      mesh.position.copy(start);
+      mesh.scale.setScalar(1.35);
+      mesh.lookAt(end);
+      this.rootGroup.add(mesh);
+      this.arrows.push({
+        mesh,
+        createdAt: spark.createdAt,
+        duration: Math.max(0.18, spark.duration),
+        start,
+        end,
+        arcHeight: Math.min(2.6, 0.45 + dist * 0.14),
+      });
+      return;
+    }
+
+    const isHeavy = kind === 'heavy_hit';
+    const isFatal = kind === 'fatal';
+    const isMeleeHit = kind === 'hit' || isHeavy || isFatal;
+
+    // Glowing crescent melee slash arc on blade/axe/club/spear impacts
+    if (isMeleeHit) {
+      const slashColor = spark.colorHex ?? (isFatal ? 0xff3b30 : isHeavy ? 0xff7b29 : 0xffe082);
+      const slashMat = new THREE.MeshBasicMaterial({
+        color: slashColor,
+        transparent: true,
+        opacity: 0.92,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const slashScale = isFatal ? 1.75 : isHeavy ? 1.35 : 0.95;
+      const slash = new THREE.Mesh(this.geo.slashArc, slashMat);
+      slash.name = 'combat_slash';
+      slash.position.set(spark.position.x, spark.position.y + 0.18, spark.position.z);
+      slash.rotation.set(
+        (Math.random() - 0.5) * 1.1,
+        Math.random() * Math.PI * 2,
+        (Math.random() - 0.5) * 0.9,
+      );
+      slash.scale.setScalar(slashScale);
+      this.rootGroup.add(slash);
+      this.sparks.push({
+        mesh: slash,
+        mat: slashMat,
+        createdAt: spark.createdAt,
+        duration: isFatal ? 0.4 : isHeavy ? 0.3 : 0.24,
+        vx: 0,
+        vy: 0.25,
+        vz: 0,
+        baseScale: slashScale,
+        gravity: 0,
+        spinRate: 4.5,
+      });
+    }
+
+    const count = isFatal ? 10 : isHeavy ? 7 : kind === 'hit' ? 5 : 4;
+    const colors = isFatal
+      ? [0xd92626, 0xff4d3b, 0xff9e3d, 0xfff0a6]
+      : isHeavy
+        ? [0xff6a29, 0xd93829, 0xffcf5c]
+        : kind === 'hit'
+          ? [0xe64a33, 0xffa64d, 0xffe49e]
+          : [0xffdf73, 0xffffff, 0xffb347];
+    const spread = isFatal ? 3.2 : isHeavy ? 2.4 : 1.7;
+    for (let i = 0; i < count; i++) {
       const mat = new THREE.MeshBasicMaterial({
         color: colors[i % colors.length],
         transparent: true,
         opacity: 0.95,
         blending: THREE.AdditiveBlending,
       });
-      const baseScale = 0.65 + Math.random() * 0.5;
+      const baseScale = (isFatal ? 0.95 : isHeavy ? 0.82 : 0.62) + Math.random() * 0.48;
       const mesh = new THREE.Mesh(this.geo.sparkStar, mat);
       mesh.position.set(
         spark.position.x + (Math.random() - 0.5) * 0.25,
@@ -1402,12 +1671,12 @@ export class CreatureRenderer {
         mesh,
         mat,
         createdAt: spark.createdAt,
-        duration: spark.duration,
-        vx: (Math.random() - 0.5) * 1.4,
-        vy: 0.8 + Math.random() * 1.1,
-        vz: (Math.random() - 0.5) * 1.4,
+        duration: spark.duration * (isFatal ? 1.2 : 1.0),
+        vx: (Math.random() - 0.5) * spread,
+        vy: (isFatal ? 1.6 : 0.95) + Math.random() * (isFatal ? 1.8 : 1.25),
+        vz: (Math.random() - 0.5) * spread,
         baseScale,
-        gravity: 0.4,
+        gravity: isMeleeHit ? 3.4 : 0.9,
       });
     }
   }
@@ -1706,14 +1975,34 @@ export class CreatureRenderer {
       }
 
       // Stage-specific handheld construction tools & pioneer emigration pack
+      const showWarGear =
+        c.warWeapon !== null &&
+        (c.activity === 'marching' || c.activity === 'fighting') &&
+        !c.isYoung();
+      const warStats = showWarGear && c.warWeapon ? getWeaponStats(c.warWeapon) : null;
+      rig.warGear.sword.visible = showWarGear && c.warWeapon === 'sword';
+      rig.warGear.spear.visible = showWarGear && c.warWeapon === 'spear';
+      rig.warGear.battleAxe.visible = showWarGear && c.warWeapon === 'battle_axe';
+      rig.warGear.warClub.visible = showWarGear && c.warWeapon === 'war_club';
+      rig.warGear.bow.visible = showWarGear && c.warWeapon === 'bow';
+      if (rig.warGear.shield) {
+        rig.warGear.shield.visible = Boolean(showWarGear && warStats?.hasShield);
+      }
+      if (rig.guardStaticGear.length > 0) {
+        for (const item of rig.guardStaticGear) {
+          item.visible = !showWarGear;
+        }
+      }
+
       const activeStage = c.isActivelyWorking ? c.activeConstructionStage : null;
-      const showAxe = activeStage === 'clearing';
-      const showSpade = activeStage === 'leveling';
-      const showTrowel = activeStage === 'foundation';
+      const showAxe = !showWarGear && activeStage === 'clearing';
+      const showSpade = !showWarGear && activeStage === 'leveling';
+      const showTrowel = !showWarGear && activeStage === 'foundation';
       const showHammer =
-        activeStage === 'framing' ||
-        activeStage === 'finishing' ||
-        activeStage === 'disassembling';
+        !showWarGear &&
+        (activeStage === 'framing' ||
+          activeStage === 'finishing' ||
+          activeStage === 'disassembling');
       const anyWorkTool = showAxe || showSpade || showTrowel || showHammer;
 
       rig.workTools.axe.visible = showAxe;
@@ -1721,11 +2010,13 @@ export class CreatureRenderer {
       rig.workTools.trowel.visible = showTrowel;
       rig.workTools.hammer.visible = showHammer;
       if (rig.idleBuilderMallet) {
-        rig.idleBuilderMallet.visible = !anyWorkTool && !c.isYoung();
+        rig.idleBuilderMallet.visible = !showWarGear && !anyWorkTool && !c.isYoung();
       }
       rig.pioneerPack.visible = c.activity === 'emigrating';
 
       // Expressive activity overrides
+      let bodyYaw = isFish ? Math.sin(phase * 1.9 + seed) * 0.095 * (0.35 + 0.65 * move) : 0;
+
       if (activeStage) {
         if (activeStage === 'clearing') {
           // Bold overhead woodcutter / land-clearing axe swing
@@ -1839,11 +2130,126 @@ export class CreatureRenderer {
           bobY = -0.06;
           squashY = 0.96 + Math.sin(t * 2.2 + seed) * 0.018;
         }
+      } else if (c.activity === 'marching') {
+        // Determined war march: weapons held at ready, shield raised, crisp cadence
+        const cadence = Math.sin(phase * 2.0);
+        tiltX = 0.13 * move + 0.03;
+        headPitch = -0.04;
+        headRoll *= 0.35;
+        if (!isBird && !isSnake && !isFish && rig.rightArm && rig.leftArm) {
+          if (c.warWeapon === 'bow') {
+            rightArmX = -0.58 + cadence * 0.08 * move;
+            rightArmZ = -0.18;
+            leftArmX = -0.45 - cadence * 0.1 * move;
+          } else if (c.warWeapon === 'spear') {
+            rightArmX = -0.78 + cadence * 0.09 * move;
+            rightArmZ = -0.08;
+            leftArmX = -0.62;
+            leftArmZ = 0.2;
+          } else {
+            rightArmX = -1.02 + cadence * 0.12 * move;
+            rightArmZ = -0.14;
+            leftArmX = warStats?.hasShield ? -0.68 : -0.45 + cadence * 0.16 * move;
+            leftArmZ = warStats?.hasShield ? 0.24 : 0.05;
+          }
+        }
       } else if (c.activity === 'fighting') {
-        const lunge = Math.sin(t * 8.5 + seed);
-        tiltX = 0.18 + lunge * 0.2;
-        if (!isBird && rig.rightArm) {
-          rightArmX = -1.15 + lunge * 0.72;
+        // Visceral weapon-driven combat choreography: wind-up, violent strike lunge, shield brace & footwork
+        const strikeDur = Math.max(0.16, c.combatStrikeDuration || 0.34);
+        const isStriking = c.combatStrikeTimer > 0;
+        const strikeT = isStriking ? 1 - Math.max(0, Math.min(1, c.combatStrikeTimer / strikeDur)) : 0;
+        const combatBounce = Math.sin(t * 7.8 + seed);
+
+        if (c.warWeapon === 'bow') {
+          // Archer stance: body angled sideways, drawing string back and loosing arrows
+          bodyYaw = -0.46;
+          tiltX = 0.08;
+          headPitch = -0.04;
+          if (!isBird && !isSnake && !isFish && rig.leftArm && rig.rightArm) {
+            if (isStriking) {
+              const draw = strikeT < 0.55 ? strikeT / 0.55 : Math.max(0, 1 - (strikeT - 0.55) / 0.45);
+              rightArmX = -1.45;
+              rightArmZ = -0.15;
+              leftArmX = -1.35 + draw * 0.75;
+              leftArmZ = 0.35 + draw * 0.22;
+              tiltX = 0.05 - draw * 0.09;
+            } else {
+              rightArmX = -1.18 + combatBounce * 0.06;
+              leftArmX = -0.92 + combatBounce * 0.08;
+            }
+          }
+        } else if (isStriking) {
+          // Three-phase melee strike: coil wind-up (0..0.3) -> explosive impact (0.3..0.68) -> follow-through (0.68..1)
+          if (c.warWeapon === 'spear') {
+            const thrust =
+              strikeT < 0.28
+                ? -strikeT / 0.28
+                : strikeT < 0.65
+                  ? THREE.MathUtils.lerp(-1, 1, (strikeT - 0.28) / 0.37)
+                  : THREE.MathUtils.lerp(1, 0, (strikeT - 0.65) / 0.35);
+            tiltX = 0.2 + thrust * 0.26;
+            bodyYaw = thrust * 0.46;
+            bobY += Math.max(0, thrust) * 0.04;
+            if (!isBird && !isSnake && !isFish && rig.rightArm && rig.leftArm) {
+              rightArmX = -1.1 + thrust * 0.55;
+              rightArmZ = -0.06;
+              leftArmX = -0.82;
+              leftArmZ = 0.34;
+            } else if (isBird || isSnake) {
+              headPitch = 0.18 + thrust * 0.3;
+            }
+          } else if (c.warWeapon === 'battle_axe' || c.warWeapon === 'war_club') {
+            const cleave =
+              strikeT < 0.34
+                ? -strikeT / 0.34
+                : strikeT < 0.7
+                  ? THREE.MathUtils.lerp(-1, 1, (strikeT - 0.34) / 0.36)
+                  : THREE.MathUtils.lerp(1, 0, (strikeT - 0.7) / 0.3);
+            tiltX = 0.16 + cleave * 0.34;
+            bodyYaw = cleave * 0.56;
+            squashY = cleave > 0.35 ? 0.92 : 1.02;
+            if (!isBird && !isSnake && !isFish && rig.rightArm && rig.leftArm) {
+              rightArmX = -1.05 + cleave * 1.38;
+              rightArmZ = -0.26 + cleave * 0.38;
+              leftArmX = -0.95 + cleave * 0.85;
+              leftArmZ = 0.24 - cleave * 0.18;
+            } else if (isBird || isSnake) {
+              headPitch = 0.12 + cleave * 0.36;
+            }
+          } else {
+            // Crisp sword slash or unarmed brawl lunge
+            const slashDir = Math.floor(t * 2.2 + seed) % 2 === 0 ? 1 : -1;
+            const swing =
+              strikeT < 0.26
+                ? -strikeT / 0.26
+                : strikeT < 0.64
+                  ? THREE.MathUtils.lerp(-1, 1, (strikeT - 0.26) / 0.38)
+                  : THREE.MathUtils.lerp(1, 0, (strikeT - 0.64) / 0.36);
+            tiltX = 0.22 + Math.max(0, swing) * 0.24;
+            bodyYaw = swing * 0.54 * slashDir;
+            if (!isBird && !isSnake && !isFish && rig.rightArm && rig.leftArm) {
+              rightArmX = -1.08 + swing * 1.12;
+              rightArmZ = (-0.28 + swing * 0.52) * slashDir;
+              leftArmX = -0.86;
+              leftArmZ = 0.36;
+            } else if (isBird || isSnake) {
+              headPitch = 0.16 + swing * 0.28;
+            }
+          }
+        } else {
+          // Active guard stance between strikes: crouched, weaving, shield braced, weapon poised
+          tiltX = 0.2 + combatBounce * 0.06;
+          bodyYaw = Math.sin(t * 3.8 + seed) * 0.22;
+          bobY += Math.abs(combatBounce) * 0.03;
+          if (!isBird && !isSnake && !isFish && rig.rightArm && rig.leftArm) {
+            rightArmX = -1.16 + combatBounce * 0.16;
+            rightArmZ = -0.22;
+            leftArmX = warStats?.hasShield ? -0.92 : -0.78 - combatBounce * 0.14;
+            leftArmZ = warStats?.hasShield ? 0.34 : 0.14;
+          } else if (isBird && rig.leftArm && rig.rightArm) {
+            leftArmZ = 0.68 + combatBounce * 0.22;
+            rightArmZ = -0.68 - combatBounce * 0.22;
+          }
         }
       } else if (c.activity === 'foraging') {
         headPitch = 0.22 + Math.sin(t * 3.6 + seed) * 0.12;
@@ -1872,6 +2278,16 @@ export class CreatureRenderer {
         }
       }
 
+      // Visceral hit flinch / stagger recoil when struck by a weapon or arrow
+      if (c.combatHitTimer > 0 && !isFish) {
+        const hitFrac = Math.min(1, c.combatHitTimer / 0.28);
+        const shudder = Math.sin(hitFrac * Math.PI * 3.5) * hitFrac;
+        tiltX -= hitFrac * 0.44;
+        tiltZ += shudder * 0.3;
+        headPitch -= hitFrac * 0.36;
+        squashY *= 1 - hitFrac * 0.09;
+      }
+
       // Smoothly blend posture and limbs so activity transitions never pop in a single frame
       const bobLerp = hopSample ? 1 - Math.exp(-20 * safeDt) : poseLerp;
       rig.bobY += (bobY - rig.bobY) * bobLerp;
@@ -1880,6 +2296,8 @@ export class CreatureRenderer {
       rig.headPitch += (headPitch - rig.headPitch) * poseLerp;
       rig.headRoll += (headRoll - rig.headRoll) * poseLerp;
       rig.squashY += (squashY - rig.squashY) * poseLerp;
+      const yawLerp = c.activity === 'fighting' ? 1 - Math.exp(-22 * safeDt) : poseLerp;
+      rig.bodyYaw += (bodyYaw - rig.bodyYaw) * yawLerp;
 
       const scaleY = effectiveScale * rig.squashY;
       const scaleXZ = effectiveScale / Math.sqrt(Math.max(0.5, rig.squashY));
@@ -1996,7 +2414,7 @@ export class CreatureRenderer {
       rig.bodyGroup.position.y = rig.bobY;
       rig.bodyGroup.rotation.z = rig.tiltZ;
       rig.bodyGroup.rotation.x = rig.tiltX;
-      rig.bodyGroup.rotation.y = isFish ? Math.sin(phase * 1.9 + seed) * 0.095 * (0.35 + 0.65 * move) : 0;
+      rig.bodyGroup.rotation.y = rig.bodyYaw;
 
       // Adorable youthful proportions: slightly larger head on newborn young & juveniles
       const headScale = c.lifeStage === 'young' ? 1.18 : c.lifeStage === 'juvenile' ? 1.08 : 1.0;
@@ -2070,9 +2488,33 @@ export class CreatureRenderer {
       sp.mesh.position.z += sp.vz * dt;
       const pulse = Math.sin(Math.min(1, pct * 0.85 + 0.15) * Math.PI);
       sp.mesh.scale.setScalar(Math.max(0.01, pulse * sp.baseScale));
-      sp.mesh.rotation.y += dt * 12;
-      sp.mesh.rotation.x += dt * 8;
+      const spin = sp.spinRate ?? 10;
+      sp.mesh.rotation.y += dt * spin;
+      sp.mesh.rotation.x += dt * (spin * 0.68);
       sp.mat.opacity = 1 - pct;
+    }
+
+    // Update parabolic flying war arrows
+    for (let i = this.arrows.length - 1; i >= 0; i--) {
+      const ar = this.arrows[i];
+      const pct = (t - ar.createdAt) / ar.duration;
+      if (pct >= 1) {
+        this.rootGroup.remove(ar.mesh);
+        this.arrows.splice(i, 1);
+        continue;
+      }
+      const clamped = Math.max(0, Math.min(1, pct));
+      const next = Math.min(1, clamped + 0.04);
+      const px = THREE.MathUtils.lerp(ar.start.x, ar.end.x, clamped);
+      const py = THREE.MathUtils.lerp(ar.start.y, ar.end.y, clamped) + Math.sin(clamped * Math.PI) * ar.arcHeight;
+      const pz = THREE.MathUtils.lerp(ar.start.z, ar.end.z, clamped);
+      const nx = THREE.MathUtils.lerp(ar.start.x, ar.end.x, next);
+      const ny = THREE.MathUtils.lerp(ar.start.y, ar.end.y, next) + Math.sin(next * Math.PI) * ar.arcHeight;
+      const nz = THREE.MathUtils.lerp(ar.start.z, ar.end.z, next);
+      ar.mesh.position.set(px, py, pz);
+      if (Math.hypot(nx - px, ny - py, nz - pz) > 1e-4) {
+        ar.mesh.lookAt(nx, ny, nz);
+      }
     }
   }
 
@@ -2208,6 +2650,9 @@ export class CreatureRenderer {
       this.lilyPadHatMat,
       this.lotusPinkMat,
       this.swimRippleMat,
+      this.ironMat,
+      this.crimsonMat,
+      this.bowstringMat,
     ];
     const archetypes: SpeciesId[] = ['fox', 'owl', 'frog', 'crow', 'magpie', 'snake', 'turtle', 'beaver', 'otter', 'fish'];
     for (const sp of archetypes) {
@@ -3461,6 +3906,7 @@ export class CreatureRenderer {
     }
 
     // 6. Whimsical Role Accessories (ALL 6 roles!)
+    const guardStaticGear: THREE.Object3D[] = [];
     if (isFish) {
       if (c.role === 'mystic') {
         const pearl = addPart(new THREE.Mesh(this.octaGeo(0.075, 1), this.crystalGlowMat), headGroup);
@@ -3533,6 +3979,7 @@ export class CreatureRenderer {
         shield.position.set(-0.08, -0.18, 0.08);
         const boss = addPart(new THREE.Mesh(this.sphereGeo(0.06, 10, 8), this.brassMat), leftArm);
         boss.position.set(-0.11, -0.18, 0.08);
+        guardStaticGear.push(shield, boss);
       }
       if (!isBird && !isSnake && rightArm) {
         const spear = addPart(new THREE.Mesh(this.cylGeo(0.018, 0.02, 0.95, 8), this.woodMat), rightArm);
@@ -3541,6 +3988,7 @@ export class CreatureRenderer {
         const tip = addPart(new THREE.Mesh(this.coneGeo(0.042, 0.15, 6), this.brassMat), rightArm);
         tip.position.set(0.04, 0.54, 0.24);
         tip.rotation.x = 0.22;
+        guardStaticGear.push(spear, tip);
       }
     } else if (c.role === 'artisan') {
       // Jaunty tilted woodland artist beret + colorful berry-dye pouch!
@@ -3653,6 +4101,98 @@ export class CreatureRenderer {
     toolHolder.add(hammer);
 
     const workTools: WorkToolKit = { axe, spade, trowel, hammer };
+
+    // 6b-war. Dynamic war weapons (sword, spear, battle-axe, war-club, bow) & round war-shield
+    const warSword = new THREE.Group();
+    warSword.name = 'war_sword';
+    const swGrip = addPart(new THREE.Mesh(this.cylGeo(0.024, 0.026, 0.18, 8), this.leatherMat), warSword);
+    swGrip.rotation.x = Math.PI / 2;
+    swGrip.position.set(0, 0, 0.04);
+    const swPommel = addPart(new THREE.Mesh(this.sphereGeo(0.036, 8, 6), this.brassMat), warSword);
+    swPommel.position.set(0, 0, -0.06);
+    const swGuard = addPart(new THREE.Mesh(this.boxGeo(0.22, 0.032, 0.036), this.brassMat), warSword);
+    swGuard.position.set(0, 0, 0.14);
+    const swBlade = addPart(new THREE.Mesh(this.geo.swordBlade, this.steelMat), warSword);
+    swBlade.position.set(0, 0, 0.15);
+    warSword.visible = false;
+    toolHolder.add(warSword);
+
+    const warSpear = new THREE.Group();
+    warSpear.name = 'war_spear';
+    const spShaft = addPart(new THREE.Mesh(this.cylGeo(0.02, 0.023, 1.12, 8), this.woodMat), warSpear);
+    spShaft.rotation.x = Math.PI / 2;
+    spShaft.position.set(0, 0, 0.38);
+    const spCollar = addPart(new THREE.Mesh(this.cylGeo(0.027, 0.027, 0.045, 8), this.brassMat), warSpear);
+    spCollar.rotation.x = Math.PI / 2;
+    spCollar.position.set(0, 0, 0.91);
+    const spTassel = addPart(new THREE.Mesh(this.boxGeo(0.014, 0.11, 0.075), this.crimsonMat), warSpear);
+    spTassel.position.set(0, -0.06, 0.87);
+    const spTip = addPart(new THREE.Mesh(this.geo.spearTip, this.steelMat), warSpear);
+    spTip.position.set(0, 0, 0.95);
+    warSpear.visible = false;
+    toolHolder.add(warSpear);
+
+    const warBattleAxe = new THREE.Group();
+    warBattleAxe.name = 'war_battle_axe';
+    const baShaft = addPart(new THREE.Mesh(this.cylGeo(0.025, 0.029, 0.78, 8), this.woodMat), warBattleAxe);
+    baShaft.rotation.x = Math.PI / 2;
+    baShaft.position.set(0, 0, 0.3);
+    const baGrip = addPart(new THREE.Mesh(this.cylGeo(0.032, 0.032, 0.16, 8), this.crimsonMat), warBattleAxe);
+    baGrip.rotation.x = Math.PI / 2;
+    baGrip.position.set(0, 0, 0.04);
+    const baHead = addPart(new THREE.Mesh(this.geo.battleAxeHead, this.ironMat), warBattleAxe);
+    baHead.position.set(0, 0, 0.59);
+    warBattleAxe.visible = false;
+    toolHolder.add(warBattleAxe);
+
+    const warClub = new THREE.Group();
+    warClub.name = 'war_club';
+    const clGrip = addPart(new THREE.Mesh(this.cylGeo(0.03, 0.032, 0.18, 8), this.leatherMat), warClub);
+    clGrip.rotation.x = Math.PI / 2;
+    clGrip.position.set(0, 0, 0.04);
+    addPart(new THREE.Mesh(this.geo.warClubHead, this.woodMat), warClub);
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2;
+      const stud = addPart(new THREE.Mesh(this.sphereGeo(0.022, 6, 5), this.ironMat), warClub);
+      stud.position.set(Math.cos(a) * 0.074, Math.sin(a) * 0.074, 0.48);
+    }
+    warClub.visible = false;
+    toolHolder.add(warClub);
+
+    const warBow = new THREE.Group();
+    warBow.name = 'war_bow';
+    const bowStave = addPart(new THREE.Mesh(this.geo.bowStave, this.woodMat), warBow);
+    bowStave.position.set(0, 0, 0.08);
+    const bowString = addPart(new THREE.Mesh(this.cylGeo(0.005, 0.005, 0.84, 5), this.bowstringMat), warBow);
+    bowString.position.set(0, 0, 0.02);
+    const nockedArrow = addPart(new THREE.Mesh(this.geo.arrowMesh, this.ironMat), warBow);
+    nockedArrow.position.set(0.02, 0, 0.24);
+    warBow.visible = false;
+    toolHolder.add(warBow);
+
+    let warShield: THREE.Group | undefined;
+    if (!isBird && !isSnake && !isFish && leftArm) {
+      warShield = new THREE.Group();
+      warShield.name = 'war_shield';
+      const disk = addPart(new THREE.Mesh(this.cylGeo(0.24, 0.24, 0.04, 16), this.woodMat), warShield);
+      disk.rotation.z = Math.PI / 2;
+      const rim = addPart(new THREE.Mesh(this.torusGeo(0.24, 0.022, 6, 18), this.ironMat), warShield);
+      rim.rotation.y = Math.PI / 2;
+      addPart(new THREE.Mesh(this.boxGeo(0.045, 0.42, 0.11), this.crimsonMat), warShield);
+      const boss = addPart(new THREE.Mesh(this.sphereGeo(0.068, 10, 8), this.brassMat), warShield);
+      boss.position.set(-0.03, 0, 0);
+      warShield.position.set(-0.1, -0.18, 0.1);
+      warShield.visible = false;
+      leftArm.add(warShield);
+    }
+    const warGear: WarGearKit = {
+      sword: warSword,
+      spear: warSpear,
+      battleAxe: warBattleAxe,
+      warClub,
+      bow: warBow,
+      shield: warShield,
+    };
 
     // 6c. Emigrating pioneer pack (leather satchel + rolled cloak bedroll, shown during village-founding treks)
     const pioneerPack = new THREE.Group();
@@ -3785,6 +4325,8 @@ export class CreatureRenderer {
       tail,
       selectionGroup,
       workTools,
+      warGear,
+      guardStaticGear,
       idleBuilderMallet,
       pioneerPack,
       seedPhase: seed * Math.PI * 2,
@@ -3807,6 +4349,7 @@ export class CreatureRenderer {
       headPitch: 0,
       headRoll: 0,
       squashY: 1.0,
+      bodyYaw: 0,
     };
   }
 
@@ -3816,6 +4359,10 @@ export class CreatureRenderer {
       sp.mat.dispose();
     }
     this.sparks.length = 0;
+    for (const ar of this.arrows) {
+      this.rootGroup.remove(ar.mesh);
+    }
+    this.arrows.length = 0;
     const shared = this.sharedDisposableSet;
     this.rootGroup.traverse((obj) => {
       if (obj instanceof THREE.Mesh && obj.geometry && !shared.has(obj.geometry)) {

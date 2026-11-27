@@ -118,8 +118,9 @@ export class DeityPanel {
 
     this.feedbackEl = document.createElement('div');
     this.feedbackEl.className = 'whisper-feedback';
+    this.feedbackEl.textContent = 'Steer the unseen hand or invoke an act...';
 
-    whisperSection.append(stanceLabel, stanceRow, whisperLabel, btnGrid, this.feedbackEl);
+    whisperSection.append(this.feedbackEl, stanceLabel, stanceRow, whisperLabel, btnGrid);
 
     this.statusEl = document.createElement('div');
     this.statusEl.className = 'deity-status';
@@ -273,7 +274,7 @@ export class DeityPanel {
       }
       out.push(...this.getFallbackSettlementPositions(world));
     } else if (key === 'wars') {
-      // Prioritize active battle sparks & fighting creatures, then warring settlements
+      // Prioritize active battle sparks & fighting creatures, then battlefields (when mustering/marching) and warring settlements
       for (const spark of world.activeCombatSparks) {
         out.push({ x: spark.position.x, z: spark.position.z });
       }
@@ -282,9 +283,25 @@ export class DeityPanel {
           out.push({ x: c.x, z: c.z });
         }
       }
+      const hadActiveCombat = out.length > 0;
+      if (!hadActiveCombat) {
+        for (const war of world.wars.activeWars) {
+          out.push({ x: war.battlefield.x, z: war.battlefield.z });
+        }
+        for (const c of world.creatures) {
+          if (c.alive && c.activity === 'marching' && c.activeWarId) {
+            out.push({ x: c.x, z: c.z });
+          }
+        }
+      }
       const warPairs = world.diplomacy.getPairsByStance(world.settlements, 'war');
       for (const [a, b] of warPairs) {
         out.push({ x: a.center.x, z: a.center.z }, { x: b.center.x, z: b.center.z });
+      }
+      if (hadActiveCombat) {
+        for (const war of world.wars.activeWars) {
+          out.push({ x: war.battlefield.x, z: war.battlefield.z });
+        }
       }
     } else if (key === 'alliances') {
       const alliedPairs = world.diplomacy.getPairsByStance(world.settlements, 'allied');
@@ -320,6 +337,9 @@ export class DeityPanel {
           if (c.alive && c.activity === 'fighting') {
             out.push({ x: c.x, z: c.z });
           }
+        }
+        for (const war of world.wars.activeWars) {
+          out.push({ x: war.battlefield.x, z: war.battlefield.z });
         }
         for (const [a, b] of world.diplomacy.getPairsByStance(world.settlements, 'war')) {
           out.push({ x: a.center.x, z: a.center.z }, { x: b.center.x, z: b.center.z });

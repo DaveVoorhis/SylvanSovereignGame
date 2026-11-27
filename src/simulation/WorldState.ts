@@ -3,6 +3,7 @@ import type { EventBus } from '@core/EventBus';
 import { SeededRandom } from '@core/SeededRandom';
 import type {
   ActiveDivineInfluence,
+  CombatEffectKind,
   CombatSparkVisual,
   CreatureRole,
   DivineEffectVisual,
@@ -28,6 +29,7 @@ import { Chronicle, type ChronicleSnapshot } from './society/Chronicle';
 import { DiplomacySystem, type DiplomacySnapshot } from './society/DiplomacySystem';
 import { EconomySystem } from './society/EconomySystem';
 import { FestivalSystem, type FestivalSnapshot } from './society/FestivalSystem';
+import { WarSystem, type WarSnapshot } from './society/WarSystem';
 import type { BridgeInstance } from './terrain/Bridge';
 import { ObstacleMap } from './terrain/ObstacleMap';
 import { TerrainMap } from './terrain/TerrainMap';
@@ -66,6 +68,7 @@ export interface WorldSnapshot {
   readonly chronicle: ChronicleSnapshot;
   readonly diplomacy: DiplomacySnapshot;
   readonly festivals: FestivalSnapshot;
+  readonly wars?: WarSnapshot;
   readonly settlementManager: SettlementManagerSnapshot;
   readonly depletedResources: readonly [string, number][];
 }
@@ -98,6 +101,7 @@ export class WorldState {
   readonly economy: EconomySystem;
   readonly diplomacy: DiplomacySystem;
   readonly festivals: FestivalSystem;
+  readonly wars: WarSystem;
 
   readonly settlements: Settlement[] = [];
   readonly bridges: BridgeInstance[] = [];
@@ -151,6 +155,7 @@ export class WorldState {
     this.economy = new EconomySystem();
     this.diplomacy = new DiplomacySystem();
     this.festivals = new FestivalSystem();
+    this.wars = new WarSystem();
 
     if (!options?.skipInitialPopulation) {
       this.settlementManager.createInitialSettlements(this);
@@ -580,12 +585,25 @@ export class WorldState {
     this.bus.emit('divine:effect', effect);
   }
 
-  emitCombatSpark(position: Vec3): void {
+  emitCombatSpark(
+    position: Vec3,
+    options?: {
+      kind?: CombatEffectKind;
+      targetPosition?: Vec3;
+      colorHex?: number;
+      duration?: number;
+    },
+  ): void {
     const spark: CombatSparkVisual = {
       id: this.sparkSeq++,
       position,
       createdAt: this.elapsedSeconds,
-      duration: 0.65,
+      duration:
+        options?.duration ??
+        (options?.kind === 'arrow' ? 0.44 : options?.kind === 'fatal' ? 0.95 : 0.65),
+      kind: options?.kind,
+      targetPosition: options?.targetPosition,
+      colorHex: options?.colorHex,
     };
     this.activeCombatSparks.push(spark);
     this.bus.emit('combat:spark', spark);
@@ -673,6 +691,7 @@ export class WorldState {
     this.settlementManager.tick(this, dt);
     this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision, this.habitatScars);
     this.diplomacy.tick(this, dt);
+    this.wars.tick(this, dt);
     this.festivals.tick(this, dt);
 
     this.creatureAI.prepareStep(this);
@@ -774,6 +793,9 @@ export class WorldState {
       activeCombatSparks: this.activeCombatSparks.map((sp) => ({
         ...sp,
         position: { x: sp.position.x, y: sp.position.y, z: sp.position.z },
+        targetPosition: sp.targetPosition
+          ? { x: sp.targetPosition.x, y: sp.targetPosition.y, z: sp.targetPosition.z }
+          : undefined,
       })),
       activeInfluences: this.activeInfluences.map((inf) => ({
         ...inf,
@@ -790,6 +812,7 @@ export class WorldState {
       chronicle: this.chronicle.exportSnapshot(),
       diplomacy: this.diplomacy.exportSnapshot(),
       festivals: this.festivals.exportSnapshot(),
+      wars: this.wars.exportSnapshot(),
       settlementManager: this.settlementManager.exportSnapshot(),
       depletedResources,
     };
@@ -823,7 +846,11 @@ export class WorldState {
       world.activeDivineEffects.push({ ...fx, position: { ...fx.position } });
     }
     for (const sp of snapshot.activeCombatSparks) {
-      world.activeCombatSparks.push({ ...sp, position: { ...sp.position } });
+      world.activeCombatSparks.push({
+        ...sp,
+        position: { ...sp.position },
+        targetPosition: sp.targetPosition ? { ...sp.targetPosition } : undefined,
+      });
     }
     if (snapshot.activeInfluences) {
       for (const inf of snapshot.activeInfluences) {
@@ -846,6 +873,7 @@ export class WorldState {
     world.chronicle.importSnapshot(snapshot.chronicle);
     world.diplomacy.importSnapshot(snapshot.diplomacy);
     world.festivals.importSnapshot(snapshot.festivals);
+    world.wars.importSnapshot(snapshot.wars);
     world.settlementManager.importSnapshot(snapshot.settlementManager);
 
     for (const [nodeId, amount] of snapshot.depletedResources) {

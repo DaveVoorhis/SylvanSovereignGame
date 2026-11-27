@@ -1782,4 +1782,193 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     expect(stroll.speed).toBeLessThan(walk.speed);
     expect(walk.speed).toBeLessThan(run.speed);
   });
+
+  it('amasses armed village armies that march to an inter-village battlefield, fight dynamically with weapons, and end on decisive victory', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 20260711,
+      initialSettlements: 2,
+      initialWaterwaySettlements: 0,
+      initialCreaturesPerSettlement: 8,
+      deityDecisionIntervalSec: 999,
+    });
+    const sA = world.settlements[0];
+    const sB = world.settlements[1];
+    expect(sA).toBeDefined();
+    expect(sB).toBeDefined();
+
+    // Add a strong veteran vanguard to Village A so it holds a decisive battlefield advantage,
+    // plus a young creature in each village to verify young stay safe at home.
+    for (let i = 0; i < 6; i++) {
+      world.spawnCreature(sA, i % 2 === 0 ? 'bear' : 'wolf', 'guard');
+    }
+    const youngA = world.spawnCreature(sA, 'fox', 'forager', { ageDays: 0.1 });
+    const youngB = world.spawnCreature(sB, 'rabbit', 'forager', { ageDays: 0.1 });
+
+    // Spark war between the two villages
+    world.diplomacy.adjustRelation(sA, sB, -100, world, 'border dispute');
+    expect(world.diplomacy.getStance(sA.id, sB.id)).toBe('war');
+    expect(world.wars.activeWars.length).toBe(1);
+
+    const war = world.wars.activeWars[0];
+    expect(war.armyAIds.length).toBeGreaterThanOrEqual(5);
+    expect(war.armyBIds.length).toBeGreaterThanOrEqual(3);
+
+    // Young creatures are never drafted into war armies
+    expect(youngA.activeWarId).toBeNull();
+    expect(youngA.warWeapon).toBeNull();
+    expect(youngB.activeWarId).toBeNull();
+    expect(youngB.warWeapon).toBeNull();
+
+    // Every mobilized soldier is equipped with a war weapon
+    const weaponsSeen = new Set<string>();
+    for (const id of [...war.armyAIds, ...war.armyBIds]) {
+      const soldier = world.getCreature(id)!;
+      expect(soldier.activeWarId).toBe(war.id);
+      expect(soldier.warWeapon).not.toBeNull();
+      weaponsSeen.add(soldier.warWeapon!);
+    }
+    expect(weaponsSeen.size).toBeGreaterThanOrEqual(2);
+
+    // Battlefield lies on walkable dry ground between the two villages
+    expect(world.terrain.isWalkable(war.battlefield.x, war.battlefield.z, false)).toBe(true);
+    const villageSep = Math.hypot(sB.center.x - sA.center.x, sB.center.z - sA.center.z);
+    const distFromA = Math.hypot(war.battlefield.x - sA.center.x, war.battlefield.z - sA.center.z);
+    const distFromB = Math.hypot(war.battlefield.x - sB.center.x, war.battlefield.z - sB.center.z);
+    expect(distFromA).toBeLessThan(villageSep * 0.92);
+    expect(distFromB).toBeLessThan(villageSep * 0.92);
+
+    // Simulate the full war campaign and track marching, battle engagement, active combat motion, and strikes
+    let sawMarchingPhase = false;
+    let sawEngagedPhase = false;
+    let peakStrikes = 0;
+    let sawCombatVfx = false;
+    let fightingMotionDist = 0;
+    const lastPos = new Map<string, { x: number; z: number }>();
+
+    for (let step = 0; step < 900; step++) {
+      world.step(0.2);
+      const active = world.wars.getWarById(war.id);
+      if (active) {
+        if (active.phase === 'marching') sawMarchingPhase = true;
+        if (active.phase === 'engaged') sawEngagedPhase = true;
+        peakStrikes = Math.max(peakStrikes, active.totalStrikes);
+      }
+      if (world.activeCombatSparks.some((s) => s.kind === 'hit' || s.kind === 'heavy_hit' || s.kind === 'arrow' || s.kind === 'fatal')) {
+        sawCombatVfx = true;
+      }
+      for (const c of world.creatures) {
+        if (!c.alive) continue;
+        if (c.activity === 'fighting' && c.activeWarId === war.id) {
+          const prev = lastPos.get(c.id);
+          if (prev) {
+            fightingMotionDist += Math.hypot(c.x - prev.x, c.z - prev.z);
+          }
+          lastPos.set(c.id, { x: c.x, z: c.z });
+        }
+      }
+      if (world.wars.activeWars.length === 0) break;
+    }
+
+    expect(sawMarchingPhase || sawEngagedPhase).toBe(true);
+    expect(sawEngagedPhase).toBe(true);
+    expect(peakStrikes).toBeGreaterThanOrEqual(4);
+    expect(sawCombatVfx).toBe(true);
+    // Fighters actively maneuver, strafe, charge, and knock back rather than standing motionless
+    expect(fightingMotionDist).toBeGreaterThan(8);
+
+    // War concluded cleanly on decisive victory by surviving majority
+    expect(world.wars.activeWars.length).toBe(0);
+    expect(world.wars.totalVictories).toBeGreaterThanOrEqual(1);
+    expect(world.diplomacy.getStance(sA.id, sB.id)).not.toBe('war');
+
+    // All surviving soldiers have lowered their weapons and demobilized
+    for (const c of world.creatures) {
+      if (!c.alive) continue;
+      expect(c.activeWarId).toBeNull();
+      expect(c.warWeapon).toBeNull();
+      expect(c.activity).not.toBe('marching');
+    }
+  });
+
+  it('concludes active wars cleanly when a truce is declared directly or via diplomacy', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 20260712,
+      initialSettlements: 2,
+      initialWaterwaySettlements: 0,
+      initialCreaturesPerSettlement: 7,
+      deityDecisionIntervalSec: 999,
+    });
+    const sA = world.settlements[0];
+    const sB = world.settlements[1];
+
+    // 1. Direct truce declaration via WarSystem
+    world.diplomacy.adjustRelation(sA, sB, -100, world, 'timber feud');
+    expect(world.wars.activeWars.length).toBe(1);
+    const warId = world.wars.activeWars[0].id;
+    const draftedCount = world.creatures.filter((c) => c.activeWarId === warId && c.warWeapon !== null).length;
+    expect(draftedCount).toBeGreaterThanOrEqual(4);
+
+    expect(world.wars.declareTruce(warId, world)).toBe(true);
+    expect(world.wars.activeWars.length).toBe(0);
+    expect(world.wars.totalTruces).toBe(1);
+    expect(world.diplomacy.getStance(sA.id, sB.id)).not.toBe('war');
+    expect(world.creatures.every((c) => c.activeWarId === null && c.warWeapon === null)).toBe(true);
+
+    // 2. Diplomatic peace intervention also cleanly demobilizes an active war
+    world.diplomacy.adjustRelation(sA, sB, -100, world, 'renewed clash');
+    expect(world.wars.activeWars.length).toBe(1);
+    world.diplomacy.adjustRelation(sA, sB, +100, world, 'divine peacemaking');
+    expect(world.wars.activeWars.length).toBe(0);
+    expect(world.wars.totalTruces).toBe(2);
+    expect(world.diplomacy.getStance(sA.id, sB.id)).not.toBe('war');
+    expect(world.creatures.every((c) => c.activeWarId === null && c.warWeapon === null)).toBe(true);
+  });
+
+  it('ends a battle via clear victory once one side attains a significant majority of surviving members', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 20260713,
+      initialSettlements: 2,
+      initialWaterwaySettlements: 0,
+      initialCreaturesPerSettlement: 8,
+      deityDecisionIntervalSec: 999,
+    });
+    const sA = world.settlements[0];
+    const sB = world.settlements[1];
+
+    world.diplomacy.adjustRelation(sA, sB, -100, world, 'territorial dispute');
+    const war = world.wars.activeWars[0];
+    expect(war).toBeDefined();
+
+    // Place armies on the battlefield in engaged phase after real combat
+    war.phase = 'engaged';
+    war.engagedSeconds = 6;
+    war.totalStrikes = 8;
+    for (const id of war.armyAIds) {
+      const c = world.getCreature(id)!;
+      c.x = war.frontA.x;
+      c.z = war.frontA.z;
+      c.activity = 'fighting';
+    }
+    // Inflict heavy casualties on side B leaving only 1 survivor against side A's overwhelming majority
+    const keepB = war.armyBIds[0];
+    const victimsB = war.armyBIds.slice(1);
+    for (const victimId of victimsB) {
+      const fallen = world.getCreature(victimId)!;
+      fallen.alive = false;
+      fallen.health = 0;
+      world.wars.recordCasualty(war.id, fallen.settlementId, 'killed', fallen.id);
+    }
+    const lastB = world.getCreature(keepB)!;
+    lastB.x = war.frontB.x;
+    lastB.z = war.frontB.z;
+    lastB.activity = 'fighting';
+
+    // One tick evaluates the surviving majority and concludes with a clear victory for Village A
+    world.wars.tick(world, 0.2);
+    expect(world.wars.activeWars.length).toBe(0);
+    expect(world.wars.totalVictories).toBe(1);
+    expect(world.diplomacy.getStance(sA.id, sB.id)).not.toBe('war');
+    expect(lastB.activeWarId).toBeNull();
+    expect(lastB.warWeapon).toBeNull();
+  });
 });

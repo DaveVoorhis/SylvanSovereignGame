@@ -2,6 +2,7 @@ import type { SelectionTarget } from '@core/Types';
 import { BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
 import { getBuildingStage, getConstructionStageLabel } from '@simulation/settlements/Settlement';
 import { getBiomeDisplayName } from '@simulation/settlements/VillageAdaptation';
+import { formatWarPhaseLabel, getWeaponStats } from '@simulation/society/WarSystem';
 import type { WorldState } from '@simulation/WorldState';
 
 export interface InspectorCallbacks {
@@ -44,7 +45,14 @@ export class InspectorPanel {
       }
       const home = world.getSettlement(c.settlementId);
       const homeProfile = home?.getAdaptationProfile();
-      const statusText = c.alive ? c.activity.replace('_', ' ') : 'fallen';
+      const statusText = c.alive ? c.activity.replace(/_/g, ' ') : 'fallen';
+      const weaponStats = c.warWeapon ? getWeaponStats(c.warWeapon) : null;
+      const creatureWar = c.activeWarId ? world.wars.getWarById(c.activeWarId) : undefined;
+      const warEnemyName = creatureWar
+        ? world.getSettlement(
+            creatureWar.settlementAId === c.settlementId ? creatureWar.settlementBId : creatureWar.settlementAId,
+          )?.name ?? 'Rival Village'
+        : null;
       const isInThisPov = povCreatureId === c.id;
       const stageLabel =
         c.lifeStage === 'young'
@@ -83,6 +91,7 @@ export class InspectorPanel {
         <div class="kv-grid">
           <div>Life Stage</div><div><strong>${stageLabel}</strong> (${c.ageDays.toFixed(1)}d)</div>
           <div>Activity</div><div><strong>${statusText}</strong></div>
+          ${weaponStats ? `<div>War Gear</div><div><strong>${weaponStats.icon} ${weaponStats.label}</strong>${warEnemyName ? ` (vs ${warEnemyName})` : ''}</div>` : ''}
           ${mate ? `<div>Mate</div><div>❤️ ${mate.name}${mate.alive ? '' : ' (late)'}</div>` : ''}
           ${parents.length > 0 ? `<div>Parents</div><div>${parents.join(' & ')}</div>` : ''}
           ${littermates.length > 0 ? `<div>Littermates</div><div>${littermates.join(', ')}</div>` : ''}
@@ -152,6 +161,24 @@ export class InspectorPanel {
             : `${s.tier[0].toUpperCase()}${s.tier.slice(1)} Festival`
         : '';
 
+      const activeWar = world.wars.getWarForSettlement(s.id);
+      let warBannerHtml = '';
+      if (activeWar) {
+        const isSideA = activeWar.settlementAId === s.id;
+        const enemyId = isSideA ? activeWar.settlementBId : activeWar.settlementAId;
+        const enemyName = world.getSettlement(enemyId)?.name ?? 'Rival Village';
+        const stats = world.wars.getActiveArmyStats(activeWar, world);
+        const ownAlive = isSideA ? stats.survivingA : stats.survivingB;
+        const enemyAlive = isSideA ? stats.survivingB : stats.survivingA;
+        const ownLosses = isSideA ? activeWar.casualtiesA : activeWar.casualtiesB;
+        const enemyLosses = isSideA ? activeWar.casualtiesB : activeWar.casualtiesA;
+        warBannerHtml = `<div class="war-banner">
+          <div class="war-banner-title">⚔️ At War with ${enemyName}</div>
+          <div class="war-banner-meta">${formatWarPhaseLabel(activeWar.phase)} · ${ownAlive} vs ${enemyAlive} armed</div>
+          <div class="war-banner-theme">Fallen: ${ownLosses} ours · ${enemyLosses} theirs</div>
+        </div>`;
+      }
+
       const diploRows = world.settlements
         .filter((other) => other.id !== s.id)
         .map((other) => {
@@ -166,6 +193,7 @@ export class InspectorPanel {
           <button class="close-btn" data-action="close">✕</button>
         </div>
         <div class="inspector-sub">${profile.title} (${s.tier}) · ${biomeLabel}</div>
+        ${warBannerHtml}
         ${
           activeCel
             ? `<div class="festival-banner scope-${activeCel.scope}">

@@ -8,6 +8,7 @@ import {
   getBuildingCollisionRadius,
   type SolidObstacle,
 } from '@simulation/terrain/ObstacleMap';
+import { getWeaponStats } from '@simulation/society/WarSystem';
 import type { WorldState } from '@simulation/WorldState';
 import { resolveLifeStage, type Creature } from './Creature';
 import { computeStrideMetrics } from './StrideKinematics';
@@ -288,6 +289,35 @@ export class CreatureAI {
     );
     creature.attackCooldown = Math.max(0, creature.attackCooldown - dt);
     creature.actionTimer = Math.max(0, creature.actionTimer - dt);
+    creature.combatStrikeTimer = Math.max(0, creature.combatStrikeTimer - dt);
+    creature.combatHitTimer = Math.max(0, creature.combatHitTimer - dt);
+    creature.combatStrafeTimer = Math.max(0, creature.combatStrafeTimer - dt);
+
+    // Apply damped knockback stagger impulse when struck by a heavy weapon blow
+    if (
+      Math.abs(creature.combatStaggerX) > 0.02 ||
+      Math.abs(creature.combatStaggerZ) > 0.02
+    ) {
+      const kx = creature.x + creature.combatStaggerX * dt;
+      const kz = creature.z + creature.combatStaggerZ * dt;
+      const creatureR = this.getCreatureRadius(creature);
+      const alt = creature.def.aerial ? creature.flightAltitude : 0;
+      const sep = world.obstacles.resolveCollisions(kx, kz, creatureR, alt, creature.heading);
+      const canStep =
+        creature.activeWarId !== null && !creature.def.strictlyAquatic
+          ? world.terrain.canEmigrantTraverse(sep.x, sep.z)
+          : world.terrain.canCreatureTraverse(sep.x, sep.z, creature.def);
+      if (canStep && Math.hypot(sep.x, sep.z) <= world.terrain.playableRadius) {
+        creature.x = sep.x;
+        creature.z = sep.z;
+      }
+      const decay = Math.exp(-9.5 * dt);
+      creature.combatStaggerX *= decay;
+      creature.combatStaggerZ *= decay;
+    } else {
+      creature.combatStaggerX = 0;
+      creature.combatStaggerZ = 0;
+    }
 
     // Weather & active ecological influence mood response
     if ((world.weather === 'storm' || world.miasmaIntensity > 0.25) && creature.activity !== 'resting') {
@@ -336,6 +366,8 @@ export class CreatureAI {
     // Execute current behavior or choose a new one
     if (creature.activity === 'fighting') {
       this.handleFighting(creature, world, dt);
+    } else if (creature.activity === 'marching') {
+      this.handleMarching(creature, world, dt);
     } else if (creature.activity === 'fleeing') {
       this.handleFleeing(creature, world, dt);
     } else if (creature.activity === 'emigrating') {
@@ -385,7 +417,14 @@ export class CreatureAI {
   }
 
   private checkForThreats(creature: Creature, world: WorldState): void {
-    if (creature.activity === 'fighting' || creature.activity === 'fleeing') return;
+    if (
+      creature.activity === 'fighting' ||
+      creature.activity === 'marching' ||
+      creature.activity === 'fleeing' ||
+      creature.activeWarId !== null
+    ) {
+      return;
+    }
     if (this.creatureGridStep !== world.elapsedSeconds) {
       this.prepareStep(world);
     }
@@ -462,6 +501,27 @@ export class CreatureAI {
     if (!home) return;
     const profile = home.getAdaptationProfile();
 
+    // -1. If mobilized in an active border war, immediately rejoin the army!
+    if (creature.activeWarId) {
+      const war = world.wars.getWarById(creature.activeWarId);
+      if (war) {
+        creature.activity = war.phase === 'engaged' ? 'fighting' : 'marching';
+        creature.actionTimer = 60;
+        if (war.phase !== 'engaged') {
+          const slot = world.wars.getArmyTargetSlotPosition(
+            war,
+            creature,
+            war.phase === 'mustering' ? 'rally' : 'front',
+          );
+          creature.targetX = slot.x;
+          creature.targetZ = slot.z;
+        }
+        return;
+      }
+      creature.activeWarId = null;
+      creature.warWeapon = null;
+    }
+
     // 0. If a National Holiday is underway, rejoin the realm-wide celebration immediately
     const nationalHoliday = world.festivals.getNationalHoliday();
     if (nationalHoliday && creature.health > creature.maxHealth * 0.35) {
@@ -517,8 +577,10 @@ export class CreatureAI {
             other.lifeStage === 'adult' &&
             other.activity !== 'emigrating' &&
             other.activity !== 'fighting' &&
+            other.activity !== 'marching' &&
             other.activity !== 'fleeing' &&
             other.activity !== 'nesting' &&
+            other.activeWarId === null &&
             (!other.mateId || !world.getCreature(other.mateId)?.alive) &&
             !creature.isCloseKinOf(other),
         );
@@ -739,8 +801,11 @@ export class CreatureAI {
       creature.personality.bravery > 0.55;
 
     if (creature.role === 'guard' || warlikeMilitia) {
+      // When an organized border war is underway for this village, non-mobilized home guards
+      // defend the village perimeter while the amassed army fights the pitched battle
+      const activeHomeWar = world.wars.getWarForSettlement(home.id);
       const includeTense = moralAlign < -0.4;
-      const enemySettlement = !creature.def.strictlyAquatic
+      const enemySettlement = !creature.def.strictlyAquatic && !activeHomeWar
         ? world.diplomacy.findRivalTarget(home.id, world.settlements, includeTense)
         : undefined;
       const raidChance =
@@ -1402,55 +1467,249 @@ export class CreatureAI {
     }
   }
 
+  private handleMarching(creature: Creature, world: WorldState, dt: number): void {
+    const war = creature.activeWarId ? world.wars.getWarById(creature.activeWarId) : undefined;
+    if (!war) {
+      creature.activeWarId = null;
+      creature.warWeapon = null;
+      creature.activity = 'idle';
+      creature.actionTimer = 0.2;
+      return;
+    }
+
+    const enemySettlementId = world.wars.getEnemySettlementId(war, creature.settlementId);
+    const enemySettlement = world.getSettlement(enemySettlementId);
+    creature.actionTimer = Math.max(creature.actionTimer, 60);
+
+    if (war.phase === 'engaged') {
+      creature.activity = 'fighting';
+      const foe = world.wars.pickBattleOpponent(creature, war, world);
+      creature.targetCreatureId = foe?.id ?? null;
+      creature.thought = foe
+        ? `Charging ${foe.name} into battle!`
+        : `Fighting for victory against ${enemySettlement?.name ?? 'our rivals'}!`;
+      return;
+    }
+
+    const anchorKind = war.phase === 'mustering' ? 'rally' : 'front';
+    const slot = world.wars.getArmyTargetSlotPosition(war, creature, anchorKind);
+
+    if (creature.detourTimer <= 0) {
+      const distToSlot = Math.hypot(slot.x - creature.x, slot.z - creature.z);
+      if (war.phase === 'mustering' && distToSlot <= 2.2) {
+        // Stand at attention in formation facing the battlefield while the rest of the army musters
+        creature.targetX = creature.x;
+        creature.targetZ = creature.z;
+        const faceBattle = Math.atan2(war.battlefield.x - creature.x, war.battlefield.z - creature.z);
+        this.turnCreatureToward(creature, faceBattle, dt, 1.15);
+      } else if (Math.hypot(creature.targetX - slot.x, creature.targetZ - slot.z) > 0.85) {
+        creature.targetX = slot.x;
+        creature.targetZ = slot.z;
+      }
+    }
+
+    // During the march, engage immediately if opposing soldiers come within sight
+    if (war.phase === 'marching') {
+      this.queryNearbyCreatures(creature, creature.x, creature.z, 17, world, this.nearbyCreatures);
+      let nearestEnemy: Creature | null = null;
+      let bestDSq = Infinity;
+      for (let i = 0; i < this.nearbyCreatures.length; i++) {
+        const other = this.nearbyCreatures[i];
+        if (!other.alive || other.settlementId !== enemySettlementId) continue;
+        if (other.activeWarId !== war.id && !other.isAdult()) continue;
+        const dx = other.x - creature.x;
+        const dz = other.z - creature.z;
+        const dSq = dx * dx + dz * dz;
+        if (dSq < bestDSq) {
+          bestDSq = dSq;
+          nearestEnemy = other;
+        }
+      }
+      if (nearestEnemy) {
+        creature.activity = 'fighting';
+        creature.targetCreatureId = nearestEnemy.id;
+        creature.thought = `Sound the charge — clashing with ${nearestEnemy.name}!`;
+      }
+    }
+  }
+
   private handleFighting(creature: Creature, world: WorldState, dt: number): void {
+    const war = creature.activeWarId ? world.wars.getWarById(creature.activeWarId) : undefined;
+    if (creature.activeWarId && !war) {
+      creature.activeWarId = null;
+      creature.warWeapon = null;
+      creature.targetCreatureId = null;
+      creature.activity = 'idle';
+      return;
+    }
+
+    if (war) {
+      creature.actionTimer = Math.max(creature.actionTimer, 20);
+    }
+
     const rawTarget = creature.targetCreatureId
       ? world.getCreature(creature.targetCreatureId)
       : undefined;
-    const target = rawTarget && rawTarget.alive ? rawTarget : undefined;
-    if (!target || creature.actionTimer <= 0) {
+    let target =
+      rawTarget && rawTarget.alive && (!war || rawTarget.activeWarId === war.id)
+        ? rawTarget
+        : undefined;
+
+    // In an active war battle, immediately reacquire the next opposing soldier on the field
+    if (war && !target) {
+      const nextFoe = world.wars.pickBattleOpponent(creature, war, world);
+      if (nextFoe) {
+        target = nextFoe;
+        creature.targetCreatureId = nextFoe.id;
+        const wStats = getWeaponStats(creature.warWeapon);
+        creature.thought = `Charging ${nextFoe.name} with my ${wStats.label.toLowerCase()}!`;
+      } else {
+        // Advance toward battlefield center while waiting for WarSystem resolution
+        creature.targetX = war.battlefield.x;
+        creature.targetZ = war.battlefield.z;
+        return;
+      }
+    }
+
+    if (!target || (!war && creature.actionTimer <= 0)) {
       creature.activity = 'idle';
       creature.targetCreatureId = null;
       return;
     }
 
-    // Retreat if severely wounded
-    if (creature.health < creature.maxHealth * 0.25) {
+    // Retreat / rout checks
+    if (war) {
+      if (
+        creature.health < creature.maxHealth * 0.16 &&
+        creature.personality.bravery < 0.42 &&
+        world.rng.chance(dt * 0.65)
+      ) {
+        world.wars.recordCasualty(war.id, creature.settlementId, 'routed', creature.id);
+        creature.activeWarId = null;
+        creature.warWeapon = null;
+        creature.activity = 'fleeing';
+        creature.targetCreatureId = null;
+        creature.thought = 'Severely wounded — routed from the battlefield!';
+        creature.actionTimer = 9;
+        return;
+      }
+    } else if (creature.health < creature.maxHealth * 0.25) {
       creature.activity = 'fleeing';
       creature.thought = 'Retreating to mend wounds!';
       creature.actionTimer = 5;
       return;
     }
 
-    const dist = Math.hypot(target.x - creature.x, target.z - creature.z);
+    const weapon = getWeaponStats(creature.warWeapon);
+    const isRangedBow = creature.warWeapon === 'bow';
+    const dx = target.x - creature.x;
+    const dz = target.z - creature.z;
+    const dist = Math.max(0.001, Math.hypot(dx, dz));
+    const dirX = dx / dist;
+    const dirZ = dz / dist;
+    const perpX = -dirZ;
+    const perpZ = dirX;
     const meleeStandoff =
-      getCreaturePersonalRadius(creature) + getCreaturePersonalRadius(target) + 0.32;
-    if (dist > meleeStandoff + 0.35) {
-      creature.targetX = target.x;
-      creature.targetZ = target.z;
-    } else if (dist <= meleeStandoff + 0.08 || creature.currentSpeed < 0.25) {
-      // Stand face-to-face at melee reach instead of pushing into each other's body radius
-      creature.targetX = creature.x;
-      creature.targetZ = creature.z;
-      const faceAngle = Math.atan2(target.x - creature.x, target.z - creature.z);
-      this.turnCreatureToward(creature, faceAngle, dt, 1.35);
+      getCreaturePersonalRadius(creature) + getCreaturePersonalRadius(target) + 0.28;
+
+    // Periodic lateral strafing direction switches so fighters weave, circle & lunge dynamically
+    if (creature.combatStrafeTimer <= 0) {
+      creature.combatStrafeDir = world.rng.chance(0.5) ? 1 : -1;
+      creature.combatStrafeTimer = world.rng.range(1.0, 2.0);
     }
 
-    if (dist < 2.2 && creature.attackCooldown <= 0) {
-      const dmg = Math.max(4, creature.def.strength * world.rng.range(0.65, 1.15));
+    if (isRangedBow) {
+      if (dist > weapon.range - 1.2) {
+        creature.targetX = target.x - dirX * (weapon.range * 0.72);
+        creature.targetZ = target.z - dirZ * (weapon.range * 0.72);
+      } else if (dist < weapon.minRange) {
+        creature.targetX = creature.x - dirX * 3.2 + perpX * creature.combatStrafeDir * 1.8;
+        creature.targetZ = creature.z - dirZ * 3.2 + perpZ * creature.combatStrafeDir * 1.8;
+      } else {
+        creature.targetX = creature.x + perpX * creature.combatStrafeDir * 1.1;
+        creature.targetZ = creature.z + perpZ * creature.combatStrafeDir * 1.1;
+        const faceAngle = Math.atan2(dx, dz);
+        this.turnCreatureToward(creature, faceAngle, dt, 1.45);
+      }
+    } else {
+      const engageDist = Math.max(meleeStandoff, weapon.range * 0.78);
+      const isLunging = creature.combatStrikeTimer > weapon.strikeDuration * 0.42;
+      if (dist > engageDist + 0.45) {
+        creature.targetX = target.x;
+        creature.targetZ = target.z;
+      } else if (isLunging) {
+        creature.targetX = target.x - dirX * Math.max(0.25, meleeStandoff * 0.72);
+        creature.targetZ = target.z - dirZ * Math.max(0.25, meleeStandoff * 0.72);
+      } else {
+        const orbitX = target.x - dirX * engageDist + perpX * creature.combatStrafeDir * 1.35;
+        const orbitZ = target.z - dirZ * engageDist + perpZ * creature.combatStrafeDir * 1.35;
+        creature.targetX = orbitX;
+        creature.targetZ = orbitZ;
+        const faceAngle = Math.atan2(dx, dz);
+        this.turnCreatureToward(creature, faceAngle, dt, 1.5);
+      }
+    }
+
+    const effectiveRange = isRangedBow ? weapon.range : Math.max(weapon.range, meleeStandoff + 0.55);
+    if (dist <= effectiveRange && creature.attackCooldown <= 0) {
+      const faceAngle = Math.atan2(dx, dz);
+      this.turnCreatureToward(creature, faceAngle, dt, 2.0);
+
+      const guardBonus = creature.role === 'guard' ? 1.12 : 1.0;
+      let dmg = Math.max(
+        5,
+        creature.def.strength * weapon.damageMult * guardBonus * world.rng.range(0.84, 1.3),
+      );
+      const targetWeapon = getWeaponStats(target.warWeapon);
+      const parried = !isRangedBow && targetWeapon.hasShield && world.rng.chance(0.2);
+      if (parried) {
+        dmg *= 0.62;
+      }
+
       target.health -= dmg;
-      creature.attackCooldown = 1.25;
+      creature.combatStrikeDuration = weapon.strikeDuration;
+      creature.combatStrikeTimer = weapon.strikeDuration;
+      creature.attackCooldown = weapon.cooldown * world.rng.range(0.88, 1.14);
+      target.combatHitTimer = 0.28;
+      const knockScale = parried ? weapon.knockback * 0.5 : weapon.knockback;
+      target.combatStaggerX += dirX * knockScale * 2.9;
+      target.combatStaggerZ += dirZ * knockScale * 2.9;
+
       creature.adjustRelationship(target.id, -18);
       target.adjustRelationship(creature.id, -18);
 
-      world.emitCombatSpark({
-        x: (creature.x + target.x) * 0.5,
-        y: (creature.y + target.y) * 0.5 + 0.9,
-        z: (creature.z + target.z) * 0.5,
-      });
+      if (war) {
+        war.totalStrikes++;
+      }
+
+      const impactPos = {
+        x: isRangedBow ? target.x : (creature.x + target.x) * 0.5,
+        y: (isRangedBow ? target.y : (creature.y + target.y) * 0.5) + 0.78,
+        z: isRangedBow ? target.z : (creature.z + target.z) * 0.5,
+      };
+
+      if (isRangedBow && dist > 2.8) {
+        world.emitCombatSpark(
+          { x: creature.x, y: creature.y + 0.85, z: creature.z },
+          {
+            kind: 'arrow',
+            targetPosition: { x: target.x, y: target.y + 0.72, z: target.z },
+            duration: Math.max(0.24, Math.min(0.55, dist / 24)),
+          },
+        );
+        world.emitCombatSpark(impactPos, { kind: 'hit' });
+      } else {
+        const hitKind = parried
+          ? 'clash'
+          : creature.warWeapon === 'battle_axe' || creature.warWeapon === 'war_club' || dmg >= 15
+            ? 'heavy_hit'
+            : 'hit';
+        world.emitCombatSpark(impactPos, { kind: hitKind });
+      }
 
       world.deity.observeConflict(0.6);
       const sameSettlementClash = creature.settlementId === target.settlementId;
-      if (!sameSettlementClash) {
+      if (!sameSettlementClash && !war) {
         const homeS = world.getSettlement(creature.settlementId);
         const otherS = world.getSettlement(target.settlementId);
         if (homeS && otherS) {
@@ -1459,40 +1718,82 @@ export class CreatureAI {
       }
 
       if (target.health <= 0) {
-        if (!sameSettlementClash && world.rng.chance(0.24)) {
+        const fatalChance = war ? 0.78 : sameSettlementClash ? 0 : 0.24;
+        if (!sameSettlementClash && world.rng.chance(fatalChance)) {
           target.alive = false;
           target.health = 0;
-          world.chronicle.record(
-            world.day,
-            world.season,
-            'combat',
-            'Fallen in Skirmish',
-            `${creature.name} (${creature.def.displayName}) bested ${target.name} (${target.def.displayName}) in woodland combat.`,
-            creature.position2D,
+          if (target.mateId) {
+            const mate = world.getCreature(target.mateId);
+            if (mate && mate.mateId === target.id) {
+              mate.mateId = null;
+            }
+            target.mateId = null;
+          }
+          world.emitCombatSpark(
+            { x: target.x, y: target.y + 0.75, z: target.z },
+            { kind: 'fatal', duration: 0.95 },
           );
-          world.deity.observeConflict(2.5);
+          if (war) {
+            world.wars.recordCasualty(war.id, target.settlementId, 'killed', target.id);
+            target.activeWarId = null;
+            target.warWeapon = null;
+            const totalFallen = war.casualtiesA + war.casualtiesB;
+            if (totalFallen <= 3 || target.role === 'guard') {
+              world.chronicle.record(
+                world.day,
+                world.season,
+                'combat',
+                'Fallen in Battle',
+                `${creature.name} slew ${target.name} with a ${weapon.label.toLowerCase()} in the border battle.`,
+                target.position2D,
+              );
+            }
+            world.deity.observeConflict(1.8);
+          } else {
+            world.chronicle.record(
+              world.day,
+              world.season,
+              'combat',
+              'Fallen in Skirmish',
+              `${creature.name} (${creature.def.displayName}) bested ${target.name} (${target.def.displayName}) in woodland combat.`,
+              creature.position2D,
+            );
+            world.deity.observeConflict(2.5);
+          }
         } else {
-          target.health = target.maxHealth * 0.24;
+          target.health = target.maxHealth * (war ? 0.16 : 0.24);
+          if (war) {
+            world.wars.recordCasualty(war.id, target.settlementId, 'routed', target.id);
+            target.activeWarId = null;
+            target.warWeapon = null;
+          }
           target.activity = 'fleeing';
-          target.actionTimer = 7;
-          target.thought = `Yielding to ${creature.name}!`;
-          world.chronicle.record(
-            world.day,
-            world.season,
-            'combat',
-            'Woodland Clash',
-            sameSettlementClash
-              ? `${creature.name} drove ${target.name} back in a fierce scramble over scarce forage.`
-              : `${creature.name} drove ${target.name} back in a fierce territorial clash.`,
-            creature.position2D,
-          );
+          target.targetCreatureId = null;
+          target.actionTimer = war ? 9 : 7;
+          target.thought = war
+            ? `Wounded by ${creature.name} — routed from the battle!`
+            : `Yielding to ${creature.name}!`;
+          if (!war) {
+            world.chronicle.record(
+              world.day,
+              world.season,
+              'combat',
+              'Woodland Clash',
+              sameSettlementClash
+                ? `${creature.name} drove ${target.name} back in a fierce scramble over scarce forage.`
+                : `${creature.name} drove ${target.name} back in a fierce territorial clash.`,
+              creature.position2D,
+            );
+          }
         }
-        creature.activity = 'idle';
         creature.targetCreatureId = null;
+        if (!war) {
+          creature.activity = 'idle';
+        }
       } else if (target.activity !== 'fighting' && target.activity !== 'fleeing') {
         target.activity = 'fighting';
         target.targetCreatureId = creature.id;
-        target.actionTimer = 8;
+        target.actionTimer = war ? 25 : 8;
         target.thought = `Clashing with ${creature.name}!`;
       }
     }
@@ -1721,6 +2022,10 @@ export class CreatureAI {
       creature.emigrationTargetX !== null &&
       creature.emigrationTargetZ !== null &&
       creature.actionTimer > 12;
+    const keepWarMarching =
+      creature.activity === 'marching' &&
+      creature.activeWarId !== null &&
+      world.wars.getWarById(creature.activeWarId) !== undefined;
 
     creature.activity = 'idle';
     creature.targetResourceId = null;
@@ -1757,7 +2062,7 @@ export class CreatureAI {
         const cz = creature.z + dz * dist;
         if (Math.hypot(cx, cz) > world.terrain.playableRadius - 1.5) continue;
         const stepOk =
-          keepEmigrating && !creature.def.strictlyAquatic
+          (keepEmigrating || keepWarMarching) && !creature.def.strictlyAquatic
             ? world.terrain.canEmigrantTraverse(cx, cz)
             : world.terrain.canCreatureTraverse(cx, cz, creature.def);
         if (!stepOk) continue;
@@ -1766,7 +2071,7 @@ export class CreatureAI {
         const midX = creature.x + dx * (dist * 0.5);
         const midZ = creature.z + dz * (dist * 0.5);
         const midOk =
-          keepEmigrating && !creature.def.strictlyAquatic
+          (keepEmigrating || keepWarMarching) && !creature.def.strictlyAquatic
             ? world.terrain.canEmigrantTraverse(midX, midZ)
             : world.terrain.canCreatureTraverse(midX, midZ, creature.def);
         if (!midOk) continue;
@@ -1791,6 +2096,11 @@ export class CreatureAI {
       creature.detourTimer = 3.2;
       creature.detourSign = creature.detourSign === 0 ? 1 : ((-creature.detourSign) as -1 | 1);
       creature.thought = 'Blazing a trail around obstacles toward a new village';
+    } else if (keepWarMarching) {
+      creature.activity = 'marching';
+      creature.detourTimer = 2.8;
+      creature.detourSign = creature.detourSign === 0 ? 1 : ((-creature.detourSign) as -1 | 1);
+      creature.thought = 'Flanking around terrain toward the battlefield!';
     } else {
       creature.actionTimer = bestScore > -Infinity ? 3.2 : 0.4;
       creature.thought = 'Finding a clearer woodland path';
@@ -1816,8 +2126,14 @@ export class CreatureAI {
       !creature.isDancingAtCelebration &&
       creature.celebrationHostSettlementId !== null &&
       creature.celebrationHostSettlementId !== creature.settlementId;
+    const isWarTraveler =
+      creature.activeWarId !== null &&
+      (creature.activity === 'marching' || creature.activity === 'fighting');
     const waterFloor =
-      creature.def.amphibious || creature.activity === 'emigrating' || isRegionalFestivalTraveler
+      creature.def.amphibious ||
+      creature.activity === 'emigrating' ||
+      isRegionalFestivalTraveler ||
+      isWarTraveler
         ? world.terrain.waterLevel - 0.06
         : world.terrain.waterLevel;
     creature.y =
@@ -1852,7 +2168,9 @@ export class CreatureAI {
     const dx = creature.targetX - creature.x;
     const dz = creature.targetZ - creature.z;
     let dist = Math.sqrt(dx * dx + dz * dz);
-    const isUrgentActivity = creature.activity === 'fighting' || creature.activity === 'fleeing';
+    const isMarching = creature.activity === 'marching';
+    const isUrgentActivity =
+      creature.activity === 'fighting' || creature.activity === 'fleeing' || isMarching;
     // Arrival hysteresis prevents settled creatures from waking up to micro-vibrate over tiny nudges
     const stopDist = !isUrgentActivity && creature.currentSpeed < 0.18 ? 0.48 : 0.28;
 
@@ -1885,12 +2203,14 @@ export class CreatureAI {
 
     if (dist > stopDist) {
       const isEmigrating = creature.activity === 'emigrating';
+      const isWarFighter =
+        creature.activeWarId !== null && (isMarching || creature.activity === 'fighting');
       const isRegionalFestivalTraveler =
         creature.activity === 'celebrating' &&
         !creature.isDancingAtCelebration &&
         creature.celebrationHostSettlementId !== null &&
         creature.celebrationHostSettlementId !== creature.settlementId;
-      const canFordWater = isEmigrating || isRegionalFestivalTraveler;
+      const canFordWater = isEmigrating || isRegionalFestivalTraveler || isWarFighter;
       const terrain = world.terrain;
       const isFordingWater =
         canFordWater &&
@@ -1909,7 +2229,9 @@ export class CreatureAI {
       if (creature.activity === 'fleeing') {
         speedMult = 1.42;
       } else if (creature.activity === 'fighting') {
-        speedMult = dist > 2.4 ? 1.32 : 0.95;
+        speedMult = dist > 2.4 ? 1.38 : 1.08;
+      } else if (isMarching) {
+        speedMult = isFordingWater ? 0.8 : 1.2;
       } else if (isEmigrating) {
         speedMult = isFordingWater ? 0.76 : 1.32;
       } else if (isRegionalFestivalTraveler) {
@@ -2000,7 +2322,7 @@ export class CreatureAI {
           if (waterAhead) {
             let bestCost = Infinity;
             const maxBridgeSearch =
-              isEmigrating || creature.activity === 'trading' ? 64 : 34;
+              isEmigrating || isWarFighter || creature.activity === 'trading' ? 64 : 34;
             for (let i = 0; i < world.bridges.length; i++) {
               const br = world.bridges[i];
               if (!br.completed) continue;
@@ -2625,6 +2947,7 @@ export class CreatureAI {
       if (
         c.currentSpeed < 0.2 &&
         c.activity !== 'fighting' &&
+        c.activity !== 'marching' &&
         c.activity !== 'fleeing' &&
         c.activity !== 'trading' &&
         c.activity !== 'emigrating'

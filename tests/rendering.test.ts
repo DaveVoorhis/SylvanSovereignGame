@@ -2032,4 +2032,98 @@ describe('High-Resolution Whimsical Procedural Models', () => {
 
     renderer.dispose();
   });
+
+  it('renders war weapons, shields, combat strike/flinch animations, arrows, and battlefield banners cleanly', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 778899,
+      initialSettlements: 2,
+      initialWaterwaySettlements: 0,
+      initialCreaturesPerSettlement: 6,
+      deityDecisionIntervalSec: 999,
+    });
+    const sA = world.settlements[0];
+    const sB = world.settlements[1];
+    world.diplomacy.adjustRelation(sA, sB, -100, world, 'render war test');
+    expect(world.wars.activeWars.length).toBe(1);
+    const war = world.wars.activeWars[0];
+
+    // Ensure all 5 weapon types are equipped across mobilized soldiers
+    const weapons = ['sword', 'spear', 'battle_axe', 'war_club', 'bow'] as const;
+    const soldiers = [...war.armyAIds, ...war.armyBIds]
+      .map((id) => world.getCreature(id)!)
+      .filter(Boolean);
+    expect(soldiers.length).toBeGreaterThanOrEqual(5);
+    weapons.forEach((weapon, idx) => {
+      const c = soldiers[idx];
+      c.warWeapon = weapon;
+      c.activity = idx === 0 ? 'marching' : 'fighting';
+      c.combatStrikeDuration = 0.4;
+      c.combatStrikeTimer = 0.25;
+      c.combatHitTimer = idx === 1 ? 0.2 : 0;
+    });
+
+    const scene = new THREE.Scene();
+    const textures = createStubTextureLibrary();
+    const creatureRenderer = new CreatureRenderer(scene, world, textures);
+    const settlementRenderer = new SettlementRenderer(scene, world, textures);
+
+    // Emit all new combat effect kinds (parabolic arrow, clash, hit, heavy_hit, fatal)
+    creatureRenderer.spawnCombatSpark({
+      id: 9001,
+      position: { x: war.frontA.x, y: 1.5, z: war.frontA.z },
+      targetPosition: { x: war.frontB.x, y: 1.5, z: war.frontB.z },
+      createdAt: world.elapsedSeconds,
+      duration: 0.35,
+      kind: 'arrow',
+    });
+    let fxId = 9002;
+    for (const kind of ['clash', 'hit', 'heavy_hit', 'fatal'] as const) {
+      creatureRenderer.spawnCombatSpark({
+        id: fxId++,
+        position: { x: war.battlefield.x, y: 1.4, z: war.battlefield.z },
+        createdAt: world.elapsedSeconds,
+        duration: 0.5,
+        kind,
+      });
+    }
+
+    // Step render frames and verify visible war gear, arrow flight, and battlefield standards
+    for (let i = 0; i < 10; i++) {
+      world.elapsedSeconds += 0.05;
+      creatureRenderer.update(0.05, null);
+      settlementRenderer.update(0.05);
+    }
+
+    const visibleWarWeaponNames = new Set<string>();
+    creatureRenderer.rootGroup.traverse((obj) => {
+      if (obj.name.startsWith('war_') && obj.visible) {
+        visibleWarWeaponNames.add(obj.name);
+      }
+      if (obj instanceof THREE.Mesh) {
+        const pos = obj.geometry.getAttribute('position');
+        expect(pos).toBeDefined();
+        for (let i = 0; i < Math.min(pos.count, 8); i++) {
+          expect(Number.isFinite(pos.getX(i))).toBe(true);
+          expect(Number.isFinite(pos.getY(i))).toBe(true);
+          expect(Number.isFinite(pos.getZ(i))).toBe(true);
+        }
+      }
+    });
+    expect(visibleWarWeaponNames.has('war_sword')).toBe(true);
+    expect(visibleWarWeaponNames.has('war_spear')).toBe(true);
+    expect(visibleWarWeaponNames.has('war_battle_axe')).toBe(true);
+    expect(visibleWarWeaponNames.has('war_club')).toBe(true);
+    expect(visibleWarWeaponNames.has('war_bow')).toBe(true);
+    expect(visibleWarWeaponNames.has('war_shield')).toBe(true);
+
+    // Battlefield war banner group exists while war is active and is removed once a truce ends it
+    expect(settlementRenderer.rootGroup.getObjectByName(`war_battlefield_${war.id}`)).toBeDefined();
+    world.wars.declareTruce(war.id, world);
+    settlementRenderer.update(0.05);
+    expect(settlementRenderer.rootGroup.getObjectByName(`war_battlefield_${war.id}`)).toBeUndefined();
+
+    creatureRenderer.dispose();
+    settlementRenderer.dispose();
+    textures.dispose();
+  });
 });

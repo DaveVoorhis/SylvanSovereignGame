@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { BuildingType, VillageAdaptationId } from '@core/Types';
+import type { ActiveWar, BuildingType, VillageAdaptationId } from '@core/Types';
 import { BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
 import { getBuildingStage, type BuildingInstance, type Settlement } from '@simulation/settlements/Settlement';
 import { sampleBridgeDeckY, type BridgeInstance } from '@simulation/terrain/Bridge';
@@ -247,6 +247,16 @@ interface RenderedBridge {
   lastAppliedCompleted: boolean;
 }
 
+interface RenderedWarBanner {
+  readonly group: THREE.Group;
+  readonly flagA: THREE.Object3D;
+  readonly flagB: THREE.Object3D;
+  readonly ring: THREE.Mesh;
+  readonly ringMat: THREE.MeshBasicMaterial;
+  readonly ownedMaterials: THREE.Material[];
+  readonly ownedGeometries: THREE.BufferGeometry[];
+}
+
 /**
  * Renders whimsical, high-resolution storybook woodland architecture across all 14 building types
  * and settlement centerpieces: bell-roofed burrow cottages, half-timbered fairytale houses,
@@ -310,6 +320,7 @@ export class SettlementRenderer {
 
   private readonly buildingMeshes = new Map<string, RenderedBuilding>();
   private readonly bridgeMeshes = new Map<string, RenderedBridge>();
+  private readonly warBanners = new Map<string, RenderedWarBanner>();
   private readonly hearths: RenderedHearth[] = [];
   private readonly hearthLightPool: THREE.PointLight[] = [];
   private readonly hearthSortScratch: { hearth: RenderedHearth; distSq: number }[] = [];
@@ -861,6 +872,132 @@ export class SettlementRenderer {
         lantern.visible = bridge.completed;
       }
     }
+
+    this.syncWarBanners(t, windStrength);
+  }
+
+  private syncWarBanners(t: number, windStrength: number): void {
+    const activeIds = new Set<string>();
+    for (const war of this.world.wars.activeWars) {
+      activeIds.add(war.id);
+      let marker = this.warBanners.get(war.id);
+      if (!marker) {
+        marker = this.createWarBannerMarker(war);
+        this.warBanners.set(war.id, marker);
+        this.rootGroup.add(marker.group);
+      }
+      const flutter = 0.22 + windStrength * 0.16;
+      const speed = 3.6 + windStrength * 2.1;
+      marker.flagA.rotation.y = Math.sin(t * speed) * flutter;
+      marker.flagB.rotation.y = Math.sin(t * speed + 1.9) * flutter;
+      const engaged = war.phase === 'engaged';
+      marker.ringMat.opacity = engaged
+        ? 0.24 + 0.14 * Math.sin(t * 4.2)
+        : 0.12 + 0.04 * Math.sin(t * 2.0);
+    }
+
+    for (const [warId, marker] of this.warBanners.entries()) {
+      if (activeIds.has(warId)) continue;
+      this.disposeWarBannerMarker(marker);
+      this.warBanners.delete(warId);
+    }
+  }
+
+  private createWarBannerMarker(war: ActiveWar): RenderedWarBanner {
+    const group = new THREE.Group();
+    group.name = `war_battlefield_${war.id}`;
+    const ownedMaterials: THREE.Material[] = [];
+    const ownedGeometries: THREE.BufferGeometry[] = [];
+
+    const sA = this.world.getSettlement(war.settlementAId);
+    const sB = this.world.getSettlement(war.settlementBId);
+    const colorA = sA?.bannerColor ?? 0xc83e3e;
+    const colorB = sB?.bannerColor ?? 0x3b6ea5;
+
+    const poleGeo = new THREE.CylinderGeometry(0.06, 0.085, 4.2, 8);
+    const crossGeo = new THREE.CylinderGeometry(0.036, 0.036, 1.35, 6);
+    const finialGeo = new THREE.ConeGeometry(0.11, 0.36, 6);
+    const flagShape = new THREE.Shape();
+    flagShape.moveTo(0, 0);
+    flagShape.lineTo(1.55, 0.14);
+    flagShape.lineTo(1.22, 0.44);
+    flagShape.lineTo(1.55, 0.74);
+    flagShape.lineTo(0, 0.88);
+    flagShape.closePath();
+    const flagGeo = new THREE.ShapeGeometry(flagShape);
+    ownedGeometries.push(poleGeo, crossGeo, finialGeo, flagGeo);
+
+    const buildStandard = (
+      pos: { x: number; z: number },
+      yaw: number,
+      bannerColor: number,
+      name: string,
+    ): THREE.Object3D => {
+      const stand = new THREE.Group();
+      stand.name = name;
+      const y = this.world.terrain.getHeightAt(pos.x, pos.z);
+      stand.position.set(pos.x, y, pos.z);
+      stand.rotation.y = yaw;
+
+      const pole = new THREE.Mesh(poleGeo, this.darkTimberMat);
+      pole.position.y = 2.05;
+      pole.castShadow = true;
+      stand.add(pole);
+
+      const cross = new THREE.Mesh(crossGeo, this.darkTimberMat);
+      cross.rotation.z = Math.PI / 2;
+      cross.position.set(0.42, 3.85, 0);
+      stand.add(cross);
+
+      const finial = new THREE.Mesh(finialGeo, this.brassMat);
+      finial.position.y = 4.32;
+      stand.add(finial);
+
+      const flagMat = new THREE.MeshStandardMaterial({
+        color: bannerColor,
+        emissive: bannerColor,
+        emissiveIntensity: 0.18,
+        roughness: 0.68,
+        side: THREE.DoubleSide,
+      });
+      ownedMaterials.push(flagMat);
+      const flagPivot = new THREE.Group();
+      flagPivot.position.set(0.06, 2.98, 0);
+      const flagMesh = new THREE.Mesh(flagGeo, flagMat);
+      flagMesh.castShadow = true;
+      flagPivot.add(flagMesh);
+      stand.add(flagPivot);
+      group.add(stand);
+      return flagPivot;
+    };
+
+    const axisYaw = Math.atan2(war.frontB.x - war.frontA.x, war.frontB.z - war.frontA.z);
+    const flagA = buildStandard(war.frontA, axisYaw, colorA, 'war_standard_a');
+    const flagB = buildStandard(war.frontB, axisYaw + Math.PI, colorB, 'war_standard_b');
+
+    const ringGeo = new THREE.RingGeometry(5.6, 6.25, 36);
+    ringGeo.rotateX(-Math.PI / 2);
+    ownedGeometries.push(ringGeo);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xd94b38,
+      transparent: true,
+      opacity: 0.16,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    ownedMaterials.push(ringMat);
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    const bfY = this.world.terrain.getHeightAt(war.battlefield.x, war.battlefield.z);
+    ring.position.set(war.battlefield.x, bfY + 0.12, war.battlefield.z);
+    group.add(ring);
+
+    return { group, flagA, flagB, ring, ringMat, ownedMaterials, ownedGeometries };
+  }
+
+  private disposeWarBannerMarker(marker: RenderedWarBanner): void {
+    this.rootGroup.remove(marker.group);
+    for (const g of marker.ownedGeometries) g.dispose();
+    for (const m of marker.ownedMaterials) m.dispose();
   }
 
   /**
@@ -3315,6 +3452,10 @@ export class SettlementRenderer {
       }
     }
     this.buildingMeshes.clear();
+    for (const marker of this.warBanners.values()) {
+      this.disposeWarBannerMarker(marker);
+    }
+    this.warBanners.clear();
     for (const h of this.hearths) {
       h.fire.dispose();
     }

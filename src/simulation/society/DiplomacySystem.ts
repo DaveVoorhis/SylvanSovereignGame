@@ -59,6 +59,18 @@ export class DiplomacySystem {
     return 'war';
   }
 
+  /**
+   * Ends an active war cleanly after battlefield victory or truce without emitting
+   * a duplicate chronicle entry (WarSystem records the victory/truce chronicle).
+   */
+  concludeWarWithPeace(a: Settlement, b: Settlement, targetScore = -28): void {
+    if (a.id === b.id) return;
+    const key = DiplomacySystem.pairKey(a.id, b.id);
+    const cur = this.relations.get(key) ?? -60;
+    const clamped = Math.max(-45, Math.min(100, Math.max(cur, targetScore)));
+    this.relations.set(key, clamped);
+  }
+
   adjustRelation(
     a: Settlement,
     b: Settlement,
@@ -93,6 +105,7 @@ export class DiplomacySystem {
           a.center,
         );
         world.deity.observeConflict(3.5);
+        world.wars.startWar(a, b, world, reason);
       } else if (prevStance === 'war') {
         world.chronicle.record(
           world.day,
@@ -102,6 +115,7 @@ export class DiplomacySystem {
           `Envoys of ${a.name} and ${b.name} laid down spears and declared a truce.`,
           a.center,
         );
+        world.wars.onExternalTruce(a.id, b.id, world);
       }
     }
   }
@@ -200,8 +214,17 @@ export class DiplomacySystem {
 
     const currentStance = this.getStance(a.id, b.id);
     if (currentStance === 'war') {
+      // Let armies march out and join battle before random war-weariness truces interrupt,
+      // unless strong benevolent stewardship intervenes directly to forge peace
+      const activeWar = world.wars.getWarBetween(a.id, b.id);
+      if (activeWar && activeWar.phase !== 'engaged' && alignment <= 0.45) {
+        return;
+      }
+      if (activeWar && activeWar.phase === 'engaged' && activeWar.engagedSeconds < 10 && alignment <= 0.45) {
+        return;
+      }
       // Benevolent stewardship fosters swift reconciliation; destructive scarcity prolongs conflict
-      const truceChance = alignment > 0.25 ? 0.68 : alignment < -0.25 ? 0.08 : 0.32;
+      const truceChance = alignment > 0.25 ? 0.62 : alignment < -0.25 ? 0.08 : 0.28;
       if (world.rng.chance(truceChance)) {
         this.adjustRelation(
           a,
@@ -218,6 +241,16 @@ export class DiplomacySystem {
     const meanShift = alignment * 26 - ecoStress * 10;
     const roll = world.rng.gaussian(meanShift, 14);
     if (Math.abs(roll) > 7) {
+      let effectiveRoll = roll;
+      // Respect post-war truce cooldown so exhausted villages don't immediately re-ignite war
+      if (effectiveRoll < 0 && world.wars.isOnWarCooldown(a.id, b.id)) {
+        const curScore = this.getScore(a.id, b.id);
+        if (curScore + effectiveRoll < -48) {
+          effectiveRoll = Math.min(0, -48 - curScore);
+        }
+      }
+      if (Math.abs(effectiveRoll) <= 0.5) return;
+
       const negReason =
         world.habitatScars.length > 0
           ? 'clash over shrinking woodland'
@@ -231,9 +264,9 @@ export class DiplomacySystem {
       this.adjustRelation(
         a,
         b,
-        roll,
+        effectiveRoll,
         world,
-        roll < 0 ? negReason : posReason,
+        effectiveRoll < 0 ? negReason : posReason,
       );
     }
   }

@@ -839,9 +839,11 @@ export function buildPioneersSummary(world: WorldState): PioneersSummarySnapshot
         !c.def.strictlyAquatic &&
         c.settlementId === s.id &&
         c.activity !== 'fighting' &&
+        c.activity !== 'marching' &&
         c.activity !== 'fleeing' &&
         c.activity !== 'nesting' &&
-        c.activity !== 'emigrating'
+        c.activity !== 'emigrating' &&
+        c.activeWarId === null
       ) {
         eligibleAdults++;
       }

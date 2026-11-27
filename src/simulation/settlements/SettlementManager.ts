@@ -882,9 +882,11 @@ export class SettlementManager {
         !c.def.strictlyAquatic &&
         c.settlementId === settlement.id &&
         c.activity !== 'fighting' &&
+        c.activity !== 'marching' &&
         c.activity !== 'fleeing' &&
         c.activity !== 'nesting' &&
-        c.activity !== 'emigrating',
+        c.activity !== 'emigrating' &&
+        c.activeWarId === null,
     );
     if (eligible.length < 3) return;
 
@@ -1006,8 +1008,10 @@ export class SettlementManager {
         !c.def.strictlyAquatic &&
         c.settlementId === settlement.id &&
         c.activity !== 'fighting' &&
+        c.activity !== 'marching' &&
         c.activity !== 'nesting' &&
-        c.activity !== 'emigrating',
+        c.activity !== 'emigrating' &&
+        c.activeWarId === null,
     );
     // Always keep at least 4 adults behind to maintain and rebuild the home settlement
     if (eligible.length < 6) return false;
@@ -1292,8 +1296,11 @@ export class SettlementManager {
           mate.activity === 'nesting' ||
           mate.activity === 'emigrating' ||
           mate.activity === 'fighting' ||
+          mate.activity === 'marching' ||
           mate.activity === 'fleeing' ||
-          mate.activity === 'trading'
+          mate.activity === 'trading' ||
+          adult.activeWarId !== null ||
+          mate.activeWarId !== null
         ) {
           continue;
         }

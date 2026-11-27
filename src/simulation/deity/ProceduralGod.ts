@@ -1427,7 +1427,7 @@ export class ProceduralGod {
   }
 
   private pushCreatureToHigherGround(c: Creature, home: Settlement, world: WorldState): void {
-    if (c.activity === 'emigrating' || c.activity === 'fighting') return;
+    if (c.activity === 'emigrating' || c.activity === 'fighting' || c.activity === 'marching' || c.activeWarId !== null) return;
     let bestX = home.center.x;
     let bestZ = home.center.z;
     let bestH = world.terrain.getHeightAt(bestX, bestZ);

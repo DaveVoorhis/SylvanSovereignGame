@@ -82,10 +82,53 @@ export type CreatureActivity =
   | 'nesting'
   | 'playing'
   | 'celebrating'
+  | 'marching'
   | 'fighting'
   | 'fleeing'
   | 'resting'
   | 'praying';
+
+export type WarWeapon = 'spear' | 'sword' | 'battle_axe' | 'war_club' | 'bow';
+
+export type WarPhase = 'mustering' | 'marching' | 'engaged';
+
+export type WarOutcome = 'victory_a' | 'victory_b' | 'truce';
+
+export interface ActiveWar {
+  readonly id: string;
+  readonly settlementAId: string;
+  readonly settlementBId: string;
+  readonly startedAt: number;
+  readonly startedDay: number;
+  phase: WarPhase;
+  phaseElapsed: number;
+  /** Walkable battlefield center located between the two warring settlements. */
+  readonly battlefield: Vec2;
+  /** Army rally staging point near settlement A facing the battlefield. */
+  readonly rallyA: Vec2;
+  /** Army rally staging point near settlement B facing the battlefield. */
+  readonly rallyB: Vec2;
+  /** Battlefield vanguard line position for army A. */
+  readonly frontA: Vec2;
+  /** Battlefield vanguard line position for army B. */
+  readonly frontB: Vec2;
+  /** Active mobilized creature IDs currently fighting/marching on each side. */
+  armyAIds: string[];
+  armyBIds: string[];
+  /** Initial mobilized count per side when war broke out. */
+  initialCountA: number;
+  initialCountB: number;
+  /** Battle fatalities suffered by each side. */
+  casualtiesA: number;
+  casualtiesB: number;
+  /** Wounded soldiers who routed/fled the battlefield on each side. */
+  routedA: number;
+  routedB: number;
+  /** Total weapon strikes landed during the war. */
+  totalStrikes: number;
+  /** Cumulative seconds spent in the 'engaged' battle phase. */
+  engagedSeconds: number;
+}
 
 export type ConstructionStage =
   | 'clearing'
@@ -235,11 +278,16 @@ export interface DivineEffectVisual {
   readonly duration: number;
 }
 
+export type CombatEffectKind = 'clash' | 'hit' | 'heavy_hit' | 'fatal' | 'arrow';
+
 export interface CombatSparkVisual {
   readonly id: number;
   readonly position: Vec3;
   readonly createdAt: number;
   readonly duration: number;
+  readonly kind?: CombatEffectKind;
+  readonly targetPosition?: Vec3;
+  readonly colorHex?: number;
 }
 
 export interface TradeRouteVisual {

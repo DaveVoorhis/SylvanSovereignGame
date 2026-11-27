@@ -895,8 +895,10 @@ describe('RealmOverviewLogic', () => {
       expect(bodyEl.innerHTML).not.toContain('deity-epoch-banner');
       expect(bodyEl.innerHTML).not.toContain('deity-omen');
 
-      expect(whisperSection.children[0].textContent).toBe('Disposition');
-      expect(whisperSection.children[2].textContent).toBe('Invoke Environmental Act');
+      expect(whisperSection.children[0].className).toBe('whisper-feedback');
+      expect(whisperSection.children[0].textContent).toBe('Steer the unseen hand or invoke an act...');
+      expect(whisperSection.children[1].textContent).toBe('Disposition');
+      expect(whisperSection.children[3].textContent).toBe('Invoke Environmental Act');
 
       expect(statusEl.innerHTML).toContain('deity-ecology-strip');
       expect(statusEl.innerHTML).toContain('deity-epoch-banner');

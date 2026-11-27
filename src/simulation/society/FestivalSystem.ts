@@ -634,7 +634,7 @@ export class FestivalSystem {
     if (celebration.scope === 'national') {
       // Everyone across the entire realm celebrates simultaneously!
       for (const c of world.creatures) {
-        if (!c.alive || c.activity === 'fighting' || c.activity === 'fleeing') continue;
+        if (!c.alive || c.activity === 'fighting' || c.activity === 'marching' || c.activity === 'fleeing' || c.activeWarId !== null) continue;
         const home = world.getSettlement(c.settlementId) ?? hostSettlement;
         this.assignCreatureToCelebration(c, celebration, home, world);
         attendees++;
@@ -648,8 +648,10 @@ export class FestivalSystem {
           c.alive &&
           c.settlementId === hostSettlement.id &&
           c.activity !== 'fighting' &&
+          c.activity !== 'marching' &&
           c.activity !== 'fleeing' &&
           c.activity !== 'emigrating' &&
+          c.activeWarId === null &&
           world.terrain.getBridgeDeckY(c.x, c.z) === null,
       );
       const targetCount = Math.max(
@@ -673,8 +675,10 @@ export class FestivalSystem {
           c.alive &&
           c.settlementId === settlementId &&
           c.activity !== 'fighting' &&
+          c.activity !== 'marching' &&
           c.activity !== 'fleeing' &&
           c.activity !== 'emigrating' &&
+          c.activeWarId === null &&
           (!c.def.strictlyAquatic || hostSettlement.adaptation === 'waterway_haven') &&
           world.terrain.getBridgeDeckY(c.x, c.z) === null,
       );

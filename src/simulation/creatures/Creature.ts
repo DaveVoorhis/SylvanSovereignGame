@@ -9,6 +9,7 @@ import {
   type ResourceType,
   type SpeciesId,
   type Vec2,
+  type WarWeapon,
 } from '@core/Types';
 import { SPECIES_CATALOG, type SpeciesDefinition } from './SpeciesCatalog';
 
@@ -83,6 +84,9 @@ export interface CreatureSnapshot {
   readonly activeCelebrationId: string | null;
   readonly celebrationHostSettlementId: string | null;
   readonly isDancingAtCelebration: boolean;
+  readonly activeWarId?: string | null;
+  readonly warWeapon?: WarWeapon | null;
+  readonly warFormationSlot?: number;
   readonly inventory: ResourceBundle;
   readonly relationships: readonly [string, number][];
 }
@@ -172,6 +176,18 @@ export class Creature {
   activeCelebrationId: string | null = null;
   celebrationHostSettlementId: string | null = null;
   isDancingAtCelebration = false;
+
+  /** Active village war mobilization, equipped weapon, and transient combat kinematics. */
+  activeWarId: string | null = null;
+  warWeapon: WarWeapon | null = null;
+  warFormationSlot = 0;
+  combatStrikeTimer = 0;
+  combatStrikeDuration = 0.44;
+  combatHitTimer = 0;
+  combatStaggerX = 0;
+  combatStaggerZ = 0;
+  combatStrafeDir: -1 | 1 = 1;
+  combatStrafeTimer = 0;
 
   readonly inventory: ResourceBundle = createEmptyResources();
   /** Maps another creature ID -> affinity score in [-100, 100]. */
@@ -371,6 +387,9 @@ export class Creature {
       activeCelebrationId: this.activeCelebrationId,
       celebrationHostSettlementId: this.celebrationHostSettlementId,
       isDancingAtCelebration: this.isDancingAtCelebration,
+      activeWarId: this.activeWarId,
+      warWeapon: this.warWeapon,
+      warFormationSlot: this.warFormationSlot,
       inventory: { ...this.inventory },
       relationships: Array.from(this.relationships.entries()),
     };
@@ -434,6 +453,9 @@ export class Creature {
     c.activeCelebrationId = snapshot.activeCelebrationId;
     c.celebrationHostSettlementId = snapshot.celebrationHostSettlementId;
     c.isDancingAtCelebration = snapshot.isDancingAtCelebration;
+    c.activeWarId = snapshot.activeWarId ?? null;
+    c.warWeapon = snapshot.warWeapon ?? null;
+    c.warFormationSlot = snapshot.warFormationSlot ?? 0;
     Object.assign(c.inventory, snapshot.inventory);
     c.relationships.clear();
     for (const [otherId, score] of snapshot.relationships) {

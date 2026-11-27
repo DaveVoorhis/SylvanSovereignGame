@@ -2,6 +2,7 @@ import type { QualityPreset } from '@core/Config';
 import type { Season, SelectionTarget, Vec2, WeatherType } from '@core/Types';
 import { DIVINE_EVENT_CATALOG } from '@simulation/deity/DivineEvents';
 import { getBiomeDisplayName } from '@simulation/settlements/VillageAdaptation';
+import { formatWarPhaseLabel } from '@simulation/society/WarSystem';
 import type { WorldState } from '@simulation/WorldState';
 import { bindDialogPill, type DialogPillHandle } from './DialogPillController';
 import type { RealmOverviewTab } from './RealmOverviewLogic';
@@ -645,10 +646,12 @@ export class TopBar {
       }
 
       const cel = world.festivals.getCelebrationForSettlement(s.id);
+      const war = world.wars.getWarForSettlement(s.id);
       const hex = `#${s.bannerColor.toString(16).padStart(6, '0')}`;
       const pop = world.getSettlementPopulation(s.id);
       const profile = s.getAdaptationProfile();
 
+      nodes.button.classList.toggle('at-war', Boolean(war));
       nodes.button.classList.toggle('celebrating', Boolean(cel));
       nodes.button.classList.toggle('scope-national', cel?.scope === 'national');
       nodes.button.classList.toggle('scope-regional', cel?.scope === 'regional');
@@ -659,15 +662,21 @@ export class TopBar {
       }
 
       // Swap the fixed-width icon box to the festival icon during celebrations so pill width never shifts
-      const displayIcon = cel ? cel.icon : profile.icon;
+      const displayIcon = war ? '⚔️' : cel ? cel.icon : profile.icon;
       this.setTextIfChanged(nodes.iconEl, displayIcon);
       this.setTextIfChanged(nodes.nameEl, s.name);
       this.setTextIfChanged(nodes.metaLabelEl, profile.shortLabel);
       this.setTextIfChanged(nodes.popEl, String(pop));
 
-      nodes.tooltipState.base = cel
-        ? `${s.name} — ${cel.icon} ${cel.name} (${cel.scope}): ${cel.theme}`
-        : `${s.name} — ${profile.title} (${getBiomeDisplayName(s.biome)}): ${profile.summary}`;
+      if (war) {
+        const enemyId = war.settlementAId === s.id ? war.settlementBId : war.settlementAId;
+        const enemyName = world.getSettlement(enemyId)?.name ?? 'Rival Village';
+        nodes.tooltipState.base = `${s.name} — ⚔️ At War with ${enemyName} (${formatWarPhaseLabel(war.phase)})`;
+      } else {
+        nodes.tooltipState.base = cel
+          ? `${s.name} — ${cel.icon} ${cel.name} (${cel.scope}): ${cel.theme}`
+          : `${s.name} — ${profile.title} (${getBiomeDisplayName(s.biome)}): ${profile.summary}`;
+      }
     }
 
     // Remove pills only if a settlement no longer exists (e.g. after New World reset)

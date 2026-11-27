@@ -263,4 +263,56 @@ describe('WorldState persistence & IndexedDB SaveStore', () => {
     expect(isValidSaveRecord({ version: 99 })).toBe(false);
     expect(isValidSaveRecord(null)).toBe(false);
   });
+
+  it('round-trips active war armies, weapons, battlefields, and casualties cleanly through snapshots', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 445566,
+      initialSettlements: 2,
+      initialWaterwaySettlements: 0,
+      initialCreaturesPerSettlement: 7,
+      deityDecisionIntervalSec: 999,
+    });
+    const sA = world.settlements[0];
+    const sB = world.settlements[1];
+    world.diplomacy.adjustRelation(sA, sB, -100, world, 'snapshot war test');
+    expect(world.wars.activeWars.length).toBe(1);
+
+    const war = world.wars.activeWars[0];
+    war.phase = 'marching';
+    war.totalStrikes = 5;
+    world.emitCombatSpark(
+      { x: war.battlefield.x, y: 1.5, z: war.battlefield.z },
+      { kind: 'arrow', targetPosition: { x: war.frontB.x, y: 1.4, z: war.frontB.z } },
+    );
+
+    const json = JSON.stringify(world.toSnapshot());
+    const restored = WorldState.fromSnapshot(new EventBus(), JSON.parse(json));
+
+    expect(restored.wars.activeWars.length).toBe(1);
+    const rWar = restored.wars.activeWars[0];
+    expect(rWar.id).toBe(war.id);
+    expect(rWar.phase).toBe('marching');
+    expect(rWar.totalStrikes).toBe(5);
+    expect(rWar.battlefield.x).toBeCloseTo(war.battlefield.x, 5);
+    expect(rWar.battlefield.z).toBeCloseTo(war.battlefield.z, 5);
+    expect(rWar.armyAIds).toEqual(war.armyAIds);
+    expect(rWar.armyBIds).toEqual(war.armyBIds);
+
+    const sampleSoldierId = war.armyAIds[0];
+    const origSoldier = world.getCreature(sampleSoldierId)!;
+    const restSoldier = restored.getCreature(sampleSoldierId)!;
+    expect(restSoldier.activeWarId).toBe(war.id);
+    expect(restSoldier.warWeapon).toBe(origSoldier.warWeapon);
+    expect(restSoldier.warFormationSlot).toBe(origSoldier.warFormationSlot);
+    expect(restored.activeCombatSparks.some((s) => s.kind === 'arrow' && Boolean(s.targetPosition))).toBe(true);
+
+    // Stepping the restored war world proceeds smoothly with finite positions
+    for (let i = 0; i < 20; i++) {
+      restored.step(0.15);
+    }
+    for (const c of restored.creatures) {
+      expect(Number.isFinite(c.x)).toBe(true);
+      expect(Number.isFinite(c.z)).toBe(true);
+    }
+  });
 });
