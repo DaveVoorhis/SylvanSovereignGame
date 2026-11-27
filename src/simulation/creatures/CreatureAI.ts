@@ -25,13 +25,47 @@ export function getCreaturePersonalRadius(creature: Creature): number {
 
 /**
  * Candidate relative steering offsets (radians) evaluated when obstacles, other creatures,
- * or unwalkable terrain block the forward path. Covers up to ±2.85 rad so creatures can
- * cleanly back out of deep cul-de-sacs instead of getting pinned.
+ * or unwalkable terrain block the forward path. Sorted monotonically from -2.95 to +2.95 rad
+ * with finer angular resolution near forward so local neighbor blending yields a continuous,
+ * chatter-free steering curve around obstacles and riverbanks.
  */
-const STEER_OFFSETS = [0, 0.38, -0.38, 0.78, -0.78, 1.22, -1.22, 1.72, -1.72, 2.28, -2.28, 2.85, -2.85];
+const STEER_OFFSETS = [
+  -2.95, -2.52, -2.1, -1.7, -1.34, -1.02, -0.74, -0.5, -0.32, -0.16, 0,
+  0.16, 0.32, 0.5, 0.74, 1.02, 1.34, 1.7, 2.1, 2.52, 2.95,
+];
+const STEER_ZERO_INDEX = 10;
 const STEER_COS = Float64Array.from(STEER_OFFSETS, (a) => Math.cos(a));
 const STEER_SIN = Float64Array.from(STEER_OFFSETS, (a) => Math.sin(a));
-const FALLBACK_DETOUR_ANGLES = [Math.PI * 0.5, -Math.PI * 0.5, 2.2, -2.2, Math.PI];
+const FALLBACK_DETOUR_MAGS = [0.48, 0.92, 1.42, 2.05, Math.PI];
+
+function normalizeAngle(angle: number): number {
+  let a = angle;
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+}
+
+function angleDiff(target: number, current: number): number {
+  return normalizeAngle(target - current);
+}
+
+/** Natural species-tailored maximum yaw turn speed (rad/s) for smooth, realistic steering. */
+function getCreatureTurnRate(creature: Creature): number {
+  const s = creature.species;
+  if (s === 'bear' || s === 'turtle' || s === 'badger') return 3.4;
+  if (
+    s === 'sparrow' ||
+    s === 'robin' ||
+    s === 'mouse' ||
+    s === 'weasel' ||
+    s === 'squirrel' ||
+    s === 'pigeon' ||
+    s === 'magpie'
+  ) {
+    return 5.2;
+  }
+  return 4.3;
+}
 
 const CREATURE_CELL_SIZE = 4.0;
 const INV_CREATURE_CELL_SIZE = 1 / CREATURE_CELL_SIZE;
@@ -67,11 +101,49 @@ export class CreatureAI {
   private readonly nearbyCreatures: Creature[] = [];
   private readonly creatureCells = new Map<number, Creature[]>();
   private readonly movedCreatures = new Set<Creature>();
+  private readonly steerScores = new Float64Array(STEER_OFFSETS.length);
+  private readonly steerHazards = new Float64Array(STEER_OFFSETS.length);
   private creatureGridStep = -1;
   private hasMultipleSettlementCreatures = false;
   private dispApplied = false;
   private dispX = 0;
   private dispZ = 0;
+
+  /**
+   * Smoothly rotates a creature's heading toward `targetHeading` using an unconditionally stable
+   * analytical critically damped angular spring clamped to the species' natural turn speed.
+   * Prevents instantaneous heading snaps, 180° flips, and high-frequency eye-view vibration.
+   */
+  private turnCreatureToward(
+    creature: Creature,
+    targetHeading: number,
+    dt: number,
+    urgency = 1.0,
+  ): number {
+    const err = angleDiff(targetHeading, creature.heading);
+    if (dt <= 0) return err;
+
+    const maxRate = getCreatureTurnRate(creature) * urgency;
+    const omega = Math.min(11.0, maxRate * 2.15);
+    const x0 = -err;
+    const v0 = creature.headingVel;
+    const expTerm = Math.exp(-omega * dt);
+    const temp = (v0 + omega * x0) * dt;
+    const nextX = (x0 + temp) * expTerm;
+    let nextVel = (v0 - omega * temp) * expTerm;
+    let delta = nextX - x0;
+
+    const maxDelta = maxRate * dt;
+    if (Math.abs(delta) > maxDelta) {
+      const sign = delta >= 0 ? 1 : -1;
+      delta = sign * maxDelta;
+      nextVel = sign * maxRate;
+    }
+
+    creature.headingVel = nextVel;
+    creature.heading = normalizeAngle(creature.heading + delta);
+    return angleDiff(targetHeading, creature.heading);
+  }
 
   /** Rebuilds the lightweight spatial hash of alive creatures once per simulation step. */
   prepareStep(world: WorldState): void {
@@ -771,7 +843,12 @@ export class CreatureAI {
       if (creature.activity === 'gathering_timber') {
         creature.isActivelyWorking = true;
         creature.activeConstructionStage = 'clearing';
-        creature.heading = Math.atan2(node.position.x - creature.x, node.position.z - creature.z);
+        if (dist < 2.65) {
+          creature.targetX = creature.x;
+          creature.targetZ = creature.z;
+          const faceAngle = Math.atan2(node.position.x - creature.x, node.position.z - creature.z);
+          this.turnCreatureToward(creature, faceAngle, dt, 0.9);
+        }
       }
       const home = world.getSettlement(creature.settlementId);
       const biomeGatherMult = home?.getAdaptationProfile().gatherBonus[node.type] ?? 1.0;
@@ -806,10 +883,11 @@ export class CreatureAI {
         if (nearDist < 2.5) {
           creature.targetX = creature.x;
           creature.targetZ = creature.z;
-          creature.heading = Math.atan2(
+          const faceAngle = Math.atan2(
             bridge.centerX - creature.x,
             bridge.centerZ - creature.z,
           );
+          this.turnCreatureToward(creature, faceAngle, dt, 0.9);
         }
         const bridgeAdaptMult =
           home.adaptation === 'riverside_stilts' || home.adaptation === 'coastal_harbor'
@@ -848,7 +926,8 @@ export class CreatureAI {
       if (dist < buildReach - 0.35) {
         creature.targetX = creature.x;
         creature.targetZ = creature.z;
-        creature.heading = Math.atan2(bld.position.x - creature.x, bld.position.z - creature.z);
+        const faceAngle = Math.atan2(bld.position.x - creature.x, bld.position.z - creature.z);
+        this.turnCreatureToward(creature, faceAngle, dt, 0.9);
       }
       const profile = home.getAdaptationProfile();
       const styleMult = profile.buildSpeedBonus[bp.frameStyle];
@@ -1103,9 +1182,14 @@ export class CreatureAI {
       const buddy = world.getCreature(creature.targetCreatureId);
       if (buddy && buddy.alive && buddy.settlementId === creature.settlementId) {
         const dBuddy = Math.hypot(buddy.x - creature.x, buddy.z - creature.z);
-        if (dBuddy > 3.2) {
-          creature.targetX = buddy.x + Math.cos(creature.animPhase) * 1.1;
-          creature.targetZ = buddy.z + Math.sin(creature.animPhase) * 1.1;
+        const dTargetFromBuddy = Math.hypot(creature.targetX - buddy.x, creature.targetZ - buddy.z);
+        if (dBuddy > 3.5 && dTargetFromBuddy > 1.8) {
+          const stableAngle =
+            ((creature.id.charCodeAt(creature.id.length - 1) || 1) * 1.618 +
+              world.elapsedSeconds * 0.16) %
+            (Math.PI * 2);
+          creature.targetX = buddy.x + Math.cos(stableAngle) * 1.25;
+          creature.targetZ = buddy.z + Math.sin(stableAngle) * 1.25;
         }
       }
     }
@@ -1148,13 +1232,16 @@ export class CreatureAI {
     }
 
     const dist = Math.hypot(partner.x - creature.x, partner.z - creature.z);
-    if (dist > 2.2) {
-      creature.targetX = partner.x;
-      creature.targetZ = partner.z;
-    } else {
+    if (dist > 2.45) {
+      if (Math.hypot(creature.targetX - partner.x, creature.targetZ - partner.z) > 0.65) {
+        creature.targetX = partner.x;
+        creature.targetZ = partner.z;
+      }
+    } else if (dist <= 2.2 || creature.currentSpeed < 0.25) {
       creature.targetX = creature.x;
       creature.targetZ = creature.z;
-      creature.heading = Math.atan2(partner.x - creature.x, partner.z - creature.z);
+      const faceAngle = Math.atan2(partner.x - creature.x, partner.z - creature.z);
+      this.turnCreatureToward(creature, faceAngle, dt, 0.85);
       creature.mood = Math.min(100, creature.mood + dt * 5.0);
       const affinity = creature.adjustRelationship(partner.id, dt * 16);
       partner.adjustRelationship(creature.id, dt * 16);
@@ -1181,7 +1268,7 @@ export class CreatureAI {
     }
 
     const distMate = Math.hypot(mate.x - creature.x, mate.z - creature.z);
-    if (distMate > 3.2) {
+    if (distMate > 3.5 && Math.hypot(creature.targetX - mate.x, creature.targetZ - mate.z) > 1.6) {
       creature.targetX = (creature.targetX + mate.x) * 0.5;
       creature.targetZ = (creature.targetZ + mate.z) * 0.5;
     } else {
@@ -1234,7 +1321,7 @@ export class CreatureAI {
     }
   }
 
-  private handleFighting(creature: Creature, world: WorldState, _dt: number): void {
+  private handleFighting(creature: Creature, world: WorldState, dt: number): void {
     const rawTarget = creature.targetCreatureId
       ? world.getCreature(creature.targetCreatureId)
       : undefined;
@@ -1256,14 +1343,15 @@ export class CreatureAI {
     const dist = Math.hypot(target.x - creature.x, target.z - creature.z);
     const meleeStandoff =
       getCreaturePersonalRadius(creature) + getCreaturePersonalRadius(target) + 0.32;
-    if (dist > meleeStandoff) {
+    if (dist > meleeStandoff + 0.35) {
       creature.targetX = target.x;
       creature.targetZ = target.z;
-    } else {
+    } else if (dist <= meleeStandoff + 0.08 || creature.currentSpeed < 0.25) {
       // Stand face-to-face at melee reach instead of pushing into each other's body radius
       creature.targetX = creature.x;
       creature.targetZ = creature.z;
-      creature.heading = Math.atan2(target.x - creature.x, target.z - creature.z);
+      const faceAngle = Math.atan2(target.x - creature.x, target.z - creature.z);
+      this.turnCreatureToward(creature, faceAngle, dt, 1.35);
     }
 
     if (dist < 2.2 && creature.attackCooldown <= 0) {
@@ -1673,19 +1761,21 @@ export class CreatureAI {
     const dx = creature.targetX - creature.x;
     const dz = creature.targetZ - creature.z;
     let dist = Math.sqrt(dx * dx + dz * dz);
+    const isUrgentActivity = creature.activity === 'fighting' || creature.activity === 'fleeing';
+    // Arrival hysteresis prevents settled creatures from waking up to micro-vibrate over tiny nudges
+    const stopDist = !isUrgentActivity && creature.currentSpeed < 0.18 ? 0.48 : 0.28;
 
     // Query nearby creatures only when moving (crowd courtesy & predictive passing)
-    if (dist > 0.25) {
-      this.queryNearbyCreatures(creature, creature.x, creature.z, 4.2, world, this.nearbyCreatures);
+    if (dist > stopDist) {
+      this.queryNearbyCreatures(creature, creature.x, creature.z, 4.8, world, this.nearbyCreatures);
     }
 
     // Crowd courtesy: if our exact destination spot is already occupied by another creature nearby,
     // settle comfortably beside them instead of orbiting each other over the same square inch.
     if (
-      dist > 0.25 &&
+      dist > stopDist &&
       dist < 1.55 &&
-      creature.activity !== 'fighting' &&
-      creature.activity !== 'fleeing'
+      !isUrgentActivity
     ) {
       for (let i = 0; i < this.nearbyCreatures.length; i++) {
         const other = this.nearbyCreatures[i];
@@ -1702,7 +1792,7 @@ export class CreatureAI {
       }
     }
 
-    if (dist > 0.25) {
+    if (dist > stopDist) {
       const isEmigrating = creature.activity === 'emigrating';
       const isRegionalFestivalTraveler =
         creature.activity === 'celebrating' &&
@@ -1719,24 +1809,41 @@ export class CreatureAI {
 
       const speedMult =
         creature.activity === 'fleeing'
-          ? 1.35
+          ? 1.28
           : creature.activity === 'fighting'
-            ? 1.2
+            ? 1.12
             : creature.activity === 'trading'
-              ? 1.1
+              ? 1.04
               : isEmigrating
                 ? isFordingWater
-                  ? 0.82
-                  : 1.42
+                  ? 0.78
+                  : 1.32
                 : isRegionalFestivalTraveler
                   ? isFordingWater
-                    ? 0.84
-                    : 1.24
+                    ? 0.8
+                    : 1.15
                   : creature.isDancingAtCelebration
-                    ? 0.78
-                : 1.0;
+                    ? 0.62
+                    : creature.activity === 'building' || creature.activity === 'gathering_timber'
+                      ? 0.94
+                      : creature.activity === 'foraging'
+                        ? 0.86
+                        : creature.activity === 'playing'
+                          ? 0.84
+                          : creature.activity === 'socialising' ||
+                              creature.activity === 'praying' ||
+                              creature.activity === 'courting' ||
+                              creature.activity === 'nesting'
+                            ? 0.78
+                            : creature.getTotalInventory() >= 5
+                              ? 0.92
+                              : 0.74;
 
-      const step = Math.min(dist, creature.def.baseSpeed * speedMult * dt);
+      const arriveT = Math.min(1, Math.max(0, (dist - stopDist) / 1.75));
+      const arriveSmooth = arriveT * arriveT * (3 - 2 * arriveT);
+      const arriveFactor = isUrgentActivity ? 1.0 : 0.3 + 0.7 * arriveSmooth;
+      const nominalSpeed = creature.def.baseSpeed * speedMult * arriveFactor;
+      const probeStepBase = Math.max(nominalSpeed * dt, 0.45);
       let dirX = dx / dist;
       let dirZ = dz / dist;
 
@@ -1750,7 +1857,7 @@ export class CreatureAI {
         for (let i = 0; i < world.bridges.length; i++) {
           const br = world.bridges[i];
           if (!br.completed) continue;
-          if (getBridgeDeckHeightAt(br, creature.x, creature.z, 0.2, 0.7) !== null) {
+          if (getBridgeDeckHeightAt(br, creature.x, creature.z, 0.32, 0.85) !== null) {
             const dStartTgt = Math.hypot(br.startX - creature.targetX, br.startZ - creature.targetZ);
             const dEndTgt = Math.hypot(br.endX - creature.targetX, br.endZ - creature.targetZ);
             const exitX = dEndTgt <= dStartTgt ? br.endX + br.dirX * 1.1 : br.startX - br.dirX * 1.1;
@@ -1817,7 +1924,7 @@ export class CreatureAI {
       const baseDirZ = dirZ;
 
       // Context-based local steering around buildings, trees, rocks, bushes, benches, fires & creatures
-      const lookahead = Math.min(dist, 3.0);
+      const lookahead = Math.min(dist, 3.6);
       world.obstacles.queryNearby(
         creature.x + baseDirX * (lookahead * 0.45),
         creature.z + baseDirZ * (lookahead * 0.45),
@@ -1829,13 +1936,22 @@ export class CreatureAI {
 
       // Check forward terrain walkability so creatures curve along riverbanks proactively
       if (!pathBlocked && !creature.def.aerial) {
-        const terrainProbeX = creature.x + baseDirX * Math.min(lookahead, 1.25);
-        const terrainProbeZ = creature.z + baseDirZ * Math.min(lookahead, 1.25);
-        const probeOk =
+        const probe1 = Math.min(lookahead, 1.25);
+        const probe2 = Math.min(lookahead, 2.15);
+        const p1x = creature.x + baseDirX * probe1;
+        const p1z = creature.z + baseDirZ * probe1;
+        const p2x = creature.x + baseDirX * probe2;
+        const p2z = creature.z + baseDirZ * probe2;
+        const ok1 =
           canFordWater && !creature.def.strictlyAquatic
-            ? terrain.canEmigrantTraverse(terrainProbeX, terrainProbeZ)
-            : terrain.canCreatureTraverse(terrainProbeX, terrainProbeZ, creature.def);
-        if (!probeOk) {
+            ? terrain.canEmigrantTraverse(p1x, p1z)
+            : terrain.canCreatureTraverse(p1x, p1z, creature.def);
+        const ok2 =
+          ok1 &&
+          (canFordWater && !creature.def.strictlyAquatic
+            ? terrain.canEmigrantTraverse(p2x, p2z)
+            : terrain.canCreatureTraverse(p2x, p2z, creature.def));
+        if (!ok1 || !ok2) {
           pathBlocked = true;
         }
       }
@@ -1865,7 +1981,7 @@ export class CreatureAI {
       }
 
       if (!pathBlocked) {
-        const creatureLookahead = Math.min(lookahead, 2.4);
+        const creatureLookahead = Math.min(lookahead, 3.0);
         for (let i = 0; i < this.nearbyCreatures.length; i++) {
           const other = this.nearbyCreatures[i];
           if (creature.activity === 'fighting' && other.id === creature.targetCreatureId) continue;
@@ -1873,14 +1989,14 @@ export class CreatureAI {
           const toOtherX = other.x - creature.x;
           const toOtherZ = other.z - creature.z;
           const dSq = toOtherX * toOtherX + toOtherZ * toOtherZ;
-          if (dSq < (pairR + 0.5) * (pairR + 0.5)) {
+          if (dSq < (pairR + 0.65) * (pairR + 0.65)) {
             pathBlocked = true;
             break;
           }
           const proj = toOtherX * baseDirX + toOtherZ * baseDirZ;
           if (proj > 0 && proj < creatureLookahead + pairR) {
             const perpSq = Math.max(0, dSq - proj * proj);
-            if (perpSq < (pairR + 0.22) * (pairR + 0.22)) {
+            if (perpSq < (pairR + 0.3) * (pairR + 0.3)) {
               pathBlocked = true;
               break;
             }
@@ -1911,7 +2027,7 @@ export class CreatureAI {
           activeObsCount++;
         }
 
-        const creatureLookahead = Math.min(lookahead, 2.4);
+        const creatureLookahead = Math.min(lookahead, 3.0);
         let activeCrCount = 0;
         for (let i = 0; i < this.nearbyCreatures.length; i++) {
           const other = this.nearbyCreatures[i];
@@ -1933,14 +2049,12 @@ export class CreatureAI {
 
         const prevDirX = Math.sin(creature.heading);
         const prevDirZ = Math.cos(creature.heading);
-        const probeStep = Math.max(step, 0.45);
-        const midProbeStep = Math.min(lookahead, 1.35);
+        const probeStep = probeStepBase;
+        const midProbeStep = Math.min(lookahead, 1.25);
+        const farProbeStep = Math.min(lookahead, 2.15);
 
         let bestScore = -Infinity;
-        let bestX = baseDirX;
-        let bestZ = baseDirZ;
-        let bestOffset = 0;
-        let straightHazard = 0;
+        let bestIdx = STEER_ZERO_INDEX;
 
         for (let k = 0; k < STEER_OFFSETS.length; k++) {
           const offset = STEER_OFFSETS[k];
@@ -1953,15 +2067,15 @@ export class CreatureAI {
 
           // Goal progress + heading momentum + committed wall-following consistency
           let score =
-            (cx * baseDirX + cz * baseDirZ) * 1.15 +
-            (cx * prevDirX + cz * prevDirZ) * 0.45 +
-            (offset > 0 ? 0.06 : 0);
+            (cx * baseDirX + cz * baseDirZ) * 1.12 +
+            (cx * prevDirX + cz * prevDirZ) * 0.82 +
+            (offset > 0 ? 0.04 : 0);
 
           if (creature.detourSign !== 0 && creature.detourTimer > 0) {
             if (offset * creature.detourSign > 0) {
-              score += 0.85;
+              score += 0.92;
             } else if (offset * creature.detourSign < 0) {
-              score -= 0.35;
+              score -= 0.45;
             }
           } else if (offset * tieSign > 0) {
             score += 0.03;
@@ -1969,14 +2083,14 @@ export class CreatureAI {
 
           let hazard = 0;
 
-          // Avoid steering into unwalkable water or cliffs
+          // Avoid steering into unwalkable water or cliffs with 3 progressive probe distances
           if (!creature.def.aerial) {
             const nearOk =
               canFordWater && !creature.def.strictlyAquatic
                 ? terrain.canEmigrantTraverse(nearProbeX, nearProbeZ)
                 : terrain.canCreatureTraverse(nearProbeX, nearProbeZ, creature.def);
             if (!nearOk) {
-              hazard += 7.0;
+              hazard += 6.5;
             }
             const midProbeX = creature.x + cx * midProbeStep;
             const midProbeZ = creature.z + cz * midProbeStep;
@@ -1986,6 +2100,17 @@ export class CreatureAI {
                 : terrain.canCreatureTraverse(midProbeX, midProbeZ, creature.def);
             if (!midOk) {
               hazard += 2.6;
+            }
+            if (farProbeStep > midProbeStep + 0.25) {
+              const farProbeX = creature.x + cx * farProbeStep;
+              const farProbeZ = creature.z + cz * farProbeStep;
+              const farOk =
+                canFordWater && !creature.def.strictlyAquatic
+                  ? terrain.canEmigrantTraverse(farProbeX, farProbeZ)
+                  : terrain.canCreatureTraverse(farProbeX, farProbeZ, creature.def);
+              if (!farOk) {
+                hazard += 1.05;
+              }
             }
           }
 
@@ -2036,7 +2161,7 @@ export class CreatureAI {
             }
 
             if (proj > 0 && proj < creatureLookahead + pairR) {
-              const clearMargin = pairR + 0.2;
+              const clearMargin = pairR + 0.26;
               const perpSq = Math.max(0, dSq - proj * proj);
               if (perpSq < clearMargin * clearMargin) {
                 const perpDist = Math.sqrt(perpSq);
@@ -2047,34 +2172,76 @@ export class CreatureAI {
             }
           }
 
-          if (k === 0) straightHazard = hazard;
           score -= hazard;
+          this.steerScores[k] = score;
+          this.steerHazards[k] = hazard;
 
           if (score > bestScore) {
             bestScore = score;
-            bestX = cx;
-            bestZ = cz;
-            bestOffset = offset;
+            bestIdx = k;
           }
         }
 
-        dirX = bestX;
-        dirZ = bestZ;
+        // Continuous local blend across the winning ray and its immediate low-hazard neighbors
+        // so the steering vector glides smoothly instead of jumping between discrete ray angles.
+        const bestHazard = this.steerHazards[bestIdx];
+        let wSum = 1.0;
+        let offSum = STEER_OFFSETS[bestIdx];
+        if (bestIdx > 0 && this.steerHazards[bestIdx - 1] <= bestHazard + 0.5) {
+          const wL = Math.exp((this.steerScores[bestIdx - 1] - bestScore) * 3.5);
+          wSum += wL;
+          offSum += STEER_OFFSETS[bestIdx - 1] * wL;
+        }
+        if (bestIdx < STEER_OFFSETS.length - 1 && this.steerHazards[bestIdx + 1] <= bestHazard + 0.5) {
+          const wR = Math.exp((this.steerScores[bestIdx + 1] - bestScore) * 3.5);
+          wSum += wR;
+          offSum += STEER_OFFSETS[bestIdx + 1] * wR;
+        }
+        const blendedOffset = offSum / wSum;
+        const cosBlend = Math.cos(blendedOffset);
+        const sinBlend = Math.sin(blendedOffset);
+        dirX = baseDirX * cosBlend - baseDirZ * sinBlend;
+        dirZ = baseDirZ * cosBlend + baseDirX * sinBlend;
 
-        if (straightHazard < 0.05 && Math.abs(bestOffset) < 0.01) {
-          // Direct path is clear again — release detour lock cleanly
-          creature.detourTimer = 0;
-          creature.detourSign = 0;
-        } else if (Math.abs(bestOffset) > 0.2 && creature.detourTimer <= 0) {
-          creature.detourSign = bestOffset > 0 ? 1 : -1;
-          creature.detourTimer = 1.6;
+        const straightHazard = this.steerHazards[STEER_ZERO_INDEX];
+        if (straightHazard < 0.04 && Math.abs(blendedOffset) < 0.14) {
+          // Direct path is clear again — ease out detour lock smoothly without boundary chatter
+          creature.detourTimer = Math.max(0, creature.detourTimer - dt * 3.5);
+          if (creature.detourTimer <= 0) {
+            creature.detourSign = 0;
+          }
+        } else if (Math.abs(blendedOffset) > 0.22 && creature.detourTimer <= 0) {
+          creature.detourSign = blendedOffset > 0 ? 1 : -1;
+          creature.detourTimer = 1.8;
         }
       }
 
+      // Smoothly filter desired steering heading & rotate the creature's physical heading at a
+      // natural species-appropriate turn speed (never snapping instantaneously).
+      const rawDesiredHeading = Math.atan2(dirX, dirZ);
+      const steerAlpha = 1 - Math.exp(-(pathBlocked ? 10.5 : 8.5) * dt);
+      creature.steerHeading = normalizeAngle(
+        creature.steerHeading + angleDiff(rawDesiredHeading, creature.steerHeading) * steerAlpha,
+      );
+      const preErr = Math.abs(angleDiff(creature.steerHeading, creature.heading));
+      const turnUrgency = isUrgentActivity ? 1.32 : pathBlocked && preErr > 0.65 ? 1.38 : 1.0;
+      const headingErr = this.turnCreatureToward(creature, creature.steerHeading, dt, turnUrgency);
+
+      // Naturally slow down during sharp turns and accelerate/decelerate smoothly with inertia
+      const cosAlign = Math.max(0, Math.cos(headingErr));
+      const turnSpeedFactor = 0.22 + 0.78 * cosAlign * cosAlign;
+      const targetSpeed = nominalSpeed * turnSpeedFactor;
+      const speedRate = targetSpeed > creature.currentSpeed ? 5.8 : 8.2;
+      creature.currentSpeed += (targetSpeed - creature.currentSpeed) * (1 - Math.exp(-speedRate * dt));
+
+      const moveDirX = Math.sin(creature.heading);
+      const moveDirZ = Math.cos(creature.heading);
+      const step = Math.min(dist, creature.currentSpeed * dt);
+
       const prevX = creature.x;
       const prevZ = creature.z;
-      let nx = creature.x + dirX * step;
-      let nz = creature.z + dirZ * step;
+      let nx = creature.x + moveDirX * step;
+      let nz = creature.z + moveDirZ * step;
 
       // Invisible circular valley boundary: smoothly steer inward rather than clipping a square wall
       const maxR = world.terrain.playableRadius;
@@ -2102,51 +2269,71 @@ export class CreatureAI {
           : terrain.canCreatureTraverse(px, pz, creature.def);
       const primaryOk = canStep(nx, nz);
       if (primaryOk) {
-        creature.x = nx;
-        creature.z = nz;
+        // If mid-turn into a hard obstacle that pushes us backward, pivot cleanly instead of vibrating
+        const forwardProgress = (nx - prevX) * moveDirX + (nz - prevZ) * moveDirZ;
+        if (sep.collided && Math.abs(headingErr) > 0.45 && forwardProgress < step * 0.1) {
+          creature.currentSpeed *= Math.exp(-6 * dt);
+        } else {
+          creature.x = nx;
+          creature.z = nz;
+        }
+      } else if (Math.abs(headingErr) > 0.42) {
+        // Mid-turn near a riverbank or cliff edge: pause briefly and complete the smooth turn
+        creature.currentSpeed *= Math.exp(-7 * dt);
       } else {
-        // Detour around steep slopes, deep sea, or impassable alpine peaks
-        const baseDirAng = Math.atan2(dirZ, dirX);
+        // Detour smoothly around steep slopes, deep sea, or impassable alpine peaks
+        // respecting committed detourSign so creatures never zig-zag ±90° along riverbanks
+        const prefSign: -1 | 1 =
+          creature.detourSign !== 0 ? creature.detourSign : (tieSign as -1 | 1);
         let moved = false;
-        for (let fi = 0; fi < FALLBACK_DETOUR_ANGLES.length; fi++) {
-          const ang = baseDirAng + FALLBACK_DETOUR_ANGLES[fi];
-          const detourX = creature.x + Math.cos(ang) * step;
-          const detourZ = creature.z + Math.sin(ang) * step;
-          const detourOk = canStep(detourX, detourZ);
-          if (!detourOk) continue;
-          const altSep = world.obstacles.resolveCollisions(
-            detourX,
-            detourZ,
-            creatureR,
-            altitude,
-            creature.heading,
-          );
-          const altOk = canStep(altSep.x, altSep.z);
-          if (altOk) {
-            creature.x = altSep.x;
-            creature.z = altSep.z;
-            moved = true;
-            break;
+        const fallbackStep = Math.max(step, Math.min(dist, creature.def.baseSpeed * 0.45 * dt));
+        outerFallback: for (let fi = 0; fi < FALLBACK_DETOUR_MAGS.length; fi++) {
+          const mag = FALLBACK_DETOUR_MAGS[fi];
+          const signs = mag >= Math.PI - 0.01 ? [1] : [prefSign, -prefSign];
+          for (let si = 0; si < signs.length; si++) {
+            const signedOff = signs[si] * mag;
+            const candHeading = normalizeAngle(creature.heading + signedOff);
+            const detourX = creature.x + Math.sin(candHeading) * fallbackStep;
+            const detourZ = creature.z + Math.cos(candHeading) * fallbackStep;
+            if (!canStep(detourX, detourZ)) continue;
+            const altSep = world.obstacles.resolveCollisions(
+              detourX,
+              detourZ,
+              creatureR,
+              altitude,
+              candHeading,
+            );
+            if (canStep(altSep.x, altSep.z)) {
+              creature.x = altSep.x;
+              creature.z = altSep.z;
+              creature.steerHeading = candHeading;
+              if (mag < Math.PI - 0.01) {
+                creature.detourSign = signs[si] as -1 | 1;
+                creature.detourTimer = Math.max(creature.detourTimer, 1.8);
+              }
+              moved = true;
+              break outerFallback;
+            }
           }
         }
         if (!moved) {
           // Accelerate stuck recovery rather than freezing silently in place
+          creature.currentSpeed *= Math.exp(-8 * dt);
           creature.navProgressTimer += 1.2;
         }
       }
 
       const movedX = creature.x - prevX;
       const movedZ = creature.z - prevZ;
-      if (movedX * movedX + movedZ * movedZ > 0.0001) {
-        creature.heading = Math.atan2(movedX, movedZ);
-      } else {
-        creature.heading = Math.atan2(dirX, dirZ);
-      }
-      creature.animPhase += dt * (creature.def.baseSpeed * 2.4);
+      const actualSpeed = dt > 1e-4 ? Math.hypot(movedX, movedZ) / dt : 0;
+      const gaitSpeed = Math.min(creature.def.baseSpeed * 1.3, actualSpeed);
+      creature.animPhase += dt * (gaitSpeed * 1.9);
+      const targetIntensity = Math.min(1, actualSpeed / Math.max(1.4, creature.def.baseSpeed * 0.78));
+      creature.moveIntensity += (targetIntensity - creature.moveIntensity) * (1 - Math.exp(-8.5 * dt));
 
       if (creature.def.aerial) {
         const targetAlt = dist > 5 ? 2.4 + Math.sin(creature.animPhase * 0.4) * 0.5 : 0.2;
-        creature.flightAltitude += (targetAlt - creature.flightAltitude) * Math.min(1, dt * 3.5);
+        creature.flightAltitude += (targetAlt - creature.flightAltitude) * (1 - Math.exp(-3.2 * dt));
       }
 
       // Goal-distance progress & loop detection (catches both pinned stalls and orbiting loops of any radius)
@@ -2164,7 +2351,7 @@ export class CreatureAI {
           creature.navLoopCount = 0;
         } else {
           creature.navProgressTimer += dt;
-          if (creature.navProgressTimer >= 1.6) {
+          if (creature.navProgressTimer >= 2.1) {
             creature.navBestGoalDist = postDist;
             creature.navProgressTimer = 0;
             creature.navLoopCount += 1;
@@ -2204,16 +2391,24 @@ export class CreatureAI {
         creature.navProgressTimer = 0;
       }
     } else if (creature.def.aerial) {
-      creature.flightAltitude += (0 - creature.flightAltitude) * Math.min(1, dt * 4.5);
+      creature.currentSpeed *= Math.exp(-9 * dt);
+      creature.headingVel *= Math.exp(-10 * dt);
+      creature.moveIntensity *= Math.exp(-6.5 * dt);
+      creature.steerHeading = creature.heading;
+      creature.flightAltitude += (0 - creature.flightAltitude) * (1 - Math.exp(-4.2 * dt));
       creature.navBestGoalDist = Infinity;
       creature.navProgressTimer = 0;
     } else {
+      creature.currentSpeed *= Math.exp(-9 * dt);
+      creature.headingVel *= Math.exp(-10 * dt);
+      creature.moveIntensity *= Math.exp(-6.5 * dt);
+      creature.steerHeading = creature.heading;
       creature.navBestGoalDist = Infinity;
       creature.navProgressTimer = 0;
     }
 
     // Keep stationary/just-landed creatures outside newly placed buildings & obstacles
-    if (dist <= 0.25 && (obstaclesChanged || creature.def.aerial)) {
+    if (dist <= stopDist && (obstaclesChanged || creature.def.aerial)) {
       const finalSep = world.obstacles.resolveCollisions(
         creature.x,
         creature.z,
@@ -2277,7 +2472,24 @@ export class CreatureAI {
     const movedSet = this.movedCreatures;
     movedSet.clear();
 
-    for (let pass = 0; pass < 3; pass++) {
+    const syncSettledTarget = (c: Creature, oldX: number, oldZ: number): void => {
+      if (
+        c.currentSpeed < 0.2 &&
+        c.activity !== 'fighting' &&
+        c.activity !== 'fleeing' &&
+        c.activity !== 'trading' &&
+        c.activity !== 'emigrating'
+      ) {
+        const tdx = c.targetX - oldX;
+        const tdz = c.targetZ - oldZ;
+        if (tdx * tdx + tdz * tdz < 0.65 * 0.65) {
+          c.targetX = c.x;
+          c.targetZ = c.z;
+        }
+      }
+    };
+
+    for (let pass = 0; pass < 4; pass++) {
       this.rebuildCreatureGrid(world);
       let anySeparated = false;
 
@@ -2323,8 +2535,8 @@ export class CreatureAI {
                 uz = Math.sin(seedAng);
               }
 
-              const pen = minDist - dist + 0.008;
-              const half = pen * 0.52;
+              const pen = minDist - dist + 0.002;
+              const half = pen * 0.5;
 
               const appliedA = tryDisplace(a, -ux * half, -uz * half);
               const ax = this.dispX;
@@ -2334,23 +2546,35 @@ export class CreatureAI {
               const bz = this.dispZ;
 
               if (appliedA && appliedB) {
+                const prevAX = a.x;
+                const prevAZ = a.z;
+                const prevBX = b.x;
+                const prevBZ = b.z;
                 a.x = ax;
                 a.z = az;
                 b.x = bx;
                 b.z = bz;
+                syncSettledTarget(a, prevAX, prevAZ);
+                syncSettledTarget(b, prevBX, prevBZ);
                 movedSet.add(a);
                 movedSet.add(b);
                 anySeparated = true;
               } else if (appliedA && !appliedB) {
+                const prevAX = a.x;
+                const prevAZ = a.z;
                 const fullA = tryDisplace(a, -ux * pen, -uz * pen);
                 a.x = fullA ? this.dispX : ax;
                 a.z = fullA ? this.dispZ : az;
+                syncSettledTarget(a, prevAX, prevAZ);
                 movedSet.add(a);
                 anySeparated = true;
               } else if (!appliedA && appliedB) {
+                const prevBX = b.x;
+                const prevBZ = b.z;
                 const fullB = tryDisplace(b, ux * pen, uz * pen);
                 b.x = fullB ? this.dispX : bx;
                 b.z = fullB ? this.dispZ : bz;
+                syncSettledTarget(b, prevBX, prevBZ);
                 movedSet.add(b);
                 anySeparated = true;
               }

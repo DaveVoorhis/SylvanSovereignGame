@@ -77,6 +77,7 @@ export class SceneManager {
   private creatureRenderer!: CreatureRenderer;
   private ambientCritterRenderer!: AmbientCritterRenderer;
   private loadedTextureResolution = 0;
+  private povUnderwaterNear = false;
   private readonly dofParamsScratch: {
     focusDistance: number;
     focusRange: number;
@@ -361,8 +362,20 @@ export class SceneManager {
       const focusDistance = this.cameraController.getFocusDistance();
       // Adapt camera near plane with zoom distance so zoomed-out overviews get ~25x better depth precision
       const effectiveWaterLevel = this.world.getEffectiveWaterLevel();
-      const isUnderwaterPov = isPov && this.camera.position.y < effectiveWaterLevel - 0.01;
-      const targetNear = isUnderwaterPov ? 0.12 : isPov ? 0.22 : THREE.MathUtils.clamp(focusDistance * 0.012, 0.22, 6.0);
+      if (!isPov) {
+        this.povUnderwaterNear = false;
+      } else if (this.povUnderwaterNear) {
+        if (this.camera.position.y > effectiveWaterLevel + 0.02) {
+          this.povUnderwaterNear = false;
+        }
+      } else if (this.camera.position.y < effectiveWaterLevel - 0.06) {
+        this.povUnderwaterNear = true;
+      }
+      const targetNear = this.povUnderwaterNear
+        ? 0.12
+        : isPov
+          ? 0.22
+          : THREE.MathUtils.clamp(focusDistance * 0.012, 0.22, 6.0);
       if (Math.abs(this.camera.near - targetNear) > 0.02) {
         this.camera.near = targetNear;
         this.camera.updateProjectionMatrix();

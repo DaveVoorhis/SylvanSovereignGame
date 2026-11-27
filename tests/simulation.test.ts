@@ -1618,4 +1618,45 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     const popAfterCorridor = world.creatures.filter((c) => c.alive).length;
     expect(popAfterCorridor).toBeGreaterThanOrEqual(popBeforeCorridor + 2);
   });
+
+  it('keeps creature headings and movement smooth without single-frame snaps or rapid flip-flops across seeds', () => {
+    const angleDiff = (a: number, b: number): number => {
+      let d = b - a;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      return d;
+    };
+
+    const dt = 1 / 60;
+    for (const seed of [1337, 424242, 777888]) {
+      const world = new WorldState(new EventBus(), { seed });
+      const prev = new Map<string, { x: number; z: number; heading: number; dh: number }>();
+      let bigHeadingJumps = 0;
+      let headingFlipFlops = 0;
+      let totalDistance = 0;
+
+      for (let f = 0; f < 900; f++) {
+        world.step(dt);
+        for (const c of world.creatures) {
+          if (!c.alive) continue;
+          const p = prev.get(c.id);
+          if (p) {
+            totalDistance += Math.hypot(c.x - p.x, c.z - p.z);
+            const dh = angleDiff(p.heading, c.heading);
+            if (Math.abs(dh) > 0.25) bigHeadingJumps++;
+            if (Math.abs(p.dh) > 0.05 && Math.abs(dh) > 0.05 && p.dh * dh < 0) {
+              headingFlipFlops++;
+            }
+            prev.set(c.id, { x: c.x, z: c.z, heading: c.heading, dh });
+          } else {
+            prev.set(c.id, { x: c.x, z: c.z, heading: c.heading, dh: 0 });
+          }
+        }
+      }
+
+      expect(totalDistance).toBeGreaterThan(50);
+      expect(bigHeadingJumps).toBe(0);
+      expect(headingFlipFlops).toBe(0);
+    }
+  });
 });

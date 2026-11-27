@@ -46,6 +46,13 @@ interface CreatureRig {
   workChipCooldown: number;
   readonly adaptation: VillageAdaptationId;
   readonly swimRipple?: THREE.Mesh;
+  moveBlend: number;
+  bobY: number;
+  tiltX: number;
+  tiltZ: number;
+  headPitch: number;
+  headRoll: number;
+  squashY: number;
 }
 
 interface SparkVisual {
@@ -1388,6 +1395,12 @@ export class CreatureRenderer {
   update(dt: number, selection: SelectionTarget, povCreatureId: string | null = null): void {
     this.syncCreatures(selection);
     const t = this.world.elapsedSeconds;
+    const safeDt = Math.max(0, Math.min(dt, 0.1));
+    const posLerp = 1 - Math.exp(-13 * safeDt);
+    const rotLerp = 1 - Math.exp(-11 * safeDt);
+    const moveLerp = 1 - Math.exp(-9 * safeDt);
+    const poseLerp = 1 - Math.exp(-10 * safeDt);
+    const limbLerp = 1 - Math.exp(-12 * safeDt);
 
     for (const c of this.world.creatures) {
       const rig = this.rigs.get(c.id);
@@ -1395,12 +1408,14 @@ export class CreatureRenderer {
 
       if (!c.alive || c.id === povCreatureId) {
         rig.root.visible = false;
+        // Keep rig synced quietly while hidden in Eye View so exiting POV never snaps
+        rig.root.position.set(c.x, c.y, c.z);
+        rig.root.rotation.y = c.heading;
         continue;
       }
       rig.root.visible = true;
 
-      // Silky position interpolation
-      const posLerp = Math.min(1, dt * 12);
+      // Frame-rate independent exponential position interpolation
       rig.root.position.x += (c.x - rig.root.position.x) * posLerp;
       rig.root.position.y += (c.y - rig.root.position.y) * posLerp;
       rig.root.position.z += (c.z - rig.root.position.z) * posLerp;
@@ -1409,16 +1424,21 @@ export class CreatureRenderer {
       let diff = c.heading - rig.root.rotation.y;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
-      rig.root.rotation.y += diff * Math.min(1, dt * 10);
+      rig.root.rotation.y += diff * rotLerp;
+
+      // Smooth locomotion blend (0 at rest, 1 at full stride) so stationary creatures settle gently
+      const targetMove = c.activity === 'resting' ? 0 : c.moveIntensity;
+      rig.moveBlend += (targetMove - rig.moveBlend) * moveLerp;
+      const move = rig.moveBlend;
 
       const phase = c.animPhase;
       const seed = rig.seedPhase;
       let bobY = 0;
-      let tiltZ = THREE.MathUtils.clamp(-diff * 0.22, -0.18, 0.18);
+      let tiltZ = THREE.MathUtils.clamp(-diff * 0.2, -0.14, 0.14) * (0.25 + 0.75 * move);
       let tiltX = 0;
       let squashY = 1.0;
-      let headPitch = Math.sin(t * 2.1 + seed) * 0.05;
-      let headRoll = Math.sin(t * 1.4 + seed * 2.1) * 0.07;
+      let headPitch = Math.sin(t * 1.6 + seed) * 0.04;
+      let headRoll = Math.sin(t * 1.15 + seed * 2.1) * 0.055;
 
       const isBird = c.def.locomotion === 'fly';
       const isSnake = c.def.locomotion === 'slither';
@@ -1428,77 +1448,79 @@ export class CreatureRenderer {
         Boolean(c.def.aquatic) &&
         this.world.terrain.getHeightAt(c.x, c.z) < this.world.terrain.waterLevel - 0.02;
 
+      let leftArmX = 0;
+      let leftArmY = 0;
+      let leftArmZ = 0.16;
+      let rightArmX = 0;
+      let rightArmY = 0;
+      let rightArmZ = -0.16;
+      let leftFootX = 0;
+      let rightFootX = 0;
+
+      // Differentiable cosine bump (equals sin^2(phase)) avoids harsh turnaround cusps
+      const smoothBounce = 0.5 - 0.5 * Math.cos(phase * 2);
+
       if (c.def.locomotion === 'hop') {
-        const hopWave = Math.abs(Math.sin(phase));
-        bobY = hopWave * 0.38;
-        tiltX = Math.sin(phase) * 0.16;
-        // Subtle natural posture compression on hop launch/landing
-        squashY = 0.96 + hopWave * 0.06;
+        bobY = smoothBounce * 0.28 * move;
+        tiltX = Math.sin(phase) * 0.13 * move;
+        squashY = 1.0 + (smoothBounce - 0.35) * 0.055 * move;
       } else if (isBird) {
-        bobY = isAirborne ? Math.sin(phase * 1.5) * 0.18 : Math.abs(Math.sin(phase)) * 0.1;
-        tiltX = isAirborne ? 0.24 : Math.sin(phase) * 0.06;
-        const flap = isAirborne ? Math.sin(phase * 4.2) * 0.92 : Math.sin(phase * 1.2) * 0.14;
-        if (rig.leftArm) {
-          rig.leftArm.rotation.z = isAirborne ? flap : 0.65 + flap * 0.5;
-          rig.leftArm.rotation.y = isAirborne ? Math.cos(phase * 4.2) * 0.16 : 0.28;
-        }
-        if (rig.rightArm) {
-          rig.rightArm.rotation.z = isAirborne ? -flap : -0.65 - flap * 0.5;
-          rig.rightArm.rotation.y = isAirborne ? -Math.cos(phase * 4.2) * 0.16 : -0.28;
-        }
+        bobY = isAirborne ? Math.sin(phase * 1.3 + seed) * 0.13 : smoothBounce * 0.075 * move;
+        tiltX = isAirborne ? 0.2 : Math.sin(phase) * 0.05 * move;
+        const flap = isAirborne ? Math.sin(phase * 2.4 + seed) * 0.78 : Math.sin(phase * 1.1) * 0.1 * move;
+        leftArmZ = isAirborne ? flap : 0.65 + flap * 0.5;
+        leftArmY = isAirborne ? Math.cos(phase * 2.4 + seed) * 0.14 : 0.28;
+        rightArmZ = isAirborne ? -flap : -0.65 - flap * 0.5;
+        rightArmY = isAirborne ? -Math.cos(phase * 2.4 + seed) * 0.14 : -0.28;
       } else if (c.def.locomotion === 'scurry') {
-        bobY = Math.abs(Math.sin(phase * 1.6)) * 0.11;
-        tiltZ += Math.sin(phase * 1.6) * 0.11;
+        const scurryBounce = 0.5 - 0.5 * Math.cos(phase * 2.5);
+        bobY = scurryBounce * 0.075 * move;
+        tiltZ += Math.sin(phase * 1.25) * 0.08 * move;
       } else if (isFish) {
-        bobY = Math.sin(phase * 1.4 + seed) * 0.055;
-        tiltZ += Math.sin(phase * 2.1 + seed) * 0.1;
-        tiltX = Math.sin(phase * 1.1 + seed) * 0.06;
-        if (rig.leftArm) {
-          rig.leftArm.rotation.y = 0.18 + Math.sin(phase * 2.8 + seed) * 0.42;
-          rig.leftArm.rotation.z = Math.cos(phase * 2.8 + seed) * 0.18;
-        }
-        if (rig.rightArm) {
-          rig.rightArm.rotation.y = -0.18 - Math.sin(phase * 2.8 + seed) * 0.42;
-          rig.rightArm.rotation.z = -Math.cos(phase * 2.8 + seed) * 0.18;
-        }
+        const swimAmp = 0.32 + 0.68 * move;
+        bobY = Math.sin(phase * 1.2 + t * 0.8 + seed) * 0.042 * swimAmp;
+        tiltZ += Math.sin(phase * 1.6 + seed) * 0.075 * swimAmp;
+        tiltX = Math.sin(phase * 1.0 + seed) * 0.045 * swimAmp;
+        leftArmY = 0.18 + Math.sin(phase * 2.1 + t * 1.2 + seed) * 0.34 * swimAmp;
+        leftArmZ = Math.cos(phase * 2.1 + t * 1.2 + seed) * 0.14 * swimAmp;
+        rightArmY = -0.18 - Math.sin(phase * 2.1 + t * 1.2 + seed) * 0.34 * swimAmp;
+        rightArmZ = -Math.cos(phase * 2.1 + t * 1.2 + seed) * 0.14 * swimAmp;
       } else if (isSnake) {
-        bobY = Math.sin(phase * 1.3) * 0.032;
-        tiltZ += Math.sin(phase * 1.8) * 0.16;
-        tiltX = 0.07;
+        const slitherAmp = 0.18 + 0.82 * move;
+        bobY = Math.sin(phase * 1.2) * 0.024 * slitherAmp;
+        tiltZ += Math.sin(phase * 1.45) * 0.12 * slitherAmp;
+        tiltX = 0.05 * slitherAmp;
       } else if (isSwimmingInWater) {
-        bobY = Math.sin(phase * 1.5 + seed) * 0.045;
-        tiltX = 0.28;
-        tiltZ += Math.sin(phase * 1.5 + seed) * 0.08;
+        bobY = Math.sin(t * 1.7 + seed) * 0.022 + Math.sin(phase * 1.25 + seed) * 0.022 * move;
+        tiltX = 0.18 + 0.08 * move;
+        tiltZ += Math.sin(phase * 1.25 + seed) * 0.06 * (0.3 + 0.7 * move);
       } else {
-        bobY = Math.abs(Math.sin(phase)) * 0.13;
-        tiltZ += Math.sin(phase) * 0.07;
+        bobY = smoothBounce * 0.09 * move;
+        tiltZ += Math.sin(phase) * 0.055 * move;
+      }
+
+      // Calm idle breathing when standing still on land
+      if (!isAirborne && !isFish && !isSwimmingInWater) {
+        squashY += Math.sin(t * 1.8 + seed) * 0.012 * (1 - move);
       }
 
       // Arm & foot stride animation for ground-walking/hopping creatures
       if (!isBird && !isSnake && !isFish) {
-        const stride = c.activity === 'resting' ? 0 : Math.sin(phase * (c.def.locomotion === 'scurry' ? 1.6 : 1.0));
-        if (rig.leftArm) {
-          rig.leftArm.rotation.x = stride * 0.52;
-          rig.leftArm.rotation.z = 0.16;
-        }
-        if (rig.rightArm) {
-          rig.rightArm.rotation.x = -stride * 0.52;
-          rig.rightArm.rotation.z = -0.16;
-        }
-        if (rig.leftFoot && rig.rightFoot) {
-          if (c.def.locomotion === 'hop') {
-            const tuck = Math.abs(Math.sin(phase)) * 0.45;
-            rig.leftFoot.rotation.x = tuck;
-            rig.rightFoot.rotation.x = tuck;
-          } else {
-            rig.leftFoot.rotation.x = -stride * 0.55;
-            rig.rightFoot.rotation.x = stride * 0.55;
-          }
+        const stride = Math.sin(phase * (c.def.locomotion === 'scurry' ? 1.25 : 1.0)) * move;
+        leftArmX = stride * 0.46;
+        rightArmX = -stride * 0.46;
+        if (c.def.locomotion === 'hop') {
+          const tuck = smoothBounce * 0.38 * move;
+          leftFootX = tuck;
+          rightFootX = tuck;
+        } else {
+          leftFootX = -stride * 0.48;
+          rightFootX = stride * 0.48;
         }
       } else if (rig.leftFoot && rig.rightFoot) {
-        const stride = isAirborne ? 0.65 : Math.sin(phase) * 0.4;
-        rig.leftFoot.rotation.x = isAirborne ? stride : -stride;
-        rig.rightFoot.rotation.x = isAirborne ? stride : stride;
+        const stride = isAirborne ? 0.62 : Math.sin(phase) * 0.34 * move;
+        leftFootX = isAirborne ? stride : -stride;
+        rightFootX = isAirborne ? stride : stride;
       }
 
       // Stage-specific handheld construction tools & pioneer emigration pack
@@ -1525,58 +1547,58 @@ export class CreatureRenderer {
       if (activeStage) {
         if (activeStage === 'clearing') {
           // Bold overhead woodcutter / land-clearing axe swing
-          const chop = Math.sin(t * 9.2 + seed);
-          tiltX = 0.16 + chop * 0.24;
+          const chop = Math.sin(t * 6.5 + seed);
+          tiltX = 0.15 + chop * 0.2;
           if (!isBird && !isSnake && rig.rightArm && rig.leftArm) {
-            rig.rightArm.rotation.x = -1.42 + chop * 0.96;
-            rig.rightArm.rotation.z = -0.32 + chop * 0.22;
-            rig.leftArm.rotation.x = -0.65 + chop * 0.45;
+            rightArmX = -1.36 + chop * 0.86;
+            rightArmZ = -0.3 + chop * 0.2;
+            leftArmX = -0.62 + chop * 0.42;
           } else if (isBird || isSnake) {
-            headPitch = 0.22 + chop * 0.34;
+            headPitch = 0.2 + chop * 0.28;
             if (rig.leftArm && rig.rightArm) {
-              rig.leftArm.rotation.z = 0.48 + Math.sin(t * 14 + seed) * 0.32;
-              rig.rightArm.rotation.z = -0.48 - Math.sin(t * 14 + seed) * 0.32;
+              leftArmZ = 0.48 + Math.sin(t * 7.8 + seed) * 0.26;
+              rightArmZ = -0.48 - Math.sin(t * 7.8 + seed) * 0.26;
             }
           }
         } else if (activeStage === 'leveling') {
           // Two-handed spading & earth-leveling scoop
-          const scoop = Math.sin(t * 6.8 + seed);
-          tiltX = 0.3 + scoop * 0.2;
-          bobY -= Math.max(0, scoop) * 0.08;
+          const scoop = Math.sin(t * 5.2 + seed);
+          tiltX = 0.26 + scoop * 0.17;
+          bobY -= Math.max(0, scoop) * 0.06;
           if (!isBird && !isSnake && rig.rightArm && rig.leftArm) {
-            rig.rightArm.rotation.x = -0.92 + scoop * 0.68;
-            rig.leftArm.rotation.x = -0.82 + scoop * 0.62;
-            rig.rightArm.rotation.z = 0.14;
-            rig.leftArm.rotation.z = -0.14;
+            rightArmX = -0.88 + scoop * 0.62;
+            leftArmX = -0.78 + scoop * 0.56;
+            rightArmZ = 0.14;
+            leftArmZ = -0.14;
           } else if (isBird || isSnake) {
-            headPitch = 0.38 + scoop * 0.24;
+            headPitch = 0.34 + scoop * 0.2;
           }
         } else if (activeStage === 'foundation') {
           // Crouched stone-laying & mortar troweling
-          const sweep = Math.sin(t * 8.5 + seed);
+          const sweep = Math.sin(t * 5.8 + seed);
           squashY = 0.94 + Math.abs(sweep) * 0.025;
-          tiltX = 0.34;
-          headPitch = 0.28;
+          tiltX = 0.3;
+          headPitch = 0.26;
           if (!isBird && !isSnake && rig.rightArm && rig.leftArm) {
-            rig.rightArm.rotation.x = -0.85 + Math.sin(t * 12 + seed) * 0.28;
-            rig.rightArm.rotation.z = -0.25 + sweep * 0.36;
-            rig.leftArm.rotation.x = -0.62;
+            rightArmX = -0.84 + Math.sin(t * 7.2 + seed) * 0.24;
+            rightArmZ = -0.24 + sweep * 0.32;
+            leftArmX = -0.6;
           } else if (isBird || isSnake) {
-            headPitch = 0.36 + sweep * 0.22;
+            headPitch = 0.32 + sweep * 0.18;
           }
         } else {
           // Framing, finishing, or disassembling: crisp double-tap hammering with bracing arm
-          const rawHit = Math.sin(t * 11.5 + seed);
-          const snap = Math.sign(rawHit) * Math.pow(Math.abs(rawHit), 0.65);
-          tiltX = 0.14 + snap * 0.18;
+          const rawHit = Math.sin(t * 7.6 + seed);
+          const snap = Math.sign(rawHit) * Math.pow(Math.abs(rawHit), 0.72);
+          tiltX = 0.14 + snap * 0.15;
           if (!isBird && !isSnake && rig.rightArm && rig.leftArm) {
-            rig.rightArm.rotation.x = -1.25 + snap * 0.82;
-            rig.leftArm.rotation.x = -0.78 + Math.sin(t * 5.75 + seed) * 0.16;
+            rightArmX = -1.2 + snap * 0.74;
+            leftArmX = -0.74 + Math.sin(t * 4.2 + seed) * 0.14;
           } else if (isBird || isSnake) {
-            headPitch = 0.18 + snap * 0.32;
+            headPitch = 0.16 + snap * 0.26;
             if (rig.leftArm && rig.rightArm) {
-              rig.leftArm.rotation.z = 0.42 + Math.sin(t * 16 + seed) * 0.38;
-              rig.rightArm.rotation.z = -0.42 - Math.sin(t * 16 + seed) * 0.38;
+              leftArmZ = 0.42 + Math.sin(t * 8.4 + seed) * 0.3;
+              rightArmZ = -0.42 - Math.sin(t * 8.4 + seed) * 0.3;
             }
           }
         }
@@ -1586,39 +1608,41 @@ export class CreatureRenderer {
           this.spawnWorkChip(c, activeStage);
         }
       } else if (c.activity === 'building' || c.activity === 'gathering_timber') {
-        const chop = Math.sin(t * 11 + seed);
-        tiltX = 0.14 + chop * 0.18;
-        if (!isBird && rig.rightArm) {
-          rig.rightArm.rotation.x = -1.15 + chop * 0.78;
+        if (move < 0.35) {
+          const chop = Math.sin(t * 6.8 + seed);
+          tiltX = 0.12 + chop * 0.15;
+          if (!isBird && rig.rightArm) {
+            rightArmX = -1.1 + chop * 0.68;
+          }
         }
       } else if (c.activity === 'emigrating') {
-        tiltX = 0.12;
-        bobY += Math.abs(Math.sin(phase * 1.2)) * 0.05;
+        tiltX = 0.1 * move;
+        bobY += (0.5 - 0.5 * Math.cos(phase * 2.2)) * 0.035 * move;
       } else if (c.activity === 'playing') {
         // Joyful bouncy hops and playful ear/head wiggles for frolicking litters of young!
-        const hop = Math.abs(Math.sin(t * 7.2 + seed));
-        bobY += hop * 0.16;
-        squashY = 0.96 + hop * 0.06;
-        headRoll = Math.sin(t * 6.5 + seed) * 0.24;
-        headPitch = -0.08 + Math.sin(t * 5.0 + seed) * 0.14;
+        const hop = 0.5 - 0.5 * Math.cos((t * 4.4 + seed) * 2);
+        bobY += hop * 0.12;
+        squashY = 0.97 + hop * 0.05;
+        headRoll = Math.sin(t * 3.8 + seed) * 0.18;
+        headPitch = -0.06 + Math.sin(t * 3.1 + seed) * 0.1;
       } else if (c.activity === 'celebrating' && c.isDancingAtCelebration) {
         // Festive village dance: rhythmic bounce, joyful sway, waving paws/wings & music sparkles!
-        const beat = Math.abs(Math.sin(t * 6.4 + seed));
-        const sway = Math.sin(t * 3.2 + seed);
-        bobY += beat * 0.18;
-        squashY = 0.96 + beat * 0.06;
-        tiltZ += sway * 0.18;
-        headRoll = sway * 0.26;
-        headPitch = -0.1 + beat * 0.14;
+        const beat = 0.5 - 0.5 * Math.cos((t * 4.6 + seed) * 2);
+        const sway = Math.sin(t * 2.6 + seed);
+        bobY += beat * 0.14;
+        squashY = 0.97 + beat * 0.05;
+        tiltZ += sway * 0.14;
+        headRoll = sway * 0.2;
+        headPitch = -0.08 + beat * 0.11;
         if (!isBird && rig.leftArm && rig.rightArm) {
-          rig.leftArm.rotation.x = -1.35 + Math.sin(t * 6.4 + seed) * 0.45;
-          rig.rightArm.rotation.x = -1.35 - Math.sin(t * 6.4 + seed) * 0.45;
-          rig.leftArm.rotation.z = 0.42 + sway * 0.22;
-          rig.rightArm.rotation.z = -0.42 + sway * 0.22;
+          leftArmX = -1.3 + Math.sin(t * 4.6 + seed) * 0.38;
+          rightArmX = -1.3 - Math.sin(t * 4.6 + seed) * 0.38;
+          leftArmZ = 0.4 + sway * 0.18;
+          rightArmZ = -0.4 + sway * 0.18;
         } else if (isBird && rig.leftArm && rig.rightArm) {
-          const flutter = Math.sin(t * 12.8 + seed) * 0.42;
-          rig.leftArm.rotation.z = 0.58 + flutter;
-          rig.rightArm.rotation.z = -0.58 - flutter;
+          const flutter = Math.sin(t * 7.8 + seed) * 0.34;
+          leftArmZ = 0.56 + flutter;
+          rightArmZ = -0.56 - flutter;
         }
         rig.workChipCooldown -= dt;
         if (rig.workChipCooldown <= 0) {
@@ -1627,63 +1651,86 @@ export class CreatureRenderer {
         }
       } else if (c.activity === 'courting' || c.activity === 'nesting') {
         // Warm affectionate head tilt & gentle cozy sway
-        headRoll = Math.sin(t * 2.6 + seed) * 0.22;
-        headPitch = 0.12 + Math.sin(t * 3.1 + seed) * 0.08;
+        headRoll = Math.sin(t * 2.1 + seed) * 0.18;
+        headPitch = 0.1 + Math.sin(t * 2.4 + seed) * 0.06;
         if (c.activity === 'nesting') {
           bobY = -0.06;
-          squashY = 0.96 + Math.sin(t * 2.8 + seed) * 0.02;
+          squashY = 0.96 + Math.sin(t * 2.2 + seed) * 0.018;
         }
       } else if (c.activity === 'fighting') {
-        const lunge = Math.sin(t * 15 + seed);
-        tiltX = 0.2 + lunge * 0.24;
+        const lunge = Math.sin(t * 8.5 + seed);
+        tiltX = 0.18 + lunge * 0.2;
         if (!isBird && rig.rightArm) {
-          rig.rightArm.rotation.x = -1.2 + lunge * 0.85;
+          rightArmX = -1.15 + lunge * 0.72;
         }
       } else if (c.activity === 'foraging') {
-        headPitch = 0.26 + Math.sin(t * 6.5 + seed) * 0.16;
+        headPitch = 0.22 + Math.sin(t * 3.6 + seed) * 0.12;
       } else if (c.activity === 'socialising') {
-        headRoll = Math.sin(t * 3.8 + seed) * 0.2;
-        headPitch = Math.sin(t * 5.2 + seed) * 0.1;
+        headRoll = Math.sin(t * 2.4 + seed) * 0.16;
+        headPitch = Math.sin(t * 3.0 + seed) * 0.08;
         if (!isBird && rig.leftArm) {
-          rig.leftArm.rotation.x = -0.55 + Math.sin(t * 6 + seed) * 0.25;
+          leftArmX = -0.5 + Math.sin(t * 3.6 + seed) * 0.2;
         }
       } else if (c.activity === 'praying') {
-        headPitch = 0.28 + Math.sin(t * 2.2 + seed) * 0.08;
+        headPitch = 0.26 + Math.sin(t * 1.9 + seed) * 0.06;
         if (!isBird && rig.leftArm && rig.rightArm) {
-          rig.leftArm.rotation.x = -0.75;
-          rig.rightArm.rotation.x = -0.75;
+          leftArmX = -0.72;
+          rightArmX = -0.72;
         }
       } else if (c.activity === 'resting') {
         if (isFish) {
-          bobY = -0.04 + Math.sin(t * 1.8 + seed) * 0.02;
+          bobY = -0.04 + Math.sin(t * 1.5 + seed) * 0.018;
           tiltX = 0.04;
           headPitch = 0.05;
         } else {
           bobY = -0.11;
           tiltX = 0.2;
-          squashY = 0.94 + Math.sin(t * 2.4 + seed) * 0.022;
+          squashY = 0.94 + Math.sin(t * 1.9 + seed) * 0.018;
           headPitch = 0.25;
         }
       }
 
+      // Smoothly blend posture and limbs so activity transitions never pop in a single frame
+      rig.bobY += (bobY - rig.bobY) * poseLerp;
+      rig.tiltX += (tiltX - rig.tiltX) * poseLerp;
+      rig.tiltZ += (tiltZ - rig.tiltZ) * poseLerp;
+      rig.headPitch += (headPitch - rig.headPitch) * poseLerp;
+      rig.headRoll += (headRoll - rig.headRoll) * poseLerp;
+      rig.squashY += (squashY - rig.squashY) * poseLerp;
+
+      if (rig.leftArm) {
+        rig.leftArm.rotation.x += (leftArmX - rig.leftArm.rotation.x) * limbLerp;
+        rig.leftArm.rotation.y += (leftArmY - rig.leftArm.rotation.y) * limbLerp;
+        rig.leftArm.rotation.z += (leftArmZ - rig.leftArm.rotation.z) * limbLerp;
+      }
+      if (rig.rightArm) {
+        rig.rightArm.rotation.x += (rightArmX - rig.rightArm.rotation.x) * limbLerp;
+        rig.rightArm.rotation.y += (rightArmY - rig.rightArm.rotation.y) * limbLerp;
+        rig.rightArm.rotation.z += (rightArmZ - rig.rightArm.rotation.z) * limbLerp;
+      }
+      if (rig.leftFoot && rig.rightFoot) {
+        rig.leftFoot.rotation.x += (leftFootX - rig.leftFoot.rotation.x) * limbLerp;
+        rig.rightFoot.rotation.x += (rightFootX - rig.rightFoot.rotation.x) * limbLerp;
+      }
+
       const effectiveScale = c.getSizeScale();
-      const scaleXZ = effectiveScale / Math.sqrt(squashY);
-      rig.bodyGroup.scale.set(scaleXZ, effectiveScale * squashY, scaleXZ);
-      rig.bodyGroup.position.y = bobY;
-      rig.bodyGroup.rotation.z = tiltZ;
-      rig.bodyGroup.rotation.x = tiltX;
-      rig.bodyGroup.rotation.y = isFish ? Math.sin(phase * 2.4 + seed) * 0.12 : 0;
+      const scaleXZ = effectiveScale / Math.sqrt(rig.squashY);
+      rig.bodyGroup.scale.set(scaleXZ, effectiveScale * rig.squashY, scaleXZ);
+      rig.bodyGroup.position.y = rig.bobY;
+      rig.bodyGroup.rotation.z = rig.tiltZ;
+      rig.bodyGroup.rotation.x = rig.tiltX;
+      rig.bodyGroup.rotation.y = isFish ? Math.sin(phase * 1.9 + seed) * 0.095 * (0.35 + 0.65 * move) : 0;
 
       // Adorable youthful proportions: slightly larger head on newborn young & juveniles
       const headScale = c.lifeStage === 'young' ? 1.18 : c.lifeStage === 'juvenile' ? 1.08 : 1.0;
       rig.headGroup.scale.setScalar(headScale);
-      rig.headGroup.rotation.x = headPitch;
-      rig.headGroup.rotation.z = headRoll;
+      rig.headGroup.rotation.x = rig.headPitch;
+      rig.headGroup.rotation.z = rig.headRoll;
 
       // Playful lively ear twitches!
       if (rig.leftEar && rig.rightEar) {
-        const twitch = Math.pow(Math.max(0, Math.sin(t * 2.6 + seed * 5.3)), 10) * 0.26;
-        const bounce = c.def.locomotion === 'hop' ? Math.sin(phase) * 0.14 : 0;
+        const twitch = Math.pow(Math.max(0, Math.sin(t * 2.0 + seed * 5.3)), 10) * 0.22;
+        const bounce = c.def.locomotion === 'hop' ? Math.sin(phase) * 0.11 * move : 0;
         rig.leftEar.rotation.z = rig.baseLeftEarZ + twitch + bounce;
         rig.rightEar.rotation.z = rig.baseRightEarZ - twitch * 0.5 - bounce;
       }
@@ -1691,20 +1738,22 @@ export class CreatureRenderer {
       // Expressive wagging / bobbing / swimming tails
       if (rig.tail) {
         if (isFish) {
-          rig.tail.rotation.y = Math.sin(phase * 3.4 + seed) * 0.56;
-          rig.tail.rotation.x = Math.sin(phase * 1.7 + seed) * 0.06;
+          const tailAmp = 0.35 + 0.65 * move;
+          rig.tail.rotation.y = Math.sin(phase * 2.5 + t * 1.2 + seed) * 0.44 * tailAmp;
+          rig.tail.rotation.x = Math.sin(phase * 1.4 + seed) * 0.05 * tailAmp;
         } else if (isSwimmingInWater) {
-          rig.tail.rotation.y = Math.sin(phase * 2.4 + seed) * 0.44;
-          rig.tail.rotation.x = rig.baseTailX + Math.sin(phase * 2.4 + seed) * 0.14;
+          const tailAmp = 0.3 + 0.7 * move;
+          rig.tail.rotation.y = Math.sin(phase * 1.9 + t * 1.0 + seed) * 0.36 * tailAmp;
+          rig.tail.rotation.x = rig.baseTailX + Math.sin(phase * 1.9 + seed) * 0.1 * tailAmp;
         } else if (isSnake) {
-          rig.tail.rotation.y = Math.sin(phase * 2.1 + seed) * 0.48;
+          rig.tail.rotation.y = Math.sin(phase * 1.7 + seed) * 0.38 * (0.2 + 0.8 * move);
           rig.tail.rotation.x = rig.baseTailX;
         } else if (c.species === 'cat') {
-          rig.tail.rotation.y = Math.sin(t * 2.1 + phase * 0.65 + seed) * 0.38;
-          rig.tail.rotation.x = rig.baseTailX + Math.sin(t * 1.5 + seed) * 0.08;
+          rig.tail.rotation.y = Math.sin(t * 1.8 + phase * 0.5 + seed) * 0.32;
+          rig.tail.rotation.x = rig.baseTailX + Math.sin(t * 1.3 + seed) * 0.06;
         } else {
-          rig.tail.rotation.y = Math.sin(phase * 1.15 + seed) * 0.34;
-          rig.tail.rotation.x = rig.baseTailX + Math.sin(phase * 2.1 + seed) * 0.12;
+          rig.tail.rotation.y = Math.sin(phase * 1.05 + t * 0.9 + seed) * (0.14 + 0.16 * move);
+          rig.tail.rotation.x = rig.baseTailX + Math.sin(phase * 1.6 + seed) * 0.09 * move;
         }
       }
 
@@ -2005,6 +2054,7 @@ export class CreatureRenderer {
 
     const root = new THREE.Group();
     root.position.set(c.x, c.y, c.z);
+    root.rotation.y = c.heading;
     root.userData.selectionTarget = { kind: 'creature', id: c.id };
 
     const bodyGroup = new THREE.Group();
@@ -3452,6 +3502,13 @@ export class CreatureRenderer {
       workChipCooldown: 0.15,
       adaptation,
       swimRipple,
+      moveBlend: c.moveIntensity,
+      bobY: 0,
+      tiltX: 0,
+      tiltZ: 0,
+      headPitch: 0,
+      headRoll: 0,
+      squashY: 1.0,
     };
   }
 

@@ -1649,4 +1649,125 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     expect(mat.uniforms.uFloodOffset.value).toBeCloseTo(0.95, 5);
     water.dispose();
   });
+
+  it('filters noisy Eye View heading/bob inputs smoothly and settles stationary creature rigs to ground level', () => {
+    // 1. CameraController Eye View critically damped spring rejects high-frequency heading & bob flicker
+    const hadWindow = 'window' in globalThis;
+    const prevWindow = (globalThis as { window?: unknown }).window;
+    const fakeWindow = {
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    };
+    if (!hadWindow) {
+      (globalThis as { window?: unknown }).window = fakeWindow;
+    }
+    const fakeDom = {
+      style: { touchAction: '' },
+      clientWidth: 1280,
+      clientHeight: 720,
+      ownerDocument: {
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        pointerLockElement: null,
+      },
+      getRootNode: () => ({
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      setPointerCapture: () => {},
+      releasePointerCapture: () => {},
+    } as unknown as HTMLElement;
+
+    try {
+      const camera = new THREE.PerspectiveCamera(46, 16 / 9, 0.22, 1000);
+      const controller = new CameraController(camera, fakeDom);
+      let frame = 0;
+      let mode: 'jitter' | 'turn' = 'jitter';
+      controller.enterCreaturePov(() => ({
+        x: 20,
+        y: 3,
+        z: 10,
+        heading: mode === 'jitter' ? (frame === 0 ? 0 : frame % 2 === 0 ? 0.45 : -0.45) : Math.PI * 0.5,
+        eyeHeight: 0.72,
+        bobOffset: mode === 'jitter' ? (frame % 2 === 0 ? 0.14 : -0.14) : 0,
+        alive: true,
+      }));
+
+      controller.update(1 / 60);
+      const prevDir = new THREE.Vector3();
+      camera.getWorldDirection(prevDir);
+      let prevYaw = Math.atan2(prevDir.x, prevDir.z);
+      let prevY = camera.position.y;
+      let maxYawStep = 0;
+      let maxYStep = 0;
+
+      for (frame = 1; frame <= 60; frame++) {
+        controller.update(1 / 60);
+        const dir = new THREE.Vector3();
+        camera.getWorldDirection(dir);
+        const yaw = Math.atan2(dir.x, dir.z);
+        let dYaw = yaw - prevYaw;
+        while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+        while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+        maxYawStep = Math.max(maxYawStep, Math.abs(dYaw));
+        maxYStep = Math.max(maxYStep, Math.abs(camera.position.y - prevY));
+        prevYaw = yaw;
+        prevY = camera.position.y;
+      }
+
+      // High-frequency +-0.45 rad heading & +-0.14m vertical chatter is heavily attenuated
+      expect(maxYawStep).toBeLessThan(0.05);
+      expect(maxYStep).toBeLessThan(0.03);
+
+      // Sustained 90-degree turn converges smoothly without overshoot
+      mode = 'turn';
+      let maxTurnYaw = 0;
+      for (let i = 0; i < 120; i++) {
+        controller.update(1 / 60);
+        const dir = new THREE.Vector3();
+        camera.getWorldDirection(dir);
+        const yaw = Math.atan2(dir.x, dir.z);
+        maxTurnYaw = Math.max(maxTurnYaw, yaw);
+      }
+      const finalDir = new THREE.Vector3();
+      camera.getWorldDirection(finalDir);
+      expect(Math.atan2(finalDir.x, finalDir.z)).toBeCloseTo(Math.PI * 0.5, 1);
+      expect(maxTurnYaw).toBeLessThan(Math.PI * 0.5 + 0.04);
+      controller.dispose();
+    } finally {
+      if (!hadWindow) {
+        delete (globalThis as { window?: unknown }).window;
+      } else {
+        (globalThis as { window?: unknown }).window = prevWindow;
+      }
+    }
+
+    // 2. Stationary hopping creature settles smoothly to ground level instead of freezing mid-air
+    const world = new WorldState(new EventBus(), {
+      seed: 90125,
+      initialSettlements: 1,
+      initialWaterwaySettlements: 0,
+      initialCreaturesPerSettlement: 0,
+    });
+    const home = world.settlements[0];
+    const rabbit = world.spawnCreature(home, 'rabbit', 'forager');
+    rabbit.animPhase = Math.PI * 0.5; // Peak of hop wave
+    rabbit.moveIntensity = 0;
+    rabbit.activity = 'idle';
+
+    const scene = new THREE.Scene();
+    const renderer = new CreatureRenderer(scene, world);
+    for (let i = 0; i < 45; i++) {
+      renderer.update(1 / 60, null);
+    }
+    const rigRoot = renderer.rootGroup.children.find(
+      (obj) => obj.userData?.selectionTarget?.id === rabbit.id,
+    );
+    expect(rigRoot).toBeDefined();
+    const bodyGroup = rigRoot!.children[0];
+    expect(Math.abs(bodyGroup.position.y)).toBeLessThan(0.02);
+    renderer.dispose();
+  });
 });

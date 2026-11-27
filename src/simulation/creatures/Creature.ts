@@ -141,6 +141,12 @@ export class Creature {
   validatedTargetZ = NaN;
   validatedObstacleVersion = -1;
 
+  /** Transient locomotion smoothing state (velocity, gait intensity & angular momentum). */
+  currentSpeed = 0;
+  moveIntensity = 0;
+  steerHeading: number;
+  headingVel = 0;
+
   /** Optional target entity IDs for active behaviors. */
   targetResourceId: string | null = null;
   targetBuildingId: string | null = null;
@@ -198,6 +204,7 @@ export class Creature {
     this.targetX = params.x;
     this.targetZ = params.z;
     this.heading = params.animPhase;
+    this.steerHeading = this.heading;
     this.personality = params.personality;
     this.animPhase = params.animPhase;
     this.ageDays = params.ageDays ?? 3.5;
@@ -386,6 +393,10 @@ export class Creature {
       reproductionCooldown: snapshot.reproductionCooldown,
     });
     c.heading = snapshot.heading;
+    c.steerHeading = snapshot.heading;
+    c.currentSpeed = 0;
+    c.moveIntensity = 0;
+    c.headingVel = 0;
     c.targetX = snapshot.targetX;
     c.targetZ = snapshot.targetZ;
     c.flightAltitude = snapshot.flightAltitude;

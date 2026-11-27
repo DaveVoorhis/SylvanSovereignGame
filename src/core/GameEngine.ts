@@ -75,6 +75,7 @@ export class GameEngine {
   private simSpeed = 1;
   private selection: SelectionTarget = null;
   private povCreatureId: string | null = null;
+  private povBobPhase = 0;
   private zenMode = false;
   private enteredFullscreenForZen = false;
   private isRebuilding = false;
@@ -446,6 +447,7 @@ export class GameEngine {
     if (!creature || !creature.alive) return;
 
     this.povCreatureId = creature.id;
+    this.povBobPhase = 0;
     this.selection = { kind: 'creature', id: creature.id };
     this.sceneManager.setSelection(this.selection);
     this.sceneManager.setPovCreatureId(creature.id);
@@ -509,33 +511,42 @@ export class GameEngine {
     const c: Creature | undefined = this.world.getCreature(creatureId);
     if (!c) return null;
 
-    let eyeHeight: number;
-    if (c.def.strictlyAquatic) {
-      // River Koi eyes sit inside the water column — keep Eye View cleanly submerged below waterLevel
-      const waterLevel = this.world.terrain.waterLevel;
-      const groundY = this.world.terrain.getHeightAt(c.x, c.z);
-      const desiredEyeY = Math.min(waterLevel - 0.16, c.y + 0.04 * c.getSizeScale());
-      const safeEyeY = Math.max(groundY + 0.12, desiredEyeY);
-      eyeHeight = safeEyeY - c.y;
-    } else {
-      eyeHeight = Math.max(0.38, c.getSizeScale() * 1.04);
-    }
+    const waterLevel = this.world.getEffectiveWaterLevel();
+    const move = c.activity === 'resting' ? 0 : c.moveIntensity;
+    const phase = this.povBobPhase;
+    const smoothStep = 0.5 - 0.5 * Math.cos(phase * 2);
 
     let bobOffset = 0;
     if (c.activity !== 'resting') {
       if (c.def.locomotion === 'hop') {
-        bobOffset = Math.abs(Math.sin(c.animPhase)) * 0.2;
+        bobOffset = smoothStep * 0.065 * move;
       } else if (c.def.locomotion === 'fly') {
-        bobOffset = Math.sin(c.animPhase * 1.2) * 0.08;
+        const flyAmp = c.flightAltitude > 0.3 ? 1.0 : move;
+        bobOffset = Math.sin(phase * 1.1) * 0.032 * flyAmp;
       } else if (c.def.locomotion === 'swim') {
-        bobOffset = Math.sin(c.animPhase * 1.2) * 0.025;
+        bobOffset = Math.sin(phase * 1.0) * 0.012 * (0.35 + 0.65 * move);
       } else if (c.def.locomotion === 'slither') {
-        bobOffset = Math.sin(c.animPhase * 1.4) * 0.03;
+        bobOffset = Math.sin(phase * 1.1) * 0.01 * move;
       } else {
-        bobOffset = Math.abs(Math.sin(c.animPhase)) * 0.07;
+        bobOffset = smoothStep * 0.022 * move;
       }
     } else {
-      bobOffset = c.def.strictlyAquatic ? -0.02 : -0.14;
+      bobOffset = c.def.strictlyAquatic ? -0.02 : -0.12;
+    }
+
+    let eyeHeight: number;
+    if (c.def.strictlyAquatic) {
+      // River Koi eyes sit inside the water column — keep Eye View cleanly submerged below effective waterLevel
+      const groundY = this.world.terrain.getHeightAt(c.x, c.z);
+      const desiredEyeY = Math.min(waterLevel - 0.24, c.y + 0.04 * c.getSizeScale());
+      const safeEyeY = Math.max(groundY + 0.12, desiredEyeY);
+      eyeHeight = safeEyeY - c.y;
+    } else {
+      const baseEyeY = c.y + Math.max(0.42, c.getSizeScale() * 1.04);
+      // Keep non-fish surface swimmers/waders cleanly above the waterline so underwater fog never flickers
+      const minClearY = waterLevel + 0.18 - Math.min(0, bobOffset);
+      const safeEyeY = c.y < waterLevel + 0.25 ? Math.max(baseEyeY, minClearY) : baseEyeY;
+      eyeHeight = safeEyeY - c.y;
     }
 
     return {
@@ -580,6 +591,18 @@ export class GameEngine {
           } else {
             this.exitCreaturePov();
           }
+        } else if (this.simSpeed > 0) {
+          // Advance POV head-bob in calm real-time cadence (capped even at 2x-4x sim speed)
+          const cadenceScale = 1 + Math.min(0.65, (Math.sqrt(Math.max(1, this.simSpeed)) - 1) * 0.55);
+          const activeMotion =
+            host.activity === 'resting'
+              ? 0
+              : host.def.locomotion === 'fly' && host.flightAltitude > 0.3
+                ? 0.85
+                : host.def.strictlyAquatic
+                  ? 0.4 + 0.6 * host.moveIntensity
+                  : host.moveIntensity;
+          this.povBobPhase += realDt * 3.1 * cadenceScale * activeMotion;
         }
       }
 

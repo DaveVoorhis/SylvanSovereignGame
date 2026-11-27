@@ -44,6 +44,8 @@ export class CameraController {
   private povLookYaw = 0;
   private povLookPitch = -0.04;
   private povSmoothedHeading = 0;
+  private povHeadingVel = 0;
+  private povSmoothedBob = 0;
   private povInitialized = false;
   private povDragging = false;
   private povLastPointerX = 0;
@@ -181,6 +183,8 @@ export class CameraController {
     this.povProvider = provider;
     this.povLookYaw = 0;
     this.povLookPitch = -0.04;
+    this.povHeadingVel = 0;
+    this.povSmoothedBob = 0;
     this.povInitialized = false;
     this.povDragging = false;
 
@@ -195,6 +199,8 @@ export class CameraController {
     this.mode = 'world';
     this.povProvider = null;
     this.povDragging = false;
+    this.povHeadingVel = 0;
+    this.povSmoothedBob = 0;
     this.povInitialized = false;
     this.controls.enabled = true;
 
@@ -291,7 +297,7 @@ export class CameraController {
       if (pos) {
         const nextTarget = new THREE.Vector3(pos.x, pos.y + 0.9, pos.z);
         const delta = new THREE.Vector3().subVectors(nextTarget, this.controls.target);
-        const lerpAmt = Math.min(1, dt * 6);
+        const lerpAmt = 1 - Math.exp(-6.5 * Math.max(0, Math.min(dt, 0.1)));
         this.controls.target.addScaledVector(delta, lerpAmt);
         this.camera.position.addScaledVector(delta, lerpAmt);
       } else {
@@ -369,8 +375,12 @@ export class CameraController {
       return;
     }
 
+    const safeDt = Math.max(0.001, Math.min(dt, 0.08));
+
     if (!this.povInitialized) {
       this.povSmoothedHeading = pose.heading;
+      this.povHeadingVel = 0;
+      this.povSmoothedBob = pose.bobOffset;
       this.camera.position.set(
         pose.x + Math.sin(pose.heading) * 0.25,
         pose.y + pose.eyeHeight + pose.bobOffset,
@@ -378,23 +388,45 @@ export class CameraController {
       );
       this.povInitialized = true;
     } else {
-      let diff = pose.heading - this.povSmoothedHeading;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      this.povSmoothedHeading += diff * Math.min(1, dt * 5.2);
+      let err = pose.heading - this.povSmoothedHeading;
+      while (err > Math.PI) err -= Math.PI * 2;
+      while (err < -Math.PI) err += Math.PI * 2;
+
+      // Critically damped angular spring filters micro-jitter while keeping turns fluid and overshoot-free
+      const omega = 5.4;
+      const x0 = -err;
+      const v0 = this.povHeadingVel;
+      const expTerm = Math.exp(-omega * safeDt);
+      const temp = (v0 + omega * x0) * safeDt;
+      const nextX = (x0 + temp) * expTerm;
+      let nextVel = (v0 - omega * temp) * expTerm;
+      let step = nextX - x0;
+      const maxStep = 3.2 * safeDt;
+      if (Math.abs(step) > maxStep) {
+        const sign = step >= 0 ? 1 : -1;
+        step = sign * maxStep;
+        nextVel = sign * 3.2;
+      }
+      this.povHeadingVel = nextVel;
+      this.povSmoothedHeading += step;
+      while (this.povSmoothedHeading > Math.PI) this.povSmoothedHeading -= Math.PI * 2;
+      while (this.povSmoothedHeading < -Math.PI) this.povSmoothedHeading += Math.PI * 2;
 
       if (!this.povDragging) {
-        this.povLookYaw *= Math.max(0, 1 - dt * 0.18);
+        this.povLookYaw *= Math.exp(-0.22 * safeDt);
       }
 
+      this.povSmoothedBob += (pose.bobOffset - this.povSmoothedBob) * (1 - Math.exp(-7.0 * safeDt));
+
       const targetX = pose.x + Math.sin(this.povSmoothedHeading) * 0.28;
-      const targetY = pose.y + pose.eyeHeight + pose.bobOffset;
+      const targetY = pose.y + pose.eyeHeight + this.povSmoothedBob;
       const targetZ = pose.z + Math.cos(this.povSmoothedHeading) * 0.28;
 
-      const posLerp = Math.min(1, dt * 11);
-      this.camera.position.x += (targetX - this.camera.position.x) * posLerp;
-      this.camera.position.y += (targetY - this.camera.position.y) * posLerp;
-      this.camera.position.z += (targetZ - this.camera.position.z) * posLerp;
+      const xzLerp = 1 - Math.exp(-9.5 * safeDt);
+      const yLerp = 1 - Math.exp(-6.5 * safeDt);
+      this.camera.position.x += (targetX - this.camera.position.x) * xzLerp;
+      this.camera.position.y += (targetY - this.camera.position.y) * yLerp;
+      this.camera.position.z += (targetZ - this.camera.position.z) * xzLerp;
     }
 
     const yaw = this.povSmoothedHeading + this.povLookYaw;
