@@ -53,6 +53,11 @@ import {
   generateProceduralPineSpec,
 } from '@rendering/ProceduralPineBuilder';
 import { nextPaintFrame, SplashScreen, WHIMSICAL_HINTS } from '@ui/SplashScreen';
+import {
+  MAX_SCREEN_RAINDROPS,
+  MAX_SCREEN_TRAIL_BEADS,
+  ScreenRaindropPass,
+} from '@rendering/ScreenRaindropPass';
 import type { PbrTextureSet, TextureLibrary } from '@rendering/ProceduralTextures';
 import { SettlementRenderer } from '@rendering/SettlementRenderer';
 import { TerrainRenderer } from '@rendering/TerrainRenderer';
@@ -2471,5 +2476,189 @@ describe('High-Resolution Whimsical Procedural Models', () => {
 
     flora.dispose();
     textures.dispose();
+  });
+
+  it('renders ephemeral mushrooms dynamically through sprouting, full growth, rotting slump/darkening, and disappearance', () => {
+    const world = new WorldState(new EventBus(), { seed: 334455 });
+    const scene = new THREE.Scene();
+    const textures = createStubTextureLibrary();
+    const flora = new FloraRenderer(scene, world, textures, 0.75);
+
+    const stemMesh = scene.getObjectByName('dynamic-mushroom-stems') as THREE.InstancedMesh | undefined;
+    const capMesh = scene.getObjectByName('dynamic-mushroom-caps') as THREE.InstancedMesh | undefined;
+    expect(stemMesh).toBeDefined();
+    expect(capMesh).toBeDefined();
+    expect(flora.getRenderedMushroomCount()).toBe(world.mushrooms.patches.length);
+    expect(flora.getRenderedMushroomCount()).toBeGreaterThan(200);
+
+    // Inspect the first mushroom across sprouting -> mature -> rotting stages
+    const target = world.mushrooms.patches[0];
+    const mat = new THREE.Matrix4();
+    const pos = new THREE.Vector3();
+    const quat = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    const capColor = new THREE.Color();
+    const up = new THREE.Vector3(0, 1, 0);
+
+    // 1. Sprouting: tiny button emerging from the ground with fresh cap pigment
+    target.ageDays = target.lifespanDays * 0.04;
+    flora.update(0.05);
+    capMesh!.getMatrixAt(0, mat);
+    mat.decompose(pos, quat, scale);
+    capMesh!.getColorAt(0, capColor);
+    const sproutScaleY = scale.y;
+    const sproutCapR = capColor.r;
+    expect(sproutScaleY).toBeGreaterThan(0.05);
+    expect(sproutScaleY).toBeLessThan(target.maxScale * 0.55);
+
+    // 2. Mature: full woodland stature, upright stem, crisp fresh cap
+    target.ageDays = target.lifespanDays * 0.56;
+    flora.update(0.05);
+    capMesh!.getMatrixAt(0, mat);
+    mat.decompose(pos, quat, scale);
+    capMesh!.getColorAt(0, capColor);
+    const matureScaleY = scale.y;
+    const matureUpDot = up.clone().applyQuaternion(quat).y;
+    expect(matureScaleY).toBeGreaterThan(sproutScaleY * 2.5);
+    expect(matureUpDot).toBeGreaterThan(0.99);
+    expect(capColor.r).toBeGreaterThan(0.85);
+    expect(sproutCapR).toBeGreaterThan(0.85);
+
+    // 3. Rotting: collapses vertically, slumps sideways, and darkens into decayed brown
+    target.ageDays = target.lifespanDays * 0.94;
+    flora.update(0.05);
+    capMesh!.getMatrixAt(0, mat);
+    mat.decompose(pos, quat, scale);
+    capMesh!.getColorAt(0, capColor);
+    const rotScaleY = scale.y;
+    const rotUpDot = up.clone().applyQuaternion(quat).y;
+    expect(rotScaleY).toBeLessThan(matureScaleY * 0.45);
+    expect(rotUpDot).toBeLessThan(0.95); // noticeably leaning/slumping over
+    expect(capColor.r).toBeLessThan(0.5); // darkened into soggy brown rot
+    expect(capColor.g).toBeLessThan(0.45);
+
+    // 4. Advance past 2 days: all original mushrooms rot away and new ones render cleanly
+    const originalIds = new Set(world.mushrooms.patches.map((m) => m.id));
+    for (let i = 0; i < 6; i++) {
+      world.mushrooms.tick(world, 0.4);
+    }
+    flora.update(0.05);
+    expect(world.mushrooms.patches.some((m) => originalIds.has(m.id))).toBe(false);
+    expect(flora.getRenderedMushroomCount()).toBe(world.mushrooms.patches.length);
+    expect(flora.getRenderedMushroomCount()).toBeGreaterThan(200);
+
+    flora.dispose();
+    textures.dispose();
+  });
+
+  it('simulates occasional raindrops hitting and drizzling down screen glass during rain with physical water-on-glass shader uniforms', () => {
+    const pass = new ScreenRaindropPass(123456);
+    const skyColor = new THREE.Color(0x7c8e9c);
+    const sunColor = new THREE.Color(0xcad8e4);
+    const sunDir = new THREE.Vector3(0.3, 0.7, 0.4).normalize();
+
+    // Verify physical optical water-on-glass shader elements are present
+    const frag = pass.material.fragmentShader;
+    expect(frag).toContain('refract(');
+    expect(frag).toContain('fresnel');
+    expect(frag).toContain('causticAmt');
+    expect(frag).toContain('specPrimary');
+    expect(frag).toContain('evalMainDropHeight');
+    expect(frag).toContain('evalBeadHeight');
+
+    // Aspect & texel uniforms adapt cleanly to both desktop landscape and mobile portrait screens
+    pass.setSize(1920, 1080);
+    expect(pass.material.uniforms.uAspect.value).toBeCloseTo(1920 / 1080, 4);
+    pass.setSize(390, 844);
+    expect(pass.material.uniforms.uAspect.value).toBeCloseTo(390 / 844, 4);
+    pass.setSize(1280, 720);
+
+    // 1. Dry weather: zero drops, pass stays disabled (zero GPU overhead)
+    for (let i = 0; i < 60; i++) {
+      pass.update({ dt: 0.1, weather: 'clear', daylight: 0.9, skyColor, sunColor, sunDirection: sunDir });
+    }
+    expect(pass.getActiveDropCount()).toBe(0);
+    expect(pass.getActiveBeadCount()).toBe(0);
+    expect(pass.enabled).toBe(false);
+
+    // 2. Rain begins: occasional drops (restrained 1-3 at a time) strike at random positions
+    let maxObservedDropsInRain = 0;
+    const seenDropIds = new Set<number>();
+    let sawBeads = false;
+    let sawStretch = false;
+
+    for (let i = 0; i < 200; i++) {
+      pass.update({ dt: 0.1, weather: 'rain', daylight: 0.65, skyColor, sunColor, sunDirection: sunDir });
+      const active = pass.getActiveDrops();
+      if (active.length > maxObservedDropsInRain) maxObservedDropsInRain = active.length;
+      for (const d of active) {
+        seenDropIds.add(d.id);
+        if (d.stretch > 0.12) sawStretch = true;
+        expect(Number.isFinite(d.x) && Number.isFinite(d.y)).toBe(true);
+        expect(d.radius).toBeGreaterThan(0.005);
+      }
+      if (pass.getActiveBeadCount() > 0) sawBeads = true;
+    }
+
+    expect(seenDropIds.size).toBeGreaterThanOrEqual(3);
+    expect(maxObservedDropsInRain).toBeGreaterThanOrEqual(1);
+    expect(maxObservedDropsInRain).toBeLessThanOrEqual(3); // occasional drop or two, never cluttered
+    expect(sawStretch).toBe(true); // elongates into teardrop while drizzling
+    expect(sawBeads).toBe(true); // leaves pinched-off trailing micro-beads
+    expect(pass.enabled).toBe(true);
+    expect(pass.material.uniforms.uActiveDrops.value).toBeLessThanOrEqual(MAX_SCREEN_RAINDROPS);
+    expect(pass.material.uniforms.uActiveBeads.value).toBeLessThanOrEqual(MAX_SCREEN_TRAIL_BEADS);
+
+    // 3. Track an individual freshly hit drop drizzling downward from impact to screen exit
+    pass.reset();
+    const drop = pass.spawnDrop(false);
+    expect(drop).not.toBeNull();
+    const startY = drop!.y;
+    const dropId = drop!.id;
+    expect(pass.enabled).toBe(true);
+    // Fresh impact has active splash ripple in GPU uniform
+    const shapeUniforms = pass.material.uniforms.uDropShape.value as THREE.Vector4[];
+    expect(shapeUniforms[0].w).toBeGreaterThan(0.5);
+
+    let lowestY = startY;
+    let exitedBottom = false;
+    for (let i = 0; i < 260; i++) {
+      pass.update({ dt: 0.1, weather: 'rain', daylight: 0.6, skyColor, sunColor, sunDirection: sunDir });
+      const cur = pass.getActiveDrops().find((d) => d.id === dropId);
+      if (!cur) {
+        exitedBottom = true;
+        break;
+      }
+      if (cur.y < lowestY) lowestY = cur.y;
+    }
+    expect(lowestY).toBeLessThan(startY - 0.15);
+    expect(exitedBottom).toBe(true);
+
+    // 4. Rain stops: no new drops hit and lingering drops & micro-beads clear/evaporate to disabled
+    for (let i = 0; i < 240; i++) {
+      pass.update({ dt: 0.1, weather: 'sunbeams', daylight: 1.0, skyColor, sunColor, sunDirection: sunDir });
+    }
+    expect(pass.getActiveDropCount()).toBe(0);
+    expect(pass.getActiveBeadCount()).toBe(0);
+    expect(pass.enabled).toBe(false);
+
+    // 5. Underwater camera suppresses glass raindrops and washes any existing ones off rapidly
+    pass.spawnDrop(true);
+    expect(pass.getActiveDropCount()).toBe(1);
+    for (let i = 0; i < 15; i++) {
+      pass.update({
+        dt: 0.05,
+        weather: 'storm',
+        daylight: 0.5,
+        skyColor,
+        sunColor,
+        sunDirection: sunDir,
+        isUnderwater: true,
+      });
+    }
+    expect(pass.getActiveDropCount()).toBe(0);
+    expect(pass.enabled).toBe(false);
+
+    pass.dispose();
   });
 });

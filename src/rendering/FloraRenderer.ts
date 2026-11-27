@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Season } from '@core/Types';
 import { BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
 import { isPointNearBridge } from '@simulation/terrain/Bridge';
+import { evaluateMushroomVisualState } from '@simulation/terrain/MushroomSystem';
 import type { TreeSpot } from '@simulation/terrain/TerrainMap';
 import type { WorldState } from '@simulation/WorldState';
 import {
@@ -650,6 +651,9 @@ export class FloraRenderer {
   private readonly fernMat: THREE.MeshStandardMaterial;
   private readonly bushMat: THREE.MeshStandardMaterial;
   private readonly toadstoolCapMat: THREE.MeshStandardMaterial;
+  private readonly toadstoolStemMat: THREE.MeshStandardMaterial;
+  private readonly mushroomStemMesh: THREE.InstancedMesh;
+  private readonly mushroomCapMesh: THREE.InstancedMesh;
   private readonly fairyLanternMat: THREE.MeshStandardMaterial;
   private readonly wildflowerGroup = new THREE.Group();
   private readonly lilyGroup = new THREE.Group();
@@ -669,9 +673,14 @@ export class FloraRenderer {
   private lastStructureRevision = -1;
   private lastClimateTintCode = -1;
   private lastPhenologyTintCode = -1;
+  private lastMushroomRevision = -1;
   private readonly tmpClimateTint = new THREE.Color();
   private readonly tmpPaletteA = new THREE.Color();
   private readonly tmpPaletteB = new THREE.Color();
+  private readonly mushroomDummy = new THREE.Object3D();
+  private readonly mushroomCapColor = new THREE.Color();
+  private readonly mushroomStemColor = new THREE.Color();
+  private readonly mushroomRotColor = new THREE.Color();
 
   constructor(
     scene: THREE.Scene,
@@ -841,8 +850,13 @@ export class FloraRenderer {
     // Natural waxy woodland toadstool cap (zero daytime neon emissive)
     this.toadstoolCapMat = new THREE.MeshStandardMaterial({
       map: textures.toadstoolCap,
+      color: 0xffffff,
       roughness: 0.36,
       metalness: 0.02,
+    });
+    this.toadstoolStemMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.80,
     });
 
     this.fairyLanternMat = new THREE.MeshStandardMaterial({
@@ -880,6 +894,7 @@ export class FloraRenderer {
       this.fernMat,
       this.bushMat,
       this.toadstoolCapMat,
+      this.toadstoolStemMat,
       this.fairyLanternMat,
     );
 
@@ -1191,10 +1206,9 @@ export class FloraRenderer {
       }
     }
 
-    // 5. Arching Ferns (variant 0), Leafy Berry Shrubs (variant 1), Woodland Toadstools (variant 2)
+    // 5. Arching Ferns (variant 0) & Leafy Berry Shrubs (variant 1)
     const ferns = world.terrain.undergrowth.filter((u) => u.variant === 0);
     const bushes = world.terrain.undergrowth.filter((u) => u.variant === 1);
-    const shrooms = world.terrain.undergrowth.filter((u) => u.variant === 2);
 
     if (ferns.length > 0) {
       const fernGeo = createFernRosetteGeo();
@@ -1256,35 +1270,36 @@ export class FloraRenderer {
       }
     }
 
-    if (shrooms.length > 0) {
+    // 5b. Dynamic Ephemeral Woodland Mushrooms (sprout, grow, mature, slump & rot within 1-2 days)
+    {
       const { stems, caps } = createToadstoolClusterGeo();
-      const stemMat = new THREE.MeshStandardMaterial({
-        color: 0xe6dcc8,
-        roughness: 0.80,
-      });
-      this.disposables.push(stems, caps, stemMat);
+      this.disposables.push(stems, caps);
 
-      const shroomChunks = partitionByGrid(shrooms, (m) => m.x, (m) => m.z, mapHalfExtent, 4);
-      for (const chunk of shroomChunks) {
-        const stemMesh = new THREE.InstancedMesh(stems, stemMat, chunk.length);
-        const capMesh = new THREE.InstancedMesh(caps, this.toadstoolCapMat, chunk.length);
-        stemMesh.castShadow = true;
-        capMesh.castShadow = true;
-        capMesh.receiveShadow = true;
+      const capacity = world.mushrooms.maxPatches;
+      this.mushroomStemMesh = new THREE.InstancedMesh(stems, this.toadstoolStemMat, capacity);
+      this.mushroomCapMesh = new THREE.InstancedMesh(caps, this.toadstoolCapMat, capacity);
+      this.mushroomStemMesh.name = 'dynamic-mushroom-stems';
+      this.mushroomCapMesh.name = 'dynamic-mushroom-caps';
+      this.mushroomStemMesh.castShadow = true;
+      this.mushroomStemMesh.receiveShadow = true;
+      this.mushroomCapMesh.castShadow = true;
+      this.mushroomCapMesh.receiveShadow = true;
+      this.mushroomStemMesh.frustumCulled = false;
+      this.mushroomCapMesh.frustumCulled = false;
 
-        for (let i = 0; i < chunk.length; i++) {
-          const m = chunk[i];
-          dummy.position.set(m.x, m.y - 0.02, m.z);
-          dummy.rotation.set(0, m.rotation, 0);
-          dummy.scale.setScalar(m.scale * 1.12);
-          dummy.updateMatrix();
-          stemMesh.setMatrixAt(i, dummy.matrix);
-          capMesh.setMatrixAt(i, dummy.matrix);
-        }
-        finalizeInstancedBounds(stemMesh, 0.15);
-        finalizeInstancedBounds(capMesh, 0.15);
-        this.group.add(stemMesh, capMesh);
+      this.mushroomCapColor.setHex(0xffffff);
+      this.mushroomStemColor.setHex(0xe6dcc8);
+      for (let i = 0; i < capacity; i++) {
+        this.mushroomStemMesh.setMatrixAt(i, this.zeroMatrix);
+        this.mushroomCapMesh.setMatrixAt(i, this.zeroMatrix);
+        this.mushroomStemMesh.setColorAt(i, this.mushroomStemColor);
+        this.mushroomCapMesh.setColorAt(i, this.mushroomCapColor);
       }
+      this.mushroomStemMesh.count = 0;
+      this.mushroomCapMesh.count = 0;
+      this.mushroomStemMesh.visible = false;
+      this.mushroomCapMesh.visible = false;
+      this.group.add(this.mushroomStemMesh, this.mushroomCapMesh);
     }
 
     // 6. Natural Meadow Wildflower Clusters
@@ -1585,6 +1600,7 @@ export class FloraRenderer {
       this.buildFallenLeafLitter(rng, dummy, tint, mapHalfExtent);
     }
     this.syncDeciduousPhenology(0, 0.25, undefined);
+    this.syncMushrooms();
   }
 
   getPhenology(): DeciduousPhenologyState {
@@ -1593,6 +1609,10 @@ export class FloraRenderer {
 
   getFallingLeafCount(): number {
     return this.fallingLeafSystem?.activeLeafCount ?? 0;
+  }
+
+  getRenderedMushroomCount(): number {
+    return this.mushroomCapMesh.visible ? this.mushroomCapMesh.count : 0;
   }
 
   private buildFallenLeafLitter(
@@ -1815,6 +1835,9 @@ export class FloraRenderer {
     }
 
     this.syncDeciduousPhenology(dt, sky?.windStrength ?? 0.25, focusTarget);
+    if (dt > 0 || this.world.mushrooms.revision !== this.lastMushroomRevision) {
+      this.syncMushrooms();
+    }
 
     const t = this.world.elapsedSeconds;
     this.lilyGroup.position.y = this.world.floodSurge + Math.sin(t * 1.45) * 0.018;
@@ -1823,6 +1846,67 @@ export class FloraRenderer {
     const sunY = Math.sin((this.world.timeOfDay - 0.25) * Math.PI * 2);
     const nightAmt = THREE.MathUtils.clamp(1 - (sunY + 0.08) * 2.6, 0.0, 1.35);
     this.fairyLanternMat.emissiveIntensity = nightAmt * (1.25 + Math.sin(t * 3.8) * 0.16);
+  }
+
+  private syncMushrooms(): void {
+    const patches = this.world.mushrooms.patches;
+    const count = Math.min(patches.length, this.world.mushrooms.maxPatches);
+    this.lastMushroomRevision = this.world.mushrooms.revision;
+
+    if (count === 0) {
+      this.mushroomStemMesh.count = 0;
+      this.mushroomCapMesh.count = 0;
+      this.mushroomStemMesh.visible = false;
+      this.mushroomCapMesh.visible = false;
+      return;
+    }
+
+    const dummy = this.mushroomDummy;
+    const capColor = this.mushroomCapColor;
+    const stemColor = this.mushroomStemColor;
+    const rotColor = this.mushroomRotColor;
+    const freshCapPalette = [0xffffff, 0xf6e6d6, 0xf2dfc8, 0xf9eee2];
+
+    dummy.rotation.order = 'YXZ';
+    for (let i = 0; i < count; i++) {
+      const m = patches[i];
+      const vis = evaluateMushroomVisualState(m.ageDays, m.lifespanDays);
+      const baseScale = m.maxScale * 1.12;
+
+      const tiltX = Math.cos(m.rotLeanAngle) * vis.rotTilt;
+      const tiltZ = Math.sin(m.rotLeanAngle) * vis.rotTilt;
+      dummy.position.set(m.x, m.y + vis.yOffset * m.maxScale, m.z);
+      dummy.rotation.set(tiltX, m.rotation, tiltZ);
+      dummy.scale.set(baseScale * vis.scaleXZ, baseScale * vis.scaleY, baseScale * vis.scaleXZ);
+      dummy.updateMatrix();
+      this.mushroomStemMesh.setMatrixAt(i, dummy.matrix);
+      this.mushroomCapMesh.setMatrixAt(i, dummy.matrix);
+
+      capColor.setHex(freshCapPalette[m.id & 3]);
+      stemColor.setHex(vis.stage === 'sprouting' ? 0xf2ead9 : 0xe6dcc8);
+      if (vis.rotAmount > 0.001) {
+        if (vis.rotAmount < 0.5) {
+          const t = vis.rotAmount * 2;
+          capColor.lerp(rotColor.setHex(0x8e694a), t);
+          stemColor.lerp(rotColor.setHex(0x9e8c72), t);
+        } else {
+          const t = (vis.rotAmount - 0.5) * 2;
+          capColor.setHex(0x8e694a).lerp(rotColor.setHex(0x362b22), t);
+          stemColor.setHex(0x9e8c72).lerp(rotColor.setHex(0x41392e), t);
+        }
+      }
+      this.mushroomCapMesh.setColorAt(i, capColor);
+      this.mushroomStemMesh.setColorAt(i, stemColor);
+    }
+
+    this.mushroomStemMesh.count = count;
+    this.mushroomCapMesh.count = count;
+    this.mushroomStemMesh.visible = true;
+    this.mushroomCapMesh.visible = true;
+    this.mushroomStemMesh.instanceMatrix.needsUpdate = true;
+    this.mushroomCapMesh.instanceMatrix.needsUpdate = true;
+    if (this.mushroomStemMesh.instanceColor) this.mushroomStemMesh.instanceColor.needsUpdate = true;
+    if (this.mushroomCapMesh.instanceColor) this.mushroomCapMesh.instanceColor.needsUpdate = true;
   }
 
   private syncDeciduousPhenology(

@@ -15,6 +15,7 @@ import { CreatureRenderer } from './CreatureRenderer';
 import { DistanceFocusBlurPass } from './DistanceFocusBlurPass';
 import { FloraRenderer } from './FloraRenderer';
 import { createTextureLibrary, type TextureLibrary } from './ProceduralTextures';
+import { ScreenRaindropPass } from './ScreenRaindropPass';
 import { SettlementRenderer } from './SettlementRenderer';
 import { TerrainRenderer } from './TerrainRenderer';
 
@@ -69,6 +70,7 @@ export class SceneManager {
   private composer: EffectComposer | null = null;
   private dofPass: DistanceFocusBlurPass | null = null;
   private bloomPass: UnrealBloomPass | null = null;
+  private raindropPass: ScreenRaindropPass | null = null;
   private textures!: TextureLibrary;
   private atmosphere!: AtmosphereSystem;
   private terrainRenderer!: TerrainRenderer;
@@ -112,6 +114,25 @@ export class SceneManager {
     fogDensity: 0.00058,
     aoStrength: 0.88,
     mistStrength: 0.34,
+  };
+  private readonly raindropParamsScratch: {
+    dt: number;
+    weather: WorldState['weather'];
+    daylight: number;
+    skyColor: THREE.Color;
+    sunColor: THREE.Color;
+    sunDirection: THREE.Vector3;
+    windStrength: number;
+    isUnderwater: boolean;
+  } = {
+    dt: 0,
+    weather: 'clear',
+    daylight: 1,
+    skyColor: new THREE.Color(),
+    sunColor: new THREE.Color(),
+    sunDirection: new THREE.Vector3(0, 1, 0),
+    windStrength: 0.25,
+    isUnderwater: false,
   };
 
   private quality: QualityPreset = 'high';
@@ -254,6 +275,7 @@ export class SceneManager {
 
   rebuildWorldScene(newWorld: WorldState): void {
     this.povCreatureId = null;
+    this.raindropPass?.reset();
     this.disposeWorldScene(true);
     this.world = newWorld;
     this.buildWorldScene(newWorld);
@@ -267,6 +289,7 @@ export class SceneManager {
     nextQuality?: QualityPreset,
   ): Promise<void> {
     this.povCreatureId = null;
+    this.raindropPass?.reset();
     this.disposeWorldScene(true);
     if (nextQuality && nextQuality !== this.quality) {
       this.quality = nextQuality;
@@ -347,6 +370,7 @@ export class SceneManager {
       ...this.settlementRenderer.getWarmupMaterials(),
       ...this.creatureRenderer.getWarmupMaterials(),
       ...(this.ambientCritterRenderer?.getWarmupMaterials() ?? []),
+      ...(this.raindropPass ? [this.raindropPass.material] : []),
     ];
     for (const mat of allMats) {
       if (seen.has(mat)) continue;
@@ -450,6 +474,19 @@ export class SceneManager {
       this.dofPass.updateParams(p);
     }
 
+    if (this.raindropPass) {
+      const rp = this.raindropParamsScratch;
+      rp.dt = dt;
+      rp.weather = this.world.weather;
+      rp.daylight = sky.daylight;
+      rp.skyColor = sky.fogColor;
+      rp.sunColor = sky.sunColor;
+      rp.sunDirection = sky.sunDirection;
+      rp.windStrength = sky.windStrength;
+      rp.isUnderwater = this.povUnderwaterNear;
+      this.raindropPass.update(rp);
+    }
+
     if (this.composer) {
       this.composer.render();
     } else {
@@ -501,6 +538,7 @@ export class SceneManager {
   private setupPostProcessing(): void {
     this.dofPass?.dispose();
     this.bloomPass?.dispose();
+    this.raindropPass?.dispose();
     this.composer?.dispose();
     const q = QUALITY_PRESETS[this.quality];
 
@@ -547,11 +585,15 @@ export class SceneManager {
       composer.addPass(bloom);
     }
 
+    const raindrop = new ScreenRaindropPass(this.world.config.seed);
+    composer.addPass(raindrop);
+
     composer.addPass(new OutputPass());
 
     this.composer = composer;
     this.dofPass = dof;
     this.bloomPass = bloom;
+    this.raindropPass = raindrop;
   }
 
   private handleClickPick(event: PointerEvent): void {
@@ -622,6 +664,7 @@ export class SceneManager {
     this.disposeWorldScene();
     this.dofPass?.dispose();
     this.bloomPass?.dispose();
+    this.raindropPass?.dispose();
     this.composer?.dispose();
     this.cameraController.dispose();
     this.renderer.dispose();

@@ -224,6 +224,13 @@ describe('WorldState persistence & IndexedDB SaveStore', () => {
     expect(restoredNode).toBeDefined();
     expect(restoredNode!.amount).toBeCloseTo(sampleNode.amount, 2);
 
+    expect(restored.mushrooms.patches.length).toBe(world.mushrooms.patches.length);
+    expect(restored.mushrooms.patches.length).toBeGreaterThan(100);
+    expect(restored.mushrooms.patches[0].id).toBe(world.mushrooms.patches[0].id);
+    expect(restored.mushrooms.patches[0].ageDays).toBeCloseTo(world.mushrooms.patches[0].ageDays, 3);
+    expect(restored.mushrooms.patches[0].lifespanDays).toBeCloseTo(world.mushrooms.patches[0].lifespanDays, 3);
+    expect(restored.mushrooms.totalSproutedCount).toBe(world.mushrooms.totalSproutedCount);
+
     // Stepping the restored world continues cleanly without errors or NaNs
     for (let i = 0; i < 30; i++) {
       restored.step(0.1);

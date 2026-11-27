@@ -2932,7 +2932,8 @@ export class TerrainMap {
       bucket.push(spot);
     }
 
-    // 2. Lush woodland undergrowth: arching ferns (0), plump berry bushes (1), toadstools (2)
+    // 2. Lush woodland undergrowth: arching ferns (0) and plump berry bushes (1).
+    //    Ephemeral mushrooms sprout, grow, and rot dynamically via MushroomSystem.
     //    Strictly absent from arid deserts and kept out of open treeless flat prairies!
     attempts = 0;
     while (
@@ -2990,15 +2991,15 @@ export class TerrainMap {
 
       let variant: number;
       if (biome === 'moss_hollow') {
-        variant = rng.chance(0.5) ? 0 : rng.chance(0.65) ? 2 : 1;
+        variant = rng.chance(0.68) ? 0 : 1;
       } else if (biome === 'deep_woods') {
-        variant = rng.chance(0.48) ? 0 : rng.chance(0.62) ? 1 : 2;
+        variant = rng.chance(0.56) ? 0 : 1;
       } else if (biome === 'meadow' || biome === 'prairie') {
         variant = rng.chance(0.76) ? 1 : 0;
       } else if (biome === 'rocky_ridge' || biome === 'alpine_crag' || biome === 'seashore') {
         variant = rng.chance(0.65) ? 1 : 0;
       } else {
-        variant = rng.int(0, 2);
+        variant = rng.chance(0.55) ? 0 : 1;
       }
 
       const scale =

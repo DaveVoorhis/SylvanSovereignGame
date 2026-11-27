@@ -34,6 +34,7 @@ import { EconomySystem } from './society/EconomySystem';
 import { FestivalSystem, type FestivalSnapshot } from './society/FestivalSystem';
 import { WarSystem, type WarSnapshot } from './society/WarSystem';
 import type { BridgeInstance } from './terrain/Bridge';
+import { MushroomSystem, type MushroomSystemSnapshot } from './terrain/MushroomSystem';
 import { ObstacleMap } from './terrain/ObstacleMap';
 import { TerrainMap } from './terrain/TerrainMap';
 
@@ -104,6 +105,7 @@ export interface WorldSnapshot {
   readonly wars?: WarSnapshot;
   readonly settlementManager: SettlementManagerSnapshot;
   readonly depletedResources: readonly [string, number][];
+  readonly mushrooms?: MushroomSystemSnapshot;
 }
 
 /**
@@ -127,6 +129,7 @@ export class WorldState {
   readonly rng: SeededRandom;
   readonly terrain: TerrainMap;
   readonly obstacles: ObstacleMap;
+  readonly mushrooms: MushroomSystem;
   readonly deity: ProceduralGod;
   readonly chronicle: Chronicle;
   readonly creatureAI: CreatureAI;
@@ -186,6 +189,7 @@ export class WorldState {
     this.rng = new SeededRandom(this.config.seed);
     this.terrain = new TerrainMap(this.config);
     this.obstacles = new ObstacleMap();
+    this.mushrooms = new MushroomSystem(this.terrain, this.config.seed);
     this.deity = new ProceduralGod(this.config.seed, this.config.deityDecisionIntervalSec);
     this.chronicle = new Chronicle(bus);
     this.creatureAI = new CreatureAI();
@@ -198,6 +202,7 @@ export class WorldState {
     if (!options?.skipInitialPopulation) {
       this.settlementManager.createInitialSettlements(this);
       this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision, this.habitatScars);
+      this.mushrooms.seedInitialPatches(this);
       this.diplomacy.initialize(this.settlements, this);
 
       this.chronicle.record(
@@ -833,6 +838,9 @@ export class WorldState {
       }
     }
 
+    // Ephemeral mushrooms sprout, grow, and rot away within 1-2 days
+    this.mushrooms.tick(this, dayFraction);
+
     // Step subsystems
     this.syncAliveTracking();
     this.aliveCacheSyncedDuringStep = true;
@@ -941,6 +949,7 @@ export class WorldState {
       wars: this.wars.exportSnapshot(),
       settlementManager: this.settlementManager.exportSnapshot(),
       depletedResources,
+      mushrooms: this.mushrooms.exportSnapshot(),
     };
   }
 
@@ -1012,6 +1021,7 @@ export class WorldState {
 
     world.structureRevision++;
     world.obstacles.sync(world.terrain, world.settlements, world.bridges, world.structureRevision, world.habitatScars);
+    world.mushrooms.importSnapshot(snapshot.mushrooms, world);
     world.economy.rebuildRouteSummary(world);
     return world;
   }

@@ -17,6 +17,13 @@ import {
   ALL_VILLAGE_ADAPTATIONS,
   VILLAGE_ADAPTATION_CATALOG,
 } from '@simulation/settlements/VillageAdaptation';
+import {
+  MUSHROOM_MAX_LIFESPAN_DAYS,
+  MUSHROOM_MIN_LIFESPAN_DAYS,
+  MUSHROOM_NEAR_TREE_RADIUS,
+  evaluateMushroomVisualState,
+  resolveMushroomStage,
+} from '@simulation/terrain/MushroomSystem';
 import { TerrainMap } from '@simulation/terrain/TerrainMap';
 import { WorldState } from '@simulation/WorldState';
 import {
@@ -2013,5 +2020,160 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     expect(world.diplomacy.getStance(sA.id, sB.id)).not.toBe('war');
     expect(lastB.activeWarId).toBeNull();
     expect(lastB.warWeapon).toBeNull();
+  });
+
+  it('sprouts, grows, and rots mushrooms away completely within 1 to 2 days', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 912345,
+      initialSettlements: 1,
+      initialCreaturesPerSettlement: 6,
+      dayLengthSeconds: 20, // fast calendar days for lifecycle verification
+      deityDecisionIntervalSec: 999,
+    });
+
+    // Static terrain undergrowth should no longer contain permanent toadstools (variant === 2)
+    expect(world.terrain.undergrowth.some((u) => u.variant === 2)).toBe(false);
+
+    // Initial world is seeded with ephemeral mushrooms, all strictly capped to 1-2 day lifespans
+    expect(world.mushrooms.patches.length).toBeGreaterThan(200);
+    const initialIds = new Set<number>();
+    for (const m of world.mushrooms.patches) {
+      initialIds.add(m.id);
+      expect(m.lifespanDays).toBeGreaterThanOrEqual(MUSHROOM_MIN_LIFESPAN_DAYS);
+      expect(m.lifespanDays).toBeLessThanOrEqual(MUSHROOM_MAX_LIFESPAN_DAYS);
+      expect(m.ageDays).toBeGreaterThanOrEqual(0);
+      expect(m.ageDays).toBeLessThan(m.lifespanDays);
+    }
+
+    // Verify single-mushroom stage progression through sprouting -> growing -> mature -> rotting -> gone
+    const fresh = world.mushrooms.trySpawnPatch(world, 0);
+    expect(fresh).not.toBeNull();
+    const freshId = fresh!.id;
+    const observedStages = new Set<string>();
+    observedStages.add(resolveMushroomStage(fresh!.ageDays, fresh!.lifespanDays));
+
+    // Evaluate continuous visual cues across the lifecycle
+    const sproutVis = evaluateMushroomVisualState(0.05 * fresh!.lifespanDays, fresh!.lifespanDays);
+    const growVis = evaluateMushroomVisualState(0.32 * fresh!.lifespanDays, fresh!.lifespanDays);
+    const matureVis = evaluateMushroomVisualState(0.58 * fresh!.lifespanDays, fresh!.lifespanDays);
+    const rotVis = evaluateMushroomVisualState(0.92 * fresh!.lifespanDays, fresh!.lifespanDays);
+    expect(sproutVis.stage).toBe('sprouting');
+    expect(growVis.stage).toBe('growing');
+    expect(matureVis.stage).toBe('mature');
+    expect(rotVis.stage).toBe('rotting');
+    expect(sproutVis.scaleY).toBeLessThan(growVis.scaleY);
+    expect(growVis.scaleY).toBeLessThan(matureVis.scaleY);
+    expect(rotVis.scaleY).toBeLessThan(matureVis.scaleY * 0.5);
+    expect(rotVis.rotAmount).toBeGreaterThan(0.7);
+    expect(rotVis.rotTilt).toBeGreaterThan(0.3);
+
+    // Advance simulation by ~2.3 in-game days
+    let elapsedDays = 0;
+    const startDayTime = world.day - 1 + world.timeOfDay;
+    while (elapsedDays < 2.3) {
+      world.step(0.1);
+      const live = world.mushrooms.patches.find((p) => p.id === freshId);
+      if (live) {
+        observedStages.add(resolveMushroomStage(live.ageDays, live.lifespanDays));
+      }
+      elapsedDays = world.day - 1 + world.timeOfDay - startDayTime;
+    }
+
+    // Our freshly sprouted mushroom passed through every lifecycle stage and completely rotted away
+    expect(observedStages.has('sprouting')).toBe(true);
+    expect(observedStages.has('growing')).toBe(true);
+    expect(observedStages.has('mature')).toBe(true);
+    expect(observedStages.has('rotting')).toBe(true);
+    expect(world.mushrooms.patches.some((p) => p.id === freshId)).toBe(false);
+
+    // Every single initial mushroom from Day 1 has rotted away within 2 days
+    const survivingInitial = world.mushrooms.patches.filter((p) => initialIds.has(p.id));
+    expect(survivingInitial.length).toBe(0);
+
+    // Meanwhile new mushrooms have continuously sprouted to sustain the woodland ecosystem
+    expect(world.mushrooms.patches.length).toBeGreaterThan(200);
+    expect(world.mushrooms.totalRottedCount).toBeGreaterThanOrEqual(initialIds.size);
+    expect(world.mushrooms.totalSproutedCount).toBeGreaterThan(initialIds.size + 150);
+  });
+
+  it('makes mushrooms far more likely to appear near trees and least likely near the sea', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 445566,
+      initialSettlements: 1,
+      initialCreaturesPerSettlement: 4,
+      deityDecisionIntervalSec: 999,
+    });
+
+    // 1. Direct habitat probability comparison across inland near-tree, inland open, and near-sea land
+    let nearTreeWeightSum = 0;
+    let nearTreeSamples = 0;
+    let inlandOpenWeightSum = 0;
+    let inlandOpenSamples = 0;
+    let nearSeaWeightSum = 0;
+    let nearSeaSamples = 0;
+
+    const half = world.terrain.halfSize;
+    for (let x = -half; x <= half; x += 14) {
+      for (let z = -half; z <= half; z += 14) {
+        const h = world.terrain.getHeightAt(x, z);
+        if (h < world.terrain.waterLevel + 0.25 || h > 16.0) continue;
+        if (world.terrain.getSlopeAt(x, z) > 0.28) continue;
+        const biome = world.terrain.getBiomeAtKnownHeight(x, z, h);
+        if (biome === 'desert' || biome === 'water') continue;
+
+        const evalRes = world.mushrooms.evaluateHabitatWeight(x, z);
+        if (evalRes.coastDist > 1.5 && evalRes.coastDist < 28) {
+          nearSeaWeightSum += evalRes.weight;
+          nearSeaSamples++;
+        } else if (evalRes.coastDist >= 95) {
+          if (evalRes.nearestTreeDist >= 0.8 && evalRes.nearestTreeDist <= MUSHROOM_NEAR_TREE_RADIUS) {
+            nearTreeWeightSum += evalRes.weight;
+            nearTreeSamples++;
+          } else if (evalRes.nearestTreeDist > 9.0) {
+            inlandOpenWeightSum += evalRes.weight;
+            inlandOpenSamples++;
+          }
+        }
+      }
+    }
+
+    expect(nearTreeSamples).toBeGreaterThan(40);
+    expect(inlandOpenSamples).toBeGreaterThan(40);
+    expect(nearSeaSamples).toBeGreaterThan(20);
+
+    const avgNearTree = nearTreeWeightSum / nearTreeSamples;
+    const avgInlandOpen = inlandOpenWeightSum / inlandOpenSamples;
+    const avgNearSea = nearSeaWeightSum / nearSeaSamples;
+
+    // Highest probability near trees, lower away from trees, lowest near the sea
+    expect(avgNearTree).toBeGreaterThan(avgInlandOpen * 4.0);
+    expect(avgInlandOpen).toBeGreaterThan(avgNearSea * 4.0);
+
+    // 2. Empirical distribution across sprouted mushrooms over several simulated cycles
+    const sampled = [...world.mushrooms.patches];
+    for (let cycle = 0; cycle < 3; cycle++) {
+      world.mushrooms.tick(world, 0.75);
+      sampled.push(...world.mushrooms.patches);
+    }
+    // Deduplicate by patch id
+    const unique = new Map(sampled.map((m) => [m.id, m]));
+    const all = Array.from(unique.values());
+    expect(all.length).toBeGreaterThan(650);
+
+    let nearTreeCount = 0;
+    let inlandOpenCount = 0;
+    let nearSeaCount = 0;
+    for (const m of all) {
+      expect(world.terrain.getBiomeAtKnownHeight(m.x, m.z, m.y)).not.toBe('desert');
+      expect(m.y).toBeGreaterThanOrEqual(world.terrain.waterLevel + 0.2);
+      if (m.coastDistance < 28) nearSeaCount++;
+      else if (m.nearestTreeDist <= MUSHROOM_NEAR_TREE_RADIUS) nearTreeCount++;
+      else inlandOpenCount++;
+    }
+
+    // Strong majority of mushrooms appear near trees; near-sea appearances are the rarest
+    expect(nearTreeCount / all.length).toBeGreaterThan(0.65);
+    expect(nearSeaCount / all.length).toBeLessThan(0.03);
+    expect(nearSeaCount).toBeLessThan(inlandOpenCount);
   });
 });
