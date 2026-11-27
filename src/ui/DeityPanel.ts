@@ -1,6 +1,10 @@
-import type { DeityStance, DivineEventType, PrayerIntent, Vec2 } from '@core/Types';
+import type { DivineEventType, PrayerIntent, Vec2 } from '@core/Types';
 import { DIVINE_EVENT_CATALOG } from '@simulation/deity/DivineEvents';
-import { DEITY_STANCE_LABELS, PRAYER_INTENT_LABELS } from '@simulation/deity/ProceduralGod';
+import {
+  DEITY_STANCE_LABELS,
+  PRAYER_INTENT_LABELS,
+  formatDeityDisposition,
+} from '@simulation/deity/ProceduralGod';
 import type { WorldState } from '@simulation/WorldState';
 
 const INFLUENCE_CONDITION_KEY: Record<DivineEventType, string> = {
@@ -20,7 +24,10 @@ export class DeityPanel {
   private readonly statusEl: HTMLElement;
   private readonly feedbackEl: HTMLElement;
   private readonly whisperButtons: HTMLButtonElement[] = [];
-  private readonly stanceButtons = new Map<DeityStance, HTMLButtonElement>();
+  private readonly dispositionControlEl: HTMLElement;
+  private readonly dispositionSlider: HTMLInputElement;
+  private readonly dispositionValueEl: HTMLElement;
+  private readonly dispositionTicks: readonly [number, HTMLButtonElement][];
   private readonly chipCycleIndex = new Map<string, number>();
   private readonly lastConditionPositions = new Map<string, Vec2>();
   private open = true;
@@ -30,13 +37,13 @@ export class DeityPanel {
   private lastBodyHtml = '';
   private lastStatusHtml = '';
   private lastCooling: boolean | null = null;
-  private lastStance: DeityStance | null = null;
+  private lastDisposition: number | null = null;
 
   constructor(
     private readonly onWhisper: (intent: PrayerIntent) => string,
     private readonly onClose: () => void,
     private readonly onFocusPosition?: (pos: Vec2) => void,
-    private readonly onSetStance?: (stance: DeityStance) => string,
+    private readonly onSetDisposition?: (disposition: number, commit: boolean) => string,
   ) {
     this.element = document.createElement('aside');
     this.element.className = 'hud-deity glass-panel';
@@ -68,31 +75,112 @@ export class DeityPanel {
     const whisperSection = document.createElement('div');
     whisperSection.className = 'whisper-section';
 
-    const stanceLabel = document.createElement('div');
-    stanceLabel.className = 'whisper-label';
-    stanceLabel.textContent = 'Disposition';
+    const dispositionHeader = document.createElement('div');
+    dispositionHeader.className = 'whisper-label disposition-header';
 
-    const stanceRow = document.createElement('div');
-    stanceRow.className = 'stance-row';
-    const stances: [DeityStance, string, string][] = [
-      ['benevolent', `🌱 ${DEITY_STANCE_LABELS.benevolent}`, 'Good: rewilding, climate healing & peaceful cooperation'],
-      ['neutral', `⚖️ ${DEITY_STANCE_LABELS.neutral}`, 'Neutral: autonomous natural ebb and flow'],
-      ['destructive', `🔥 ${DEITY_STANCE_LABELS.destructive}`, 'Bad: habitat destruction, climate crisis & warlike conflict'],
+    const dispositionTitle = document.createElement('span');
+    dispositionTitle.textContent = 'Disposition';
+
+    this.dispositionValueEl = document.createElement('span');
+    this.dispositionValueEl.className = 'disposition-value is-balanced';
+    this.dispositionValueEl.textContent = `⚖️ ${DEITY_STANCE_LABELS.neutral}`;
+
+    dispositionHeader.append(dispositionTitle, this.dispositionValueEl);
+
+    this.dispositionControlEl = document.createElement('div');
+    this.dispositionControlEl.className = 'disposition-control is-balanced';
+
+    const sliderWrap = document.createElement('div');
+    sliderWrap.className = 'disposition-slider-wrap';
+
+    const centerTick = document.createElement('div');
+    centerTick.className = 'disposition-center-tick';
+    centerTick.setAttribute('aria-hidden', 'true');
+
+    this.dispositionSlider = document.createElement('input');
+    this.dispositionSlider.type = 'range';
+    this.dispositionSlider.className = 'disposition-slider';
+    this.dispositionSlider.min = '-1';
+    this.dispositionSlider.max = '1';
+    this.dispositionSlider.step = '0.01';
+    this.dispositionSlider.value = '0';
+    this.dispositionSlider.title =
+      'Drag continuously from Steward to Exploiter (double-click to center)';
+    this.dispositionSlider.setAttribute('aria-label', 'Disposition: Steward to Exploiter');
+    this.dispositionSlider.setAttribute('aria-valuemin', '-1');
+    this.dispositionSlider.setAttribute('aria-valuemax', '1');
+    this.dispositionSlider.setAttribute('aria-valuenow', '0');
+    this.dispositionSlider.setAttribute('aria-valuetext', DEITY_STANCE_LABELS.neutral);
+
+    const readSliderValue = (): number => {
+      const raw = Number.parseFloat(this.dispositionSlider.value);
+      if (!Number.isFinite(raw)) return 0;
+      const clamped = Math.max(-1, Math.min(1, raw));
+      const snapped = Math.abs(clamped) <= 0.03 ? 0 : clamped;
+      if (snapped === 0 && raw !== 0) {
+        this.dispositionSlider.value = '0';
+      }
+      return snapped;
+    };
+
+    const handleSliderSet = (val: number, commit: boolean): void => {
+      this.lastDisposition = val;
+      this.dispositionSlider.value = val === 0 ? '0' : val.toFixed(2);
+      this.applyDispositionVisual(val);
+      if (!this.onSetDisposition) return;
+      const msg = this.onSetDisposition(val, commit);
+      if (msg) this.feedbackEl.textContent = msg;
+    };
+
+    this.dispositionSlider.addEventListener('input', () => {
+      handleSliderSet(readSliderValue(), false);
+    });
+    this.dispositionSlider.addEventListener('change', () => {
+      handleSliderSet(readSliderValue(), true);
+    });
+    this.dispositionSlider.addEventListener('dblclick', () => {
+      handleSliderSet(0, true);
+    });
+
+    sliderWrap.append(centerTick, this.dispositionSlider);
+
+    const scaleRow = document.createElement('div');
+    scaleRow.className = 'disposition-scale';
+    const tickDefs: [number, string, string, string][] = [
+      [
+        -1,
+        `🌱 ${DEITY_STANCE_LABELS.benevolent}`,
+        'tick-steward',
+        'Steward: rewilding, climate healing & peaceful cooperation',
+      ],
+      [
+        0,
+        `⚖️ ${DEITY_STANCE_LABELS.neutral}`,
+        'tick-balanced',
+        'Balanced: autonomous natural ebb and flow',
+      ],
+      [
+        1,
+        `🔥 ${DEITY_STANCE_LABELS.destructive}`,
+        'tick-exploiter',
+        'Exploiter: habitat destruction, climate crisis & warlike conflict',
+      ],
     ];
-    for (const [stance, label, tip] of stances) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = `hud-btn small stance-btn stance-${stance}`;
-      btn.textContent = label;
-      btn.title = tip;
-      btn.addEventListener('click', () => {
-        if (!this.onSetStance) return;
-        const msg = this.onSetStance(stance);
-        this.feedbackEl.textContent = msg;
+    const tickEntries: [number, HTMLButtonElement][] = [];
+    for (const [val, label, tickClass, tip] of tickDefs) {
+      const tickBtn = document.createElement('button');
+      tickBtn.type = 'button';
+      tickBtn.className = `disposition-tick ${tickClass}`;
+      tickBtn.textContent = label;
+      tickBtn.title = tip;
+      tickBtn.addEventListener('click', () => {
+        handleSliderSet(val, true);
       });
-      this.stanceButtons.set(stance, btn);
-      stanceRow.appendChild(btn);
+      tickEntries.push([val, tickBtn]);
+      scaleRow.appendChild(tickBtn);
     }
+    this.dispositionTicks = tickEntries;
+    this.dispositionControlEl.append(sliderWrap, scaleRow);
 
     const whisperLabel = document.createElement('div');
     whisperLabel.className = 'whisper-label';
@@ -126,7 +214,13 @@ export class DeityPanel {
     this.feedbackEl.className = 'whisper-feedback';
     this.feedbackEl.textContent = 'Steer the unseen hand or invoke an act...';
 
-    whisperSection.append(this.feedbackEl, stanceLabel, stanceRow, whisperLabel, btnGrid);
+    whisperSection.append(
+      this.feedbackEl,
+      dispositionHeader,
+      this.dispositionControlEl,
+      whisperLabel,
+      btnGrid,
+    );
 
     this.statusEl = document.createElement('div');
     this.statusEl.className = 'deity-status';
@@ -161,6 +255,30 @@ export class DeityPanel {
   setOpen(open: boolean): void {
     this.open = open;
     this.element.classList.toggle('hidden', !open);
+  }
+
+  private applyDispositionVisual(disposition: number): void {
+    const fmt = formatDeityDisposition(disposition);
+    this.dispositionValueEl.textContent = `${fmt.icon} ${fmt.label}`;
+    this.dispositionValueEl.classList.toggle('is-steward', fmt.tone === 'steward');
+    this.dispositionValueEl.classList.toggle('is-balanced', fmt.tone === 'balanced');
+    this.dispositionValueEl.classList.toggle('is-exploiter', fmt.tone === 'exploiter');
+
+    this.dispositionControlEl.classList.toggle('is-steward', fmt.tone === 'steward');
+    this.dispositionControlEl.classList.toggle('is-balanced', fmt.tone === 'balanced');
+    this.dispositionControlEl.classList.toggle('is-exploiter', fmt.tone === 'exploiter');
+
+    this.dispositionSlider.setAttribute('aria-valuenow', disposition.toFixed(2));
+    this.dispositionSlider.setAttribute('aria-valuetext', fmt.label);
+
+    for (const [tickVal, btn] of this.dispositionTicks) {
+      const active =
+        (tickVal < 0 && fmt.tone === 'steward') ||
+        (tickVal === 0 && fmt.tone === 'balanced') ||
+        (tickVal > 0 && fmt.tone === 'exploiter');
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
   }
 
   private recordActiveEffectPositions(world: WorldState): void {
@@ -561,13 +679,10 @@ export class DeityPanel {
         btn.disabled = cooling;
       }
     }
-    if (d.stance !== this.lastStance) {
-      this.lastStance = d.stance;
-      for (const [stance, btn] of this.stanceButtons.entries()) {
-        const active = d.stance === stance;
-        btn.classList.toggle('active', active);
-        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-      }
+    if (this.lastDisposition === null || Math.abs(d.disposition - this.lastDisposition) > 0.001) {
+      this.lastDisposition = d.disposition;
+      this.dispositionSlider.value = d.disposition === 0 ? '0' : d.disposition.toFixed(2);
+      this.applyDispositionVisual(d.disposition);
     }
     if (!cooling && this.feedbackEl.textContent === '') {
       this.feedbackEl.textContent = 'Steer the unseen hand or invoke an act...';

@@ -1007,35 +1007,199 @@ button.eco-chip.clickable:active {
   margin-bottom: 6px;
 }
 
-.stance-row {
+.disposition-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.disposition-value {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.disposition-value.is-steward {
+  color: #cffae0;
+  background: rgba(58, 174, 108, 0.28);
+  border-color: rgba(118, 224, 162, 0.52);
+}
+
+.disposition-value.is-balanced {
+  color: #e3eee5;
+  background: rgba(145, 168, 156, 0.2);
+  border-color: rgba(210, 224, 214, 0.34);
+}
+
+.disposition-value.is-exploiter {
+  color: #ffd8d0;
+  background: rgba(196, 52, 42, 0.3);
+  border-color: rgba(238, 96, 82, 0.56);
+}
+
+.disposition-control {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 9px;
+}
+
+.disposition-slider-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 20px;
+}
+
+.disposition-center-tick {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 12px;
+  transform: translate(-50%, -50%);
+  border-radius: 1px;
+  background: rgba(236, 245, 238, 0.48);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.disposition-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  margin: 0;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    rgba(62, 194, 118, 0.85) 0%,
+    rgba(96, 158, 122, 0.45) 36%,
+    rgba(166, 182, 172, 0.34) 50%,
+    rgba(202, 124, 86, 0.48) 64%,
+    rgba(228, 76, 64, 0.88) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  outline: none;
+  cursor: pointer;
+  position: relative;
+  z-index: 1;
+}
+
+.disposition-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #edf5ee;
+  border: 2px solid rgba(210, 224, 214, 0.9);
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.55);
+  transition: transform 0.12s ease, border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.disposition-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #edf5ee;
+  border: 2px solid rgba(210, 224, 214, 0.9);
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.55);
+  transition: transform 0.12s ease, border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.disposition-control.is-steward .disposition-slider::-webkit-slider-thumb {
+  background: #d8ffea;
+  border-color: #5cd48e;
+  box-shadow: 0 0 8px rgba(92, 212, 142, 0.55), 0 1px 4px rgba(0, 0, 0, 0.55);
+}
+
+.disposition-control.is-steward .disposition-slider::-moz-range-thumb {
+  background: #d8ffea;
+  border-color: #5cd48e;
+  box-shadow: 0 0 8px rgba(92, 212, 142, 0.55), 0 1px 4px rgba(0, 0, 0, 0.55);
+}
+
+.disposition-control.is-exploiter .disposition-slider::-webkit-slider-thumb {
+  background: #ffe1da;
+  border-color: #ef675a;
+  box-shadow: 0 0 8px rgba(239, 103, 90, 0.55), 0 1px 4px rgba(0, 0, 0, 0.55);
+}
+
+.disposition-control.is-exploiter .disposition-slider::-moz-range-thumb {
+  background: #ffe1da;
+  border-color: #ef675a;
+  box-shadow: 0 0 8px rgba(239, 103, 90, 0.55), 0 1px 4px rgba(0, 0, 0, 0.55);
+}
+
+.disposition-slider:hover::-webkit-slider-thumb,
+.disposition-slider:active::-webkit-slider-thumb {
+  transform: scale(1.14);
+}
+
+.disposition-slider:hover::-moz-range-thumb,
+.disposition-slider:active::-moz-range-thumb {
+  transform: scale(1.14);
+}
+
+.disposition-slider:focus-visible {
+  box-shadow: 0 0 0 2px rgba(229, 190, 109, 0.55);
+}
+
+.disposition-scale {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 5px;
-  margin-bottom: 8px;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 4px;
 }
 
-.stance-btn {
-  padding: 5px 4px;
-  font-size: 10.5px;
-  justify-content: center;
+.disposition-tick {
+  background: transparent;
+  border: none;
+  padding: 2px 3px;
+  font-family: inherit;
+  font-size: 10px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
-.stance-btn.stance-benevolent.active {
-  border-color: rgba(118, 224, 162, 0.78);
-  background: rgba(58, 174, 108, 0.34);
-  color: #e4fff0;
+.disposition-tick:hover {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.06);
 }
 
-.stance-btn.stance-neutral.active {
-  border-color: rgba(210, 224, 214, 0.62);
-  background: rgba(145, 168, 156, 0.24);
-  color: #f3f8f4;
+.disposition-tick.tick-steward {
+  justify-self: start;
 }
 
-.stance-btn.stance-destructive.active {
-  border-color: rgba(238, 96, 82, 0.8);
-  background: rgba(196, 52, 42, 0.36);
-  color: #ffe2dc;
+.disposition-tick.tick-balanced {
+  justify-self: center;
+}
+
+.disposition-tick.tick-exploiter {
+  justify-self: end;
+}
+
+.disposition-tick.tick-steward.active {
+  color: #a9f0c4;
+  font-weight: 600;
+}
+
+.disposition-tick.tick-balanced.active {
+  color: #edf5ee;
+  font-weight: 600;
+}
+
+.disposition-tick.tick-exploiter.active {
+  color: #ffb8ac;
+  font-weight: 600;
 }
 
 .whisper-grid {

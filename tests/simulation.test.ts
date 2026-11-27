@@ -266,6 +266,49 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     const neutralMsg = world.deity.setStance('neutral', world);
     expect(neutralMsg).toContain('Balanced');
     expect(world.deity.stance).toBe('neutral');
+    expect(world.deity.disposition).toBe(0);
+  });
+
+  it('continuously scales deity moral alignment, traits, and persistence across Steward (-1) to Exploiter (+1) disposition values', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 929292,
+      initialSettlements: 2,
+      initialCreaturesPerSettlement: 6,
+    });
+
+    const startChronicleCount = world.chronicle.entries.length;
+
+    // Live drag previews (commit = false) update disposition & alignment smoothly without spamming chronicle entries
+    world.deity.setDisposition(-0.35, world, false);
+    const mildStewardAlign = world.deity.getMoralAlignment(world);
+    world.deity.setDisposition(-0.85, world, false);
+    const strongStewardAlign = world.deity.getMoralAlignment(world);
+    expect(strongStewardAlign).toBeGreaterThan(mildStewardAlign);
+    expect(world.chronicle.entries.length).toBe(startChronicleCount);
+
+    // Committing intermediate Exploiter (+0.55) shifts alignment below balanced and records one chronicle turning
+    const midExploitMsg = world.deity.setDisposition(0.55, world, true);
+    expect(midExploitMsg).toContain('Exploiter 55%');
+    expect(world.deity.disposition).toBeCloseTo(0.55, 5);
+    expect(world.deity.stance).toBe('destructive');
+    const midExploitAlign = world.deity.getMoralAlignment(world);
+    expect(midExploitAlign).toBeLessThan(mildStewardAlign);
+    expect(world.chronicle.entries.length).toBe(startChronicleCount + 1);
+
+    // Snapshot preserves exact continuous disposition
+    const snap = world.deity.exportSnapshot();
+    expect(snap.disposition).toBeCloseTo(0.55, 5);
+
+    const restored = new WorldState(new EventBus(), { seed: 929292 });
+    restored.deity.importSnapshot(snap);
+    expect(restored.deity.disposition).toBeCloseTo(0.55, 5);
+    expect(restored.deity.stance).toBe('destructive');
+
+    // Legacy snapshot without numeric disposition falls back cleanly from stance
+    const legacySnap = { ...snap, disposition: undefined, stance: 'benevolent' as const };
+    restored.deity.importSnapshot(legacySnap);
+    expect(restored.deity.disposition).toBe(-1);
+    expect(restored.deity.stance).toBe('benevolent');
   });
 
   it('steers creatures smoothly around settlement hearth fires instead of walking through them', () => {

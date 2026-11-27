@@ -241,8 +241,8 @@ export class GameEngine {
         this.refreshHudNow();
         return msg;
       },
-      onSetDeityStance: (stance) => {
-        const msg = this.world.deity.setStance(stance, this.world);
+      onSetDeityDisposition: (disposition, commit) => {
+        const msg = this.world.deity.setDisposition(disposition, this.world, commit);
         this.refreshHudNow();
         return msg;
       },

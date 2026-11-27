@@ -929,7 +929,9 @@ describe('RealmOverviewLogic', () => {
 
       expect(whisperSection.children[0].className).toBe('whisper-feedback');
       expect(whisperSection.children[0].textContent).toBe('Steer the unseen hand or invoke an act...');
-      expect(whisperSection.children[1].textContent).toBe('Disposition');
+      expect(whisperSection.children[1].className).toContain('disposition-header');
+      expect(whisperSection.children[1].children[0].textContent).toBe('Disposition');
+      expect(whisperSection.children[2].className).toContain('disposition-control');
       expect(whisperSection.children[3].textContent).toBe('Invoke Environmental Act');
 
       expect(statusEl.innerHTML).toContain('deity-ecology-strip');
@@ -942,6 +944,172 @@ describe('RealmOverviewLogic', () => {
         },
       });
       expect(focusedPos).not.toBeNull();
+    } finally {
+      if (prevDocument === undefined) {
+        delete (globalThis as { document?: unknown }).document;
+      } else {
+        (globalThis as { document?: unknown }).document = prevDocument;
+      }
+    }
+  });
+
+  it('renders Disposition as a continuous slider from Steward (-1) through Balanced (0) to Exploiter (+1)', () => {
+    type FakeNode = {
+      tagName: string;
+      className: string;
+      textContent: string;
+      innerHTML: string;
+      title: string;
+      type: string;
+      min: string;
+      max: string;
+      step: string;
+      value: string;
+      disabled: boolean;
+      children: FakeNode[];
+      attrs: Map<string, string>;
+      listeners: Map<string, Array<(ev: unknown) => void>>;
+      classList: {
+        toggle: (token: string, force?: boolean) => boolean;
+        contains: (token: string) => boolean;
+      };
+      setAttribute: (name: string, value: string) => void;
+      addEventListener: (type: string, fn: (ev: unknown) => void) => void;
+      append: (...nodes: FakeNode[]) => void;
+      appendChild: (node: FakeNode) => FakeNode;
+      dispatch: (type: string, ev?: unknown) => void;
+    };
+
+    const makeNode = (tagName: string): FakeNode => {
+      const classes = new Set<string>();
+      const attrs = new Map<string, string>();
+      const listeners = new Map<string, Array<(ev: unknown) => void>>();
+      const node: FakeNode = {
+        tagName,
+        className: '',
+        textContent: '',
+        innerHTML: '',
+        title: '',
+        type: '',
+        min: '',
+        max: '',
+        step: '',
+        value: '',
+        disabled: false,
+        children: [],
+        attrs,
+        listeners,
+        classList: {
+          toggle(token: string, force?: boolean) {
+            const next = force !== undefined ? force : !classes.has(token);
+            if (next) classes.add(token);
+            else classes.delete(token);
+            return next;
+          },
+          contains(token: string) {
+            return classes.has(token);
+          },
+        },
+        setAttribute(name: string, value: string) {
+          attrs.set(name, value);
+        },
+        addEventListener(type: string, fn: (ev: unknown) => void) {
+          const list = listeners.get(type) ?? [];
+          list.push(fn);
+          listeners.set(type, list);
+        },
+        append(...nodes: FakeNode[]) {
+          node.children.push(...nodes);
+        },
+        appendChild(child: FakeNode) {
+          node.children.push(child);
+          return child;
+        },
+        dispatch(type: string, ev: unknown = {}) {
+          for (const fn of listeners.get(type) ?? []) fn(ev);
+        },
+      };
+      return node;
+    };
+
+    const prevDocument = (globalThis as { document?: unknown }).document;
+    (globalThis as { document?: unknown }).document = {
+      createElement: (tag: string) => makeNode(tag),
+    };
+
+    try {
+      const world = new WorldState(new EventBus(), {
+        seed: 202611,
+        initialSettlements: 2,
+        initialWaterwaySettlements: 0,
+        initialCreaturesPerSettlement: 4,
+      });
+
+      const calls: Array<{ disposition: number; commit: boolean }> = [];
+      const panel = new DeityPanel(
+        () => '',
+        () => {},
+        undefined,
+        (disposition, commit) => {
+          calls.push({ disposition, commit });
+          return world.deity.setDisposition(disposition, world, commit);
+        },
+      );
+      panel.update(world);
+
+      const root = panel.element as unknown as FakeNode;
+      const whisperSection = root.children[2];
+      const dispositionHeader = whisperSection.children[1];
+      const valueBadge = dispositionHeader.children[1];
+      const dispositionControl = whisperSection.children[2];
+      const sliderWrap = dispositionControl.children[0];
+      const slider = sliderWrap.children[1];
+      const scaleRow = dispositionControl.children[1];
+
+      expect(slider.tagName).toBe('input');
+      expect(slider.type).toBe('range');
+      expect(slider.min).toBe('-1');
+      expect(slider.max).toBe('1');
+      expect(slider.step).toBe('0.01');
+      expect(slider.value).toBe('0');
+      expect(valueBadge.textContent).toContain('Balanced');
+
+      // Scale runs left-to-right: Steward -> Balanced -> Exploiter
+      expect(scaleRow.children.map((c) => c.textContent)).toEqual([
+        '🌱 Steward',
+        '⚖️ Balanced',
+        '🔥 Exploiter',
+      ]);
+
+      // Continuous live drag toward Steward (-0.45) previews without committing, then commits on change
+      slider.value = '-0.45';
+      slider.dispatch('input');
+      expect(calls[calls.length - 1]).toEqual({ disposition: -0.45, commit: false });
+      expect(valueBadge.textContent).toBe('🌱 Steward 45%');
+      expect(valueBadge.classList.contains('is-steward')).toBe(true);
+
+      slider.dispatch('change');
+      expect(calls[calls.length - 1]).toEqual({ disposition: -0.45, commit: true });
+
+      // Small value near center snaps cleanly to Balanced (0)
+      slider.value = '0.02';
+      slider.dispatch('input');
+      expect(slider.value).toBe('0');
+      expect(calls[calls.length - 1]).toEqual({ disposition: 0, commit: false });
+      expect(valueBadge.textContent).toContain('Balanced');
+
+      // Clicking right-hand Exploiter label commits full +1
+      scaleRow.children[2].dispatch('click');
+      expect(slider.value).toBe('1.00');
+      expect(calls[calls.length - 1]).toEqual({ disposition: 1, commit: true });
+      expect(valueBadge.textContent).toBe('🔥 Exploiter 100%');
+      expect(valueBadge.classList.contains('is-exploiter')).toBe(true);
+
+      // Double-clicking slider centers back to Balanced (0)
+      slider.dispatch('dblclick');
+      expect(slider.value).toBe('0');
+      expect(calls[calls.length - 1]).toEqual({ disposition: 0, commit: true });
+      expect(valueBadge.textContent).toContain('Balanced');
     } finally {
       if (prevDocument === undefined) {
         delete (globalThis as { document?: unknown }).document;

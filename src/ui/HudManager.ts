@@ -1,6 +1,6 @@
 import type { QualityPreset } from '@core/Config';
 import type { HudPanelPositions, SaveGameRecord, SaveSlotMeta } from '@core/SaveStore';
-import type { DeityStance, PrayerIntent, SelectionTarget, Vec2 } from '@core/Types';
+import type { PrayerIntent, SelectionTarget, Vec2 } from '@core/Types';
 import type { WorldState } from '@simulation/WorldState';
 import { ChroniclePanel } from './ChroniclePanel';
 import { ConfirmModal } from './ConfirmModal';
@@ -30,7 +30,7 @@ export interface HudCallbacks {
   onNewWorld: () => void;
   onChangeQuality: (preset: QualityPreset) => void;
   onWhisper: (intent: PrayerIntent) => string;
-  onSetDeityStance: (stance: DeityStance) => string;
+  onSetDeityDisposition: (disposition: number, commit: boolean) => string;
   onFocusPosition: (pos: Vec2) => void;
   onFocusSettlement: (settlementId: string) => void;
   onInspectCreature: (creatureId: string) => void;
@@ -80,7 +80,7 @@ export class HudManager {
       callbacks.onWhisper,
       () => this.setDeityPanelOpen(false),
       callbacks.onFocusPosition,
-      callbacks.onSetDeityStance,
+      callbacks.onSetDeityDisposition,
     );
     this.chroniclePanel = new ChroniclePanel(callbacks.onFocusPosition, () =>
       this.setChroniclePanelOpen(false),
