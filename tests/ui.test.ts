@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EventBus } from '@core/EventBus';
 import { WorldState } from '@simulation/WorldState';
+import { CreaturePovBar } from '@ui/CreaturePovBar';
 import { bindDialogPill, type DialogPillButton } from '@ui/DialogPillController';
 import {
   buildBuildingsSummary,
@@ -354,5 +355,102 @@ describe('RealmOverviewLogic', () => {
     expect(pioneersSummary.canExpandMore).toBe(true);
     expect(pioneersSummary.readiness.length).toBe(2);
     expect(pioneersSummary.foundedHistory.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('renders complete long creature activity descriptions in CreaturePovBar without truncation', () => {
+    type FakeNode = {
+      className: string;
+      textContent: string;
+      innerHTML: string;
+      title: string;
+      children: FakeNode[];
+      classList: {
+        classes: Set<string>;
+        add: (c: string) => void;
+        remove: (c: string) => void;
+        contains: (c: string) => boolean;
+      };
+      append: (...nodes: FakeNode[]) => void;
+      addEventListener: (event: string, fn: () => void) => void;
+      click: () => void;
+    };
+    const makeNode = (): FakeNode => {
+      const classes = new Set<string>();
+      const clickListeners: (() => void)[] = [];
+      const node: FakeNode = {
+        className: '',
+        textContent: '',
+        innerHTML: '',
+        title: '',
+        children: [],
+        classList: {
+          classes,
+          add: (c: string) => classes.add(c),
+          remove: (c: string) => classes.delete(c),
+          contains: (c: string) => classes.has(c),
+        },
+        append: (...nodes: FakeNode[]) => {
+          node.children.push(...nodes);
+        },
+        addEventListener: (event: string, fn: () => void) => {
+          if (event === 'click') clickListeners.push(fn);
+        },
+        click: () => {
+          for (const fn of clickListeners) fn();
+        },
+      };
+      return node;
+    };
+
+    const prevDocument = (globalThis as { document?: unknown }).document;
+    (globalThis as { document?: unknown }).document = {
+      createElement: () => makeNode(),
+    };
+
+    try {
+      const world = new WorldState(new EventBus(), {
+        seed: 818181,
+        initialSettlements: 1,
+        initialWaterwaySettlements: 0,
+        initialCreaturesPerSettlement: 2,
+      });
+      const creature = world.creatures[0];
+      const longThought =
+        'Hauling timber and fine woodland crafts to Elderhollow across the river bridge';
+      creature.thought = longThought;
+
+      let followedId: string | null = null;
+      const bar = new CreaturePovBar({
+        onPrevCreature: () => {},
+        onNextCreature: () => {},
+        onRandomCreature: () => {},
+        onFollowCreature: (id) => {
+          followedId = id;
+        },
+        onExitPov: () => {},
+      });
+      bar.update(world, creature.id);
+
+      const root = bar.element as unknown as FakeNode;
+      const mainRow = root.children[0];
+      const leftRow = mainRow.children[0];
+      const infoEl = leftRow.children[1];
+      expect(infoEl.innerHTML).toContain(longThought);
+      expect(infoEl.innerHTML).toContain(creature.name);
+      expect(root.classList.contains('hidden')).toBe(false);
+
+      // Follow button switches from Eye View to Follow mode for the currently viewed creature
+      const actionsRow = mainRow.children[1];
+      const followBtn = actionsRow.children.find((btn) => btn.textContent.includes('Follow'));
+      expect(followBtn).toBeDefined();
+      followBtn!.click();
+      expect(followedId).toBe(creature.id);
+    } finally {
+      if (prevDocument === undefined) {
+        delete (globalThis as { document?: unknown }).document;
+      } else {
+        (globalThis as { document?: unknown }).document = prevDocument;
+      }
+    }
   });
 });

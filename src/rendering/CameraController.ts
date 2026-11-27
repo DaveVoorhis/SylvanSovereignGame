@@ -11,6 +11,8 @@ export interface CreaturePovPose {
   readonly heading: number;
   readonly eyeHeight: number;
   readonly bobOffset: number;
+  /** Optional gentle lateral footstep weight-shift sway (meters, perpendicular to heading). */
+  readonly swayOffset?: number;
   readonly alive: boolean;
 }
 
@@ -46,6 +48,7 @@ export class CameraController {
   private povSmoothedHeading = 0;
   private povHeadingVel = 0;
   private povSmoothedBob = 0;
+  private povSmoothedSway = 0;
   private povInitialized = false;
   private povDragging = false;
   private povLastPointerX = 0;
@@ -185,6 +188,7 @@ export class CameraController {
     this.povLookPitch = -0.04;
     this.povHeadingVel = 0;
     this.povSmoothedBob = 0;
+    this.povSmoothedSway = 0;
     this.povInitialized = false;
     this.povDragging = false;
 
@@ -201,6 +205,7 @@ export class CameraController {
     this.povDragging = false;
     this.povHeadingVel = 0;
     this.povSmoothedBob = 0;
+    this.povSmoothedSway = 0;
     this.povInitialized = false;
     this.controls.enabled = true;
 
@@ -233,13 +238,21 @@ export class CameraController {
     this.desiredPosition = this.desiredTarget.clone().addScaledVector(dir, distance);
   }
 
-  follow(provider: (() => Vec3 | null) | null): void {
+  follow(provider: (() => Vec3 | null) | null, initialCameraPos?: Vec3): void {
     if (this.mode === 'creature_pov' && provider) {
       this.exitCreaturePov(false);
     }
     this.followProvider = provider;
     this.desiredTarget = null;
     this.desiredPosition = null;
+    if (provider && initialCameraPos) {
+      const pos = provider();
+      if (pos) {
+        this.controls.target.set(pos.x, pos.y + 0.9, pos.z);
+        this.camera.position.set(initialCameraPos.x, initialCameraPos.y, initialCameraPos.z);
+        this.controls.update();
+      }
+    }
   }
 
   isFollowing(): boolean {
@@ -381,6 +394,7 @@ export class CameraController {
       this.povSmoothedHeading = pose.heading;
       this.povHeadingVel = 0;
       this.povSmoothedBob = pose.bobOffset;
+      this.povSmoothedSway = pose.swayOffset ?? 0;
       this.camera.position.set(
         pose.x + Math.sin(pose.heading) * 0.25,
         pose.y + pose.eyeHeight + pose.bobOffset,
@@ -417,10 +431,16 @@ export class CameraController {
       }
 
       this.povSmoothedBob += (pose.bobOffset - this.povSmoothedBob) * (1 - Math.exp(-7.0 * safeDt));
+      const desiredSway = pose.swayOffset ?? 0;
+      this.povSmoothedSway += (desiredSway - this.povSmoothedSway) * (1 - Math.exp(-7.0 * safeDt));
 
-      const targetX = pose.x + Math.sin(this.povSmoothedHeading) * 0.28;
+      const fwdX = Math.sin(this.povSmoothedHeading);
+      const fwdZ = Math.cos(this.povSmoothedHeading);
+      const rightX = -fwdZ;
+      const rightZ = fwdX;
+      const targetX = pose.x + fwdX * 0.28 + rightX * this.povSmoothedSway;
       const targetY = pose.y + pose.eyeHeight + this.povSmoothedBob;
-      const targetZ = pose.z + Math.cos(this.povSmoothedHeading) * 0.28;
+      const targetZ = pose.z + fwdZ * 0.28 + rightZ * this.povSmoothedSway;
 
       const xzLerp = 1 - Math.exp(-9.5 * safeDt);
       const yLerp = 1 - Math.exp(-6.5 * safeDt);

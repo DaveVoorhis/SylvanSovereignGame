@@ -66,6 +66,8 @@ export type SpeciesId =
 
 export type LocomotionKind = 'walk' | 'hop' | 'scurry' | 'fly' | 'slither' | 'swim';
 
+export type CreatureGait = 'idle' | 'stroll' | 'walk' | 'run';
+
 export type LifeStage = 'young' | 'juvenile' | 'adult' | 'elder';
 
 export type CreatureActivity =

@@ -8,6 +8,12 @@ import type {
 } from '@core/Types';
 import type { Creature } from '@simulation/creatures/Creature';
 import { SPECIES_CATALOG } from '@simulation/creatures/SpeciesCatalog';
+import {
+  computeStrideMetrics,
+  sampleFootTrajectory,
+  sampleHopCycle,
+  solveGroundedFootTransform,
+} from '@simulation/creatures/StrideKinematics';
 import { VILLAGE_ADAPTATION_CATALOG } from '@simulation/settlements/VillageAdaptation';
 import type { WorldState } from '@simulation/WorldState';
 import {
@@ -46,7 +52,13 @@ interface CreatureRig {
   workChipCooldown: number;
   readonly adaptation: VillageAdaptationId;
   readonly swimRipple?: THREE.Mesh;
+  readonly baseFootY: number;
+  readonly baseFootZ: number;
   moveBlend: number;
+  gaitBlend: number;
+  stridePhase: number;
+  lastSimAnimPhase: number;
+  footGroundBlend: number;
   bobY: number;
   tiltX: number;
   tiltZ: number;
@@ -89,6 +101,7 @@ interface SharedGeometries {
   readonly arm: THREE.BufferGeometry;
   readonly paw: THREE.BufferGeometry;
   readonly boot: THREE.BufferGeometry;
+  readonly rabbitFoot: THREE.BufferGeometry;
   readonly webbedFoot: THREE.BufferGeometry;
   readonly birdFoot: THREE.BufferGeometry;
   readonly wingLeft: THREE.BufferGeometry;
@@ -475,37 +488,137 @@ function buildLilyHatGeo(): THREE.BufferGeometry {
   return geo;
 }
 
+function buildMammalLegFootGeo(longRabbitFoot = false): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+
+  // Upper thigh continuation tucked cleanly inside the tunic skirt so full strides never show a gap
+  const thigh = new THREE.CylinderGeometry(0.064, 0.058, 0.16, 10);
+  thigh.translate(0, 0.075, -0.005);
+  parts.push(thigh);
+
+  // Tapered lower leg / shin descending cleanly from the hip pivot (y = 0) down to the ankle
+  const shin = new THREE.CylinderGeometry(0.058, 0.044, 0.215, 10);
+  shin.translate(0, -0.11, -0.005);
+  parts.push(shin);
+
+  // Rounded ankle & heel joint
+  const heel = new THREE.SphereGeometry(0.048, 10, 8);
+  heel.scale(1.0, 0.88, 1.12);
+  heel.translate(0, -0.228, -0.018);
+  parts.push(heel);
+
+  // Sculpted forward-projecting foot / paw pad resting squarely at y = -0.27
+  const footMidLen = longRabbitFoot ? 0.145 : 0.088;
+  const footZ = longRabbitFoot ? 0.095 : 0.068;
+  const sole = new THREE.CapsuleGeometry(0.046, footMidLen, 6, 10);
+  sole.rotateX(Math.PI / 2);
+  sole.scale(longRabbitFoot ? 1.06 : 1.14, 0.68, 1.0);
+  sole.translate(0, -0.239, footZ);
+  parts.push(sole);
+
+  // Three distinct sculpted forward toes fanned subtly across the front of the foot
+  const toeAngles = [-0.28, 0, 0.28];
+  const toeBaseZ = longRabbitFoot ? 0.175 : 0.122;
+  const toeLen = longRabbitFoot ? 0.056 : 0.036;
+  for (const ang of toeAngles) {
+    const isCenter = ang === 0;
+    const toe = new THREE.CapsuleGeometry(isCenter ? 0.024 : 0.021, toeLen, 5, 8);
+    toe.rotateX(Math.PI / 2);
+    toe.scale(1.0, 0.78, 1.0);
+    toe.rotateY(ang);
+    toe.translate(
+      Math.sin(ang) * (longRabbitFoot ? 0.095 : 0.078),
+      -0.248,
+      toeBaseZ + (isCenter ? 0.016 : 0.002),
+    );
+    parts.push(toe);
+  }
+
+  return mergePartGeometries(parts, false);
+}
+
 function buildWebbedFootGeo(): THREE.BufferGeometry {
-  const shape = new THREE.Shape();
-  shape.moveTo(0, 0);
-  shape.lineTo(-0.09, 0.16);
-  shape.quadraticCurveTo(-0.04, 0.12, 0, 0.18);
-  shape.quadraticCurveTo(0.04, 0.12, 0.09, 0.16);
-  shape.closePath();
-  const geo = new THREE.ExtrudeGeometry(shape, {
-    depth: 0.025,
+  const parts: THREE.BufferGeometry[] = [];
+
+  // Upper thigh continuation tucked inside the tunic skirt across full strides
+  const thigh = new THREE.CylinderGeometry(0.058, 0.052, 0.15, 10);
+  thigh.translate(0, 0.07, -0.006);
+  parts.push(thigh);
+
+  // Articulated lower leg + ankle down to the webbed foot
+  const shin = new THREE.CylinderGeometry(0.052, 0.039, 0.22, 10);
+  shin.translate(0, -0.115, -0.006);
+  parts.push(shin);
+
+  const ankle = new THREE.SphereGeometry(0.043, 8, 8);
+  ankle.scale(1.0, 0.82, 1.08);
+  ankle.translate(0, -0.232, -0.012);
+  parts.push(ankle);
+
+  // Thin scalloped webbing membrane between the splayed digits
+  const webShape = new THREE.Shape();
+  webShape.moveTo(-0.028, -0.01);
+  webShape.lineTo(-0.11, 0.17);
+  webShape.quadraticCurveTo(-0.052, 0.132, 0, 0.195);
+  webShape.quadraticCurveTo(0.052, 0.132, 0.11, 0.17);
+  webShape.lineTo(0.028, -0.01);
+  webShape.closePath();
+  const web = new THREE.ExtrudeGeometry(webShape, {
+    depth: 0.018,
     bevelEnabled: true,
-    bevelSize: 0.01,
-    bevelThickness: 0.01,
+    bevelSize: 0.007,
+    bevelThickness: 0.007,
     bevelSegments: 2,
   });
-  geo.rotateX(Math.PI / 2);
-  geo.translate(0, 0.03, -0.04);
-  return geo;
+  web.rotateX(Math.PI / 2);
+  web.translate(0, -0.244, 0.0);
+  parts.push(web);
+
+  // Three prominent splayed webbed toes extending smoothly forward
+  for (const ang of [-0.46, 0, 0.46]) {
+    const len = ang === 0 ? 0.15 : 0.13;
+    const toe = new THREE.CapsuleGeometry(0.019, len, 5, 8);
+    toe.rotateX(Math.PI / 2);
+    toe.scale(1.0, 0.72, 1.0);
+    toe.rotateY(ang);
+    toe.translate(Math.sin(ang) * (len * 0.62), -0.25, Math.cos(ang) * (len * 0.62) + 0.015);
+    parts.push(toe);
+  }
+
+  return mergePartGeometries(parts, false);
 }
 
 function buildBirdFootGeo(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
-  for (const ang of [-0.45, 0, 0.45]) {
-    const toe = new THREE.CapsuleGeometry(0.016, 0.11, 4, 6);
+
+  // Feathered upper drumstick extending cleanly into the tunic skirt and tapering to slender avian tarsus
+  const thigh = new THREE.CylinderGeometry(0.052, 0.024, 0.21, 8);
+  thigh.translate(0, 0.025, 0);
+  parts.push(thigh);
+
+  const tarsus = new THREE.CylinderGeometry(0.021, 0.018, 0.185, 8);
+  tarsus.rotateX(0.08);
+  tarsus.translate(0, -0.16, 0.006);
+  parts.push(tarsus);
+
+  const ankle = new THREE.SphereGeometry(0.024, 8, 6);
+  ankle.translate(0, -0.248, 0.014);
+  parts.push(ankle);
+
+  // Three forward-splayed articulated bird toes + rear hallux toe resting cleanly at y = -0.27
+  for (const ang of [-0.44, 0, 0.44]) {
+    const len = ang === 0 ? 0.125 : 0.105;
+    const toe = new THREE.CapsuleGeometry(0.015, len, 4, 7);
     toe.rotateX(Math.PI / 2);
     toe.rotateY(ang);
-    toe.translate(Math.sin(ang) * 0.05, 0.02, Math.cos(ang) * 0.06);
+    toe.translate(Math.sin(ang) * (len * 0.56), -0.255, 0.02 + Math.cos(ang) * (len * 0.56));
     parts.push(toe);
   }
-  const ankle = new THREE.CylinderGeometry(0.02, 0.024, 0.14, 8);
-  ankle.translate(0, 0.09, 0);
-  parts.push(ankle);
+  const rearToe = new THREE.CapsuleGeometry(0.014, 0.062, 4, 6);
+  rearToe.rotateX(Math.PI / 2);
+  rearToe.translate(0, -0.255, -0.032);
+  parts.push(rearToe);
+
   return mergePartGeometries(parts, false);
 }
 
@@ -676,16 +789,16 @@ function buildHammerHeadGeo(): THREE.BufferGeometry {
 }
 
 function createSharedGeometries(): SharedGeometries {
-  // Pear-shaped cozy pleated woodland tunic
+  // Pear-shaped cozy pleated woodland tunic (knee/shin hem at y = 0.24 so legs & feet show cleanly)
   const tunicPts = [
-    new THREE.Vector2(0.0, 0.11),
-    new THREE.Vector2(0.32, 0.11),
-    new THREE.Vector2(0.37, 0.15),
-    new THREE.Vector2(0.34, 0.34),
-    new THREE.Vector2(0.26, 0.54),
-    new THREE.Vector2(0.24, 0.68),
-    new THREE.Vector2(0.18, 0.78),
-    new THREE.Vector2(0.0, 0.8),
+    new THREE.Vector2(0.0, 0.24),
+    new THREE.Vector2(0.29, 0.24),
+    new THREE.Vector2(0.35, 0.28),
+    new THREE.Vector2(0.33, 0.42),
+    new THREE.Vector2(0.26, 0.57),
+    new THREE.Vector2(0.24, 0.7),
+    new THREE.Vector2(0.18, 0.79),
+    new THREE.Vector2(0.0, 0.81),
   ];
   const tunic = new THREE.LatheGeometry(tunicPts, 24);
 
@@ -855,9 +968,8 @@ function createSharedGeometries(): SharedGeometries {
 
   const bunnyTail = createOrganicPuffGeo(0.155, 2, 0.14, 5.5);
 
-  const boot = new THREE.CapsuleGeometry(0.068, 0.09, 6, 10);
-  boot.rotateX(Math.PI / 2);
-  boot.translate(0, 0.065, 0.03);
+  const boot = buildMammalLegFootGeo(false);
+  const rabbitFoot = buildMammalLegFootGeo(true);
 
   const arm = new THREE.CapsuleGeometry(0.056, 0.19, 6, 10);
   arm.translate(0, -0.11, 0);
@@ -904,6 +1016,7 @@ function createSharedGeometries(): SharedGeometries {
     arm,
     paw: new THREE.SphereGeometry(0.06, 10, 8),
     boot,
+    rabbitFoot,
     webbedFoot: buildWebbedFootGeo(),
     birdFoot: buildBirdFootGeo(),
     wingLeft: buildLayeredWingGeo(-1),
@@ -1411,9 +1524,14 @@ export class CreatureRenderer {
         // Keep rig synced quietly while hidden in Eye View so exiting POV never snaps
         rig.root.position.set(c.x, c.y, c.z);
         rig.root.rotation.y = c.heading;
+        rig.stridePhase = c.animPhase;
+        rig.lastSimAnimPhase = c.animPhase;
         continue;
       }
       rig.root.visible = true;
+
+      const prevRootX = rig.root.position.x;
+      const prevRootZ = rig.root.position.z;
 
       // Frame-rate independent exponential position interpolation
       rig.root.position.x += (c.x - rig.root.position.x) * posLerp;
@@ -1426,15 +1544,25 @@ export class CreatureRenderer {
       while (diff < -Math.PI) diff += Math.PI * 2;
       rig.root.rotation.y += diff * rotLerp;
 
+      // Exact horizontal displacement actually traversed by the rendered rig this frame
+      const dxR = rig.root.position.x - prevRootX;
+      const dzR = rig.root.position.z - prevRootZ;
+      const renderDist = Math.hypot(dxR, dzR);
+      const renderFwdDist = Math.max(
+        0,
+        dxR * Math.sin(rig.root.rotation.y) + dzR * Math.cos(rig.root.rotation.y),
+      );
+
       // Smooth locomotion blend (0 at rest, 1 at full stride) so stationary creatures settle gently
       const targetMove = c.activity === 'resting' ? 0 : c.moveIntensity;
       rig.moveBlend += (targetMove - rig.moveBlend) * moveLerp;
       const move = rig.moveBlend;
+      const targetGait = c.activity === 'resting' ? 0 : c.gaitEffort;
+      rig.gaitBlend += (targetGait - rig.gaitBlend) * moveLerp;
 
-      const phase = c.animPhase;
       const seed = rig.seedPhase;
       let bobY = 0;
-      let tiltZ = THREE.MathUtils.clamp(-diff * 0.2, -0.14, 0.14) * (0.25 + 0.75 * move);
+      let tiltZ = THREE.MathUtils.clamp(-diff * 0.2, -0.15, 0.15) * (0.25 + 0.75 * move);
       let tiltX = 0;
       let squashY = 1.0;
       let headPitch = Math.sin(t * 1.6 + seed) * 0.04;
@@ -1448,6 +1576,23 @@ export class CreatureRenderer {
         Boolean(c.def.aquatic) &&
         this.world.terrain.getHeightAt(c.x, c.z) < this.world.terrain.waterLevel - 0.02;
 
+      const effectiveScale = c.getSizeScale();
+      const preScaleXZ = effectiveScale / Math.sqrt(Math.max(0.5, rig.squashY));
+      const strideMetrics = computeStrideMetrics(c.def.locomotion, rig.gaitBlend, preScaleXZ);
+      const { pace, runFactor } = strideMetrics;
+
+      // Advance visual stride phase in exact 1:1 lockstep with rendered forward ground displacement
+      // so planted feet sweep backward at the exact speed the body moves forward (zero skating!)
+      if (isAirborne || isFish || isSwimmingInWater || renderDist >= 2.5) {
+        rig.stridePhase = c.animPhase;
+      } else if (renderDist > 1e-5) {
+        rig.stridePhase += (renderFwdDist / strideMetrics.cycleLengthWorld) * Math.PI * 2;
+      } else if (c.animPhase !== rig.lastSimAnimPhase) {
+        rig.stridePhase = c.animPhase;
+      }
+      rig.lastSimAnimPhase = c.animPhase;
+      const phase = rig.stridePhase;
+
       let leftArmX = 0;
       let leftArmY = 0;
       let leftArmZ = 0.16;
@@ -1456,26 +1601,51 @@ export class CreatureRenderer {
       let rightArmZ = -0.16;
       let leftFootX = 0;
       let rightFootX = 0;
+      let leftFootY = rig.baseFootY;
+      let rightFootY = rig.baseFootY;
+      let leftFootZ = rig.baseFootZ;
+      let rightFootZ = rig.baseFootZ;
 
-      // Differentiable cosine bump (equals sin^2(phase)) avoids harsh turnaround cusps
-      const smoothBounce = 0.5 - 0.5 * Math.cos(phase * 2);
+      // Walking rises over the planted vertical leg at mid-stance; running springs up into flight between steps
+      const walkBounce = 0.5 + 0.5 * Math.cos(phase * 2);
+      const runBounce = 0.5 - 0.5 * Math.cos(phase * 2);
+      const strideBounce = THREE.MathUtils.lerp(walkBounce, runBounce, runFactor);
+      const hopSample =
+        c.def.locomotion === 'hop' && !isSwimmingInWater
+          ? sampleHopCycle(
+              phase,
+              strideMetrics.halfStrideLocal,
+              strideMetrics.dutyFactor,
+              strideMetrics.liftHeightLocal,
+              0.14 + pace * 0.2,
+            )
+          : null;
 
-      if (c.def.locomotion === 'hop') {
-        bobY = smoothBounce * 0.28 * move;
-        tiltX = Math.sin(phase) * 0.13 * move;
-        squashY = 1.0 + (smoothBounce - 0.35) * 0.055 * move;
+      if (hopSample) {
+        bobY = hopSample.bodyHopLocalY * effectiveScale * move;
+        tiltX =
+          (0.04 + pace * 0.12 + (hopSample.inStance ? 0.08 * hopSample.crouch : -0.05)) * move;
+        squashY = 1.0 + (hopSample.inStance ? -0.06 * hopSample.crouch : 0.035) * move;
       } else if (isBird) {
-        bobY = isAirborne ? Math.sin(phase * 1.3 + seed) * 0.13 : smoothBounce * 0.075 * move;
-        tiltX = isAirborne ? 0.2 : Math.sin(phase) * 0.05 * move;
-        const flap = isAirborne ? Math.sin(phase * 2.4 + seed) * 0.78 : Math.sin(phase * 1.1) * 0.1 * move;
+        bobY = isAirborne
+          ? Math.sin(phase * 1.3 + seed) * 0.13
+          : strideBounce * (0.022 + pace * 0.046) * effectiveScale * move;
+        tiltX = isAirborne ? 0.2 : (0.03 + pace * 0.09) * move;
+        if (!isAirborne) {
+          // Characteristic gentle avian walking head-bob
+          headPitch += (strideBounce - 0.5) * (0.09 + pace * 0.11) * move;
+        }
+        const flap = isAirborne
+          ? Math.sin(phase * 2.4 + seed) * 0.78
+          : Math.sin(phase * 1.1) * (0.06 + pace * 0.08) * move;
         leftArmZ = isAirborne ? flap : 0.65 + flap * 0.5;
         leftArmY = isAirborne ? Math.cos(phase * 2.4 + seed) * 0.14 : 0.28;
         rightArmZ = isAirborne ? -flap : -0.65 - flap * 0.5;
         rightArmY = isAirborne ? -Math.cos(phase * 2.4 + seed) * 0.14 : -0.28;
       } else if (c.def.locomotion === 'scurry') {
-        const scurryBounce = 0.5 - 0.5 * Math.cos(phase * 2.5);
-        bobY = scurryBounce * 0.075 * move;
-        tiltZ += Math.sin(phase * 1.25) * 0.08 * move;
+        bobY = strideBounce * (0.022 + pace * 0.052) * effectiveScale * move;
+        tiltX = (0.04 + pace * 0.1 + runFactor * 0.1) * move;
+        tiltZ += Math.sin(phase) * (0.042 + pace * 0.042) * move;
       } else if (isFish) {
         const swimAmp = 0.32 + 0.68 * move;
         bobY = Math.sin(phase * 1.2 + t * 0.8 + seed) * 0.042 * swimAmp;
@@ -1488,15 +1658,17 @@ export class CreatureRenderer {
       } else if (isSnake) {
         const slitherAmp = 0.18 + 0.82 * move;
         bobY = Math.sin(phase * 1.2) * 0.024 * slitherAmp;
-        tiltZ += Math.sin(phase * 1.45) * 0.12 * slitherAmp;
-        tiltX = 0.05 * slitherAmp;
+        tiltZ += Math.sin(phase * 1.45) * (0.09 + pace * 0.06) * slitherAmp;
+        tiltX = (0.04 + pace * 0.06) * slitherAmp;
       } else if (isSwimmingInWater) {
         bobY = Math.sin(t * 1.7 + seed) * 0.022 + Math.sin(phase * 1.25 + seed) * 0.022 * move;
-        tiltX = 0.18 + 0.08 * move;
+        tiltX = 0.2 + 0.1 * move;
         tiltZ += Math.sin(phase * 1.25 + seed) * 0.06 * (0.3 + 0.7 * move);
       } else {
-        bobY = smoothBounce * 0.09 * move;
-        tiltZ += Math.sin(phase) * 0.055 * move;
+        // Natural stroll -> steady walk -> athletic run body mechanics
+        bobY = strideBounce * (0.022 + pace * 0.058) * effectiveScale * move;
+        tiltX = (0.015 + pace * 0.08 + runFactor * 0.12) * move;
+        tiltZ += Math.sin(phase) * (0.03 + pace * 0.042) * move;
       }
 
       // Calm idle breathing when standing still on land
@@ -1504,23 +1676,33 @@ export class CreatureRenderer {
         squashY += Math.sin(t * 1.8 + seed) * 0.012 * (1 - move);
       }
 
-      // Arm & foot stride animation for ground-walking/hopping creatures
+      // Contralateral arm stride animation (grounded feet are solved right after posture damping below)
       if (!isBird && !isSnake && !isFish) {
-        const stride = Math.sin(phase * (c.def.locomotion === 'scurry' ? 1.25 : 1.0)) * move;
-        leftArmX = stride * 0.46;
-        rightArmX = -stride * 0.46;
-        if (c.def.locomotion === 'hop') {
-          const tuck = smoothBounce * 0.38 * move;
-          leftFootX = tuck;
-          rightFootX = tuck;
+        if (isSwimmingInWater) {
+          const pL = phase;
+          const pR = phase + Math.PI;
+          leftFootX = 0.52 + Math.sin(pL * 1.25) * 0.42 * (0.35 + 0.65 * move);
+          rightFootX = 0.52 + Math.sin(pR * 1.25) * 0.42 * (0.35 + 0.65 * move);
+          leftFootY = rig.baseFootY + 0.03;
+          rightFootY = rig.baseFootY + 0.03;
+          leftArmX = -0.35 + Math.sin(pR * 1.25) * 0.32 * (0.3 + 0.7 * move);
+          rightArmX = -0.35 + Math.sin(pL * 1.25) * 0.32 * (0.3 + 0.7 * move);
+        } else if (hopSample) {
+          const airborneArm = hopSample.inStance ? 0 : Math.min(1, hopSample.bodyHopLocalY / 0.16);
+          leftArmX = (-0.2 - airborneArm * (0.32 + pace * 0.24)) * move;
+          rightArmX = leftArmX;
         } else {
-          leftFootX = -stride * 0.48;
-          rightFootX = stride * 0.48;
+          const armSwing = (0.22 + pace * 0.56) * move;
+          // Opposite arm swings forward with each step; running adds athletic forward arm pump
+          leftArmX = Math.sin(phase) * armSwing - runFactor * 0.22 * move;
+          rightArmX = Math.sin(phase + Math.PI) * armSwing - runFactor * 0.22 * move;
         }
-      } else if (rig.leftFoot && rig.rightFoot) {
-        const stride = isAirborne ? 0.62 : Math.sin(phase) * 0.34 * move;
-        leftFootX = isAirborne ? stride : -stride;
-        rightFootX = isAirborne ? stride : stride;
+      } else if (rig.leftFoot && rig.rightFoot && isAirborne) {
+        // Tuck bird feet neatly rearward while flying
+        leftFootX = 0.78;
+        rightFootX = 0.78;
+        leftFootY = rig.baseFootY + 0.04;
+        rightFootY = rig.baseFootY + 0.04;
       }
 
       // Stage-specific handheld construction tools & pioneer emigration pack
@@ -1691,12 +1873,92 @@ export class CreatureRenderer {
       }
 
       // Smoothly blend posture and limbs so activity transitions never pop in a single frame
-      rig.bobY += (bobY - rig.bobY) * poseLerp;
+      const bobLerp = hopSample ? 1 - Math.exp(-20 * safeDt) : poseLerp;
+      rig.bobY += (bobY - rig.bobY) * bobLerp;
       rig.tiltX += (tiltX - rig.tiltX) * poseLerp;
       rig.tiltZ += (tiltZ - rig.tiltZ) * poseLerp;
       rig.headPitch += (headPitch - rig.headPitch) * poseLerp;
       rig.headRoll += (headRoll - rig.headRoll) * poseLerp;
       rig.squashY += (squashY - rig.squashY) * poseLerp;
+
+      const scaleY = effectiveScale * rig.squashY;
+      const scaleXZ = effectiveScale / Math.sqrt(Math.max(0.5, rig.squashY));
+
+      // Exact ground-locked inverse kinematics for grounded feet using the frame's final bodyGroup transform
+      const isGroundedLegged = Boolean(
+        rig.leftFoot && rig.rightFoot && !isAirborne && !isSwimmingInWater && c.activity !== 'resting',
+      );
+      if (isGroundedLegged) {
+        // Full unattenuated stride at all walking/strolling/running speeds; ease feet neatly together only when stopping
+        const settleT = THREE.MathUtils.clamp(move / 0.25, 0, 1);
+        const strideWeight = settleT * settleT * (3 - 2 * settleT);
+        const groundMetrics = computeStrideMetrics(c.def.locomotion, rig.gaitBlend, scaleXZ);
+        // Keep joyful dance/play jumps able to lift feet off the floor while locking walking bob to the ground
+        const isJumpingEmote =
+          c.activity === 'playing' || (c.activity === 'celebrating' && c.isDancingAtCelebration);
+        const compBobY =
+          isJumpingEmote && !hopSample
+            ? Math.min(rig.bobY, 0.075 * effectiveScale)
+            : rig.bobY;
+
+        if (hopSample) {
+          const pose = solveGroundedFootTransform({
+            zRel: hopSample.zRel * strideWeight,
+            yLift: hopSample.yLift * strideWeight,
+            pace: groundMetrics.pace,
+            baseFootZ: rig.baseFootZ,
+            bobY: compBobY,
+            tiltX: rig.tiltX,
+            scaleY,
+            scaleXZ,
+          });
+          leftFootX = pose.rotX;
+          rightFootX = pose.rotX;
+          leftFootY = pose.hipY;
+          rightFootY = pose.hipY;
+          leftFootZ = pose.hipZ;
+          rightFootZ = pose.hipZ;
+        } else {
+          const sampleL = sampleFootTrajectory(
+            phase,
+            groundMetrics.halfStrideLocal,
+            groundMetrics.dutyFactor,
+            groundMetrics.liftHeightLocal,
+          );
+          const sampleR = sampleFootTrajectory(
+            phase + Math.PI,
+            groundMetrics.halfStrideLocal,
+            groundMetrics.dutyFactor,
+            groundMetrics.liftHeightLocal,
+          );
+          const poseL = solveGroundedFootTransform({
+            zRel: sampleL.zRel * strideWeight,
+            yLift: sampleL.yLift * strideWeight,
+            pace: groundMetrics.pace,
+            baseFootZ: rig.baseFootZ,
+            bobY: compBobY,
+            tiltX: rig.tiltX,
+            scaleY,
+            scaleXZ,
+          });
+          const poseR = solveGroundedFootTransform({
+            zRel: sampleR.zRel * strideWeight,
+            yLift: sampleR.yLift * strideWeight,
+            pace: groundMetrics.pace,
+            baseFootZ: rig.baseFootZ,
+            bobY: compBobY,
+            tiltX: rig.tiltX,
+            scaleY,
+            scaleXZ,
+          });
+          leftFootX = poseL.rotX;
+          rightFootX = poseR.rotX;
+          leftFootY = poseL.hipY;
+          rightFootY = poseR.hipY;
+          leftFootZ = poseL.hipZ;
+          rightFootZ = poseR.hipZ;
+        }
+      }
 
       if (rig.leftArm) {
         rig.leftArm.rotation.x += (leftArmX - rig.leftArm.rotation.x) * limbLerp;
@@ -1709,13 +1971,28 @@ export class CreatureRenderer {
         rig.rightArm.rotation.z += (rightArmZ - rig.rightArm.rotation.z) * limbLerp;
       }
       if (rig.leftFoot && rig.rightFoot) {
-        rig.leftFoot.rotation.x += (leftFootX - rig.leftFoot.rotation.x) * limbLerp;
-        rig.rightFoot.rotation.x += (rightFootX - rig.rightFoot.rotation.x) * limbLerp;
+        const targetGroundBlend = isGroundedLegged ? 1 : 0;
+        rig.footGroundBlend += (targetGroundBlend - rig.footGroundBlend) * (1 - Math.exp(-14 * safeDt));
+        if (isGroundedLegged && rig.footGroundBlend > 0.95) {
+          // Apply exact ground-locked IK foot pose with zero lag or filter attenuation
+          rig.leftFoot.rotation.x = leftFootX;
+          rig.rightFoot.rotation.x = rightFootX;
+          rig.leftFoot.position.y = leftFootY;
+          rig.rightFoot.position.y = rightFootY;
+          rig.leftFoot.position.z = leftFootZ;
+          rig.rightFoot.position.z = rightFootZ;
+        } else {
+          const footLerp = isGroundedLegged ? Math.max(limbLerp, rig.footGroundBlend) : limbLerp;
+          rig.leftFoot.rotation.x += (leftFootX - rig.leftFoot.rotation.x) * footLerp;
+          rig.rightFoot.rotation.x += (rightFootX - rig.rightFoot.rotation.x) * footLerp;
+          rig.leftFoot.position.y += (leftFootY - rig.leftFoot.position.y) * footLerp;
+          rig.rightFoot.position.y += (rightFootY - rig.rightFoot.position.y) * footLerp;
+          rig.leftFoot.position.z += (leftFootZ - rig.leftFoot.position.z) * footLerp;
+          rig.rightFoot.position.z += (rightFootZ - rig.rightFoot.position.z) * footLerp;
+        }
       }
 
-      const effectiveScale = c.getSizeScale();
-      const scaleXZ = effectiveScale / Math.sqrt(rig.squashY);
-      rig.bodyGroup.scale.set(scaleXZ, effectiveScale * rig.squashY, scaleXZ);
+      rig.bodyGroup.scale.set(scaleXZ, scaleY, scaleXZ);
       rig.bodyGroup.position.y = rig.bobY;
       rig.bodyGroup.rotation.z = rig.tiltZ;
       rig.bodyGroup.rotation.x = rig.tiltX;
@@ -2099,7 +2376,7 @@ export class CreatureRenderer {
       else if (isStout) tunic.scale.set(1.16, 0.96, 1.12);
       else if (isSnake) {
         tunic.scale.set(0.68, 0.8, 0.72);
-        tunic.position.y = 0.2;
+        tunic.position.y = 0.12;
       } else if (isSlender) tunic.scale.set(0.84, 1.06, 0.86);
       else if (isBird) tunic.scale.set(0.96, 0.94, 1.04);
 
@@ -2221,33 +2498,48 @@ export class CreatureRenderer {
       }
     };
 
-    // 3. Articulated Feet (or coiled serpentine lower body for snakes; skipped for swimming fish)
+    // 3. Articulated Legs & Species-Appropriate Feet (coiled lower body for snakes; fins for fish)
     let leftFoot: THREE.Object3D | undefined;
     let rightFoot: THREE.Object3D | undefined;
+    const baseFootY = 0.27;
+    const baseFootZ = 0.01;
     if (isFish) {
       // Fish glide with pectoral & caudal fins
     } else if (isSnake) {
       addPart(new THREE.Mesh(this.geo.snakeCoil, mats.primary));
     } else {
+      const isRabbit = c.species === 'rabbit';
       const footGeo = isBird
         ? this.geo.birdFoot
         : isFrog || isTurtle || isBeaver || isOtter
           ? this.geo.webbedFoot
-          : this.geo.boot;
+          : isRabbit
+            ? this.geo.rabbitFoot
+            : this.geo.boot;
       const footMat =
         c.species === 'pigeon'
           ? this.nosePinkMat
-          : isBird || isBeaver || isOtter
-            ? mats.accent
-            : isFrog || isTurtle
-              ? mats.primary
-              : this.leatherMat;
+          : isFrog || isTurtle
+            ? mats.primary
+            : c.species === 'rabbit' || c.species === 'cat' || c.species === 'mouse'
+              ? mats.secondary
+              : c.species === 'squirrel' || c.species === 'hedgehog' || c.species === 'rat'
+                ? mats.primary
+                : mats.accent;
 
+      const footSpread = isBear ? 0.16 : isStout ? 0.145 : isBird ? 0.115 : 0.125;
       for (const side of [-1, 1] as const) {
         const fPivot = new THREE.Group();
-        fPivot.position.set(side * (isBear ? 0.16 : 0.13), 0.08, 0.02);
+        fPivot.name = side === -1 ? 'left_foot' : 'right_foot';
+        fPivot.position.set(side * footSpread, baseFootY, baseFootZ);
         const footMesh = addPart(new THREE.Mesh(footGeo, footMat), fPivot);
-        footMesh.position.y = -0.06;
+        if (isBear) {
+          footMesh.scale.set(1.18, 1.0, 1.16);
+        } else if (isTurtle) {
+          footMesh.scale.set(1.12, 0.96, 1.05);
+        } else if (isFrog) {
+          footMesh.scale.set(1.06, 1.0, 1.15);
+        }
         bodyGroup.add(fPivot);
         if (side === -1) leftFoot = fPivot;
         else rightFoot = fPivot;
@@ -3502,7 +3794,13 @@ export class CreatureRenderer {
       workChipCooldown: 0.15,
       adaptation,
       swimRipple,
+      baseFootY,
+      baseFootZ,
       moveBlend: c.moveIntensity,
+      gaitBlend: c.gaitEffort,
+      stridePhase: c.animPhase,
+      lastSimAnimPhase: c.animPhase,
+      footGroundBlend: isBird && c.flightAltitude > 0.3 ? 0 : 1,
       bobY: 0,
       tiltX: 0,
       tiltZ: 0,

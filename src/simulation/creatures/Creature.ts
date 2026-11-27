@@ -2,6 +2,7 @@ import {
   createEmptyResources,
   type ConstructionStage,
   type CreatureActivity,
+  type CreatureGait,
   type CreatureRole,
   type LifeStage,
   type ResourceBundle,
@@ -144,6 +145,8 @@ export class Creature {
   /** Transient locomotion smoothing state (velocity, gait intensity & angular momentum). */
   currentSpeed = 0;
   moveIntensity = 0;
+  gait: CreatureGait = 'idle';
+  gaitEffort = 0;
   steerHeading: number;
   headingVel = 0;
 

@@ -4,6 +4,7 @@ export interface CreaturePovBarCallbacks {
   onPrevCreature: () => void;
   onNextCreature: () => void;
   onRandomCreature: () => void;
+  onFollowCreature: (creatureId: string) => void;
   onExitPov: () => void;
 }
 
@@ -14,6 +15,7 @@ export interface CreaturePovBarCallbacks {
 export class CreaturePovBar {
   readonly element: HTMLElement;
   private readonly infoEl: HTMLElement;
+  private currentCreatureId: string | null = null;
 
   constructor(private readonly callbacks: CreaturePovBarCallbacks) {
     this.element = document.createElement('div');
@@ -52,13 +54,23 @@ export class CreaturePovBar {
     nextBtn.title = 'Next creature (] or →)';
     nextBtn.addEventListener('click', () => this.callbacks.onNextCreature());
 
+    const followBtn = document.createElement('button');
+    followBtn.className = 'hud-btn small';
+    followBtn.textContent = '🎯 Follow';
+    followBtn.title = 'Switch to third-person Follow mode for this creature';
+    followBtn.addEventListener('click', () => {
+      if (this.currentCreatureId) {
+        this.callbacks.onFollowCreature(this.currentCreatureId);
+      }
+    });
+
     const exitBtn = document.createElement('button');
     exitBtn.className = 'hud-btn small accent';
     exitBtn.textContent = '🌍 World View';
     exitBtn.title = 'Return to world overview (Esc or V)';
     exitBtn.addEventListener('click', () => this.callbacks.onExitPov());
 
-    actions.append(prevBtn, randBtn, nextBtn, exitBtn);
+    actions.append(prevBtn, randBtn, nextBtn, followBtn, exitBtn);
 
     const hint = document.createElement('div');
     hint.className = 'pov-hint';
@@ -74,16 +86,19 @@ export class CreaturePovBar {
 
   update(world: WorldState, povCreatureId: string | null): void {
     if (!povCreatureId) {
+      this.currentCreatureId = null;
       this.element.classList.add('hidden');
       return;
     }
 
     const c = world.getCreature(povCreatureId);
     if (!c || !c.alive) {
+      this.currentCreatureId = null;
       this.element.classList.add('hidden');
       return;
     }
 
+    this.currentCreatureId = c.id;
     this.element.classList.remove('hidden');
     const home = world.getSettlement(c.settlementId);
     const aliveList = world.creatures.filter((item) => item.alive);

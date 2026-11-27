@@ -1659,4 +1659,50 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
       expect(headingFlipFlops).toBe(0);
     }
   });
+
+  it('transitions creatures smoothly between slow stroll, steady walk, and brisk run gaits as appropriate', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 314159,
+      initialSettlements: 1,
+      initialWaterwaySettlements: 0,
+      initialCreaturesPerSettlement: 0,
+      deityDecisionIntervalSec: 999,
+    });
+    const home = world.settlements[0];
+
+    const measurePace = (activity: 'socialising' | 'resting', weather: 'clear' | 'storm') => {
+      world.weather = weather;
+      const c = world.spawnCreature(home, 'fox', 'forager');
+      c.x = home.center.x + 5;
+      c.z = home.center.z;
+      c.targetX = c.x + 24;
+      c.targetZ = c.z;
+      c.heading = Math.PI * 0.5;
+      c.steerHeading = Math.PI * 0.5;
+      c.activity = activity;
+      c.actionTimer = 30;
+      c.energy = 95;
+      c.hunger = 10;
+      for (let i = 0; i < 65; i++) {
+        c.activity = activity;
+        c.actionTimer = 30;
+        c.targetX = c.x + 18;
+        c.targetZ = c.z;
+        world.step(1 / 30);
+      }
+      const res = { speed: c.currentSpeed, gait: c.gait, effort: c.gaitEffort };
+      c.alive = false;
+      return res;
+    };
+
+    const stroll = measurePace('socialising', 'clear');
+    const walk = measurePace('resting', 'clear');
+    const run = measurePace('resting', 'storm');
+
+    expect(stroll.gait).toBe('stroll');
+    expect(walk.gait).toBe('walk');
+    expect(run.gait).toBe('run');
+    expect(stroll.speed).toBeLessThan(walk.speed);
+    expect(walk.speed).toBeLessThan(run.speed);
+  });
 });

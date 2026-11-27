@@ -126,6 +126,7 @@ export class HudManager {
       onPrevCreature: callbacks.onPrevCreature,
       onNextCreature: callbacks.onNextCreature,
       onRandomCreature: callbacks.onRandomCreature,
+      onFollowCreature: callbacks.onFollowCreature,
       onExitPov: callbacks.onExitCreaturePov,
     });
 

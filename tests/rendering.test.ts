@@ -5,6 +5,7 @@ import type { BiomeType, ConstructionStage, CreatureRole } from '@core/Types';
 import { createDivineBeamVisual, DIVINE_BEAM_HEIGHT } from '@rendering/AtmosphereSystem';
 import { AmbientCritterRenderer } from '@rendering/AmbientCritterRenderer';
 import { CreatureRenderer } from '@rendering/CreatureRenderer';
+import { CREATURE_LEG_LENGTH } from '@simulation/creatures/StrideKinematics';
 import { CameraController } from '@rendering/CameraController';
 import { DistanceFocusBlurPass } from '@rendering/DistanceFocusBlurPass';
 import { FloraRenderer } from '@rendering/FloraRenderer';
@@ -1768,6 +1769,226 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     expect(rigRoot).toBeDefined();
     const bodyGroup = rigRoot!.children[0];
     expect(Math.abs(bodyGroup.position.y)).toBeLessThan(0.02);
+    renderer.dispose();
+  });
+
+  it('equips non-snake creatures with sculpted grounded feet and animates distinct stroll/walk/run strides', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 551122,
+      initialSettlements: 1,
+      initialWaterwaySettlements: 0,
+      initialCreaturesPerSettlement: 0,
+    });
+    const home = world.settlements[0];
+    const fox = world.spawnCreature(home, 'fox', 'forager');
+    const rabbit = world.spawnCreature(home, 'rabbit', 'forager');
+    const frog = world.spawnCreature(home, 'frog', 'forager');
+    const crow = world.spawnCreature(home, 'crow', 'forager');
+    const snake = world.spawnCreature(home, 'snake', 'forager');
+
+    const scene = new THREE.Scene();
+    const renderer = new CreatureRenderer(scene, world);
+
+    const findRigFeet = (id: string) => {
+      const root = renderer.rootGroup.children.find(
+        (obj) => obj.userData?.selectionTarget?.id === id,
+      )!;
+      const bodyGroup = root.children[0];
+      // Foot pivots are named 'left_foot' and 'right_foot' children of bodyGroup
+      const feet = bodyGroup.children.filter(
+        (ch) => ch instanceof THREE.Group && (ch.name === 'left_foot' || ch.name === 'right_foot'),
+      );
+      return { root, bodyGroup, feet };
+    };
+
+    // All legged creatures (mammal, rabbit, webbed amphibian, bird) have two sculpted forward-projecting feet reaching ground
+    for (const c of [fox, rabbit, frog, crow]) {
+      const { feet } = findRigFeet(c.id);
+      expect(feet.length).toBe(2);
+      for (const fPivot of feet) {
+        const footMesh = fPivot.children[0] as THREE.Mesh;
+        expect(footMesh).toBeInstanceOf(THREE.Mesh);
+        footMesh.geometry.computeBoundingBox();
+        const box = footMesh.geometry.boundingBox!;
+        // Leg descends from hip down to ground (~-0.27) and foot projects distinctly forward along +Z
+        expect(box.min.y).toBeLessThan(-0.24);
+        expect(box.max.z).toBeGreaterThan(0.14);
+      }
+    }
+
+    // Snakes must NOT have feet
+    const snakeRig = findRigFeet(snake.id);
+    expect(snakeRig.feet.length).toBe(0);
+
+    // Compare stroll vs run animation on the fox: running yields larger leg stride & stronger forward torso lean
+    fox.activity = 'socialising';
+    fox.animPhase = Math.PI * 0.5;
+    fox.moveIntensity = 0.65;
+    fox.gaitEffort = 0.55;
+    for (let i = 0; i < 40; i++) renderer.update(1 / 60, null);
+    const foxStroll = findRigFeet(fox.id);
+    const strollLegSwing = Math.abs(foxStroll.feet[0].rotation.x);
+    const strollLean = foxStroll.bodyGroup.rotation.x;
+
+    fox.activity = 'fleeing';
+    fox.animPhase = Math.PI * 0.5;
+    fox.moveIntensity = 1.0;
+    fox.gaitEffort = 1.38;
+    for (let i = 0; i < 40; i++) renderer.update(1 / 60, null);
+    const foxRun = findRigFeet(fox.id);
+    const runLegSwing = Math.abs(foxRun.feet[0].rotation.x);
+    const runLean = foxRun.bodyGroup.rotation.x;
+
+    expect(runLegSwing).toBeGreaterThan(strollLegSwing * 1.6);
+    expect(runLean).toBeGreaterThan(strollLean + 0.08);
+    // Contralateral legs oppose each other (one forward, one back)
+    expect(foxRun.feet[0].rotation.x * foxRun.feet[1].rotation.x).toBeLessThan(0);
+
+    // At swing phase (phase = 0 -> cos(0) = +1), left foot lifts smoothly off the ground
+    fox.animPhase = 0;
+    for (let i = 0; i < 30; i++) renderer.update(1 / 60, null);
+    expect(foxRun.feet[0].position.y).toBeGreaterThan(0.31);
+
+    renderer.dispose();
+  });
+
+  it('locks planted feet 1:1 to ground displacement across stroll, walk, run, and hop with zero skating', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 882244,
+      initialSettlements: 1,
+      initialWaterwaySettlements: 0,
+      initialCreaturesPerSettlement: 0,
+    });
+    const home = world.settlements[0];
+    const fox = world.spawnCreature(home, 'fox', 'forager');
+    const rabbit = world.spawnCreature(home, 'rabbit', 'forager');
+    fox.heading = 0; // Facing +Z
+    fox.animPhase = Math.PI * 0.5; // Left foot heel-strike (u_L = 0)
+    rabbit.heading = 0;
+    rabbit.animPhase = Math.PI * 0.5; // Ground push-off start
+
+    const scene = new THREE.Scene();
+    const renderer = new CreatureRenderer(scene, world);
+
+    const findRig = (id: string) => {
+      const root = renderer.rootGroup.children.find(
+        (obj) => obj.userData?.selectionTarget?.id === id,
+      )!;
+      const bodyGroup = root.children[0];
+      const feet = bodyGroup.children.filter(
+        (ch) => ch instanceof THREE.Group && (ch.name === 'left_foot' || ch.name === 'right_foot'),
+      );
+      // Sort by X so feet[0] is left (-x) and feet[1] is right (+x)
+      feet.sort((a, b) => a.position.x - b.position.x);
+      return { root, bodyGroup, leftFoot: feet[0], rightFoot: feet[1] };
+    };
+
+    const foxRig = findRig(fox.id);
+    const rabbitRig = findRig(rabbit.id);
+    const soleLocal = new THREE.Vector3(0, -CREATURE_LEG_LENGTH, 0);
+    const worldPt = new THREE.Vector3();
+
+    // Test stroll, steady walk, and brisk run speeds on the fox
+    const cases = [
+      { name: 'stroll', speed: 2.1, effort: 0.52, intensity: 0.62 },
+      { name: 'walk', speed: 4.1, effort: 0.94, intensity: 1.0 },
+      { name: 'run', speed: 5.8, effort: 1.32, intensity: 1.0 },
+    ];
+
+    for (const tc of cases) {
+      fox.activity = tc.name === 'stroll' ? 'socialising' : tc.name === 'walk' ? 'foraging' : 'fleeing';
+      fox.gaitEffort = tc.effort;
+      fox.moveIntensity = tc.intensity;
+      fox.animPhase = 0;
+      fox.heading = 0;
+      fox.x = 0;
+      fox.y = 0;
+      fox.z = 0;
+      foxRig.root.position.set(0, 0, 0);
+      foxRig.root.rotation.y = 0;
+
+      // Warm up body posture & position interpolation at steady forward speed
+      const dt = 1 / 60;
+      for (let i = 0; i < 45; i++) {
+        fox.z += tc.speed * dt;
+        renderer.update(dt, null);
+      }
+
+      // Align rig to left heel-strike (u_L = 0) while preserving steady interpolation lag
+      fox.animPhase = Math.PI * 0.5;
+      foxRig.root.position.set(fox.x, fox.y, fox.z);
+      renderer.update(0, null);
+
+      scene.updateMatrixWorld(true);
+      const startRootZ = foxRig.root.position.z;
+      const startFootWorldZ = foxRig.leftFoot.localToWorld(worldPt.copy(soleLocal)).z;
+
+      // Advance across left-foot stance phase (stroll takes more frames than run for the same distance)
+      const stanceSteps = tc.name === 'stroll' ? 10 : tc.name === 'walk' ? 8 : 6;
+      let maxWorldSlipZ = 0;
+      let maxGroundErrY = 0;
+      let bodyMovedZ = 0;
+      for (let step = 0; step < stanceSteps; step++) {
+        fox.z += tc.speed * dt;
+        renderer.update(dt, null);
+        scene.updateMatrixWorld(true);
+        const footWorld = foxRig.leftFoot.localToWorld(worldPt.copy(soleLocal));
+        bodyMovedZ = foxRig.root.position.z - startRootZ;
+        maxWorldSlipZ = Math.max(maxWorldSlipZ, Math.abs(footWorld.z - startFootWorldZ));
+        maxGroundErrY = Math.max(maxGroundErrY, Math.abs(footWorld.y - foxRig.root.position.y));
+      }
+
+      // Body moved forward meaningfully, while the planted foot stayed locked to the ground (< 1.2cm slip)
+      expect(bodyMovedZ).toBeGreaterThan(0.12);
+      expect(maxWorldSlipZ).toBeLessThan(0.012);
+      expect(maxGroundErrY).toBeLessThan(0.045);
+    }
+
+    // Verify rabbit hind feet lock 1:1 to ground during push-off stance and lift cleanly during airborne hop
+    rabbit.activity = 'foraging';
+    rabbit.gaitEffort = 0.92;
+    rabbit.moveIntensity = 1.0;
+    rabbit.animPhase = 0;
+    rabbit.heading = 0;
+    rabbit.x = 4;
+    rabbit.y = 0;
+    rabbit.z = 0;
+    rabbitRig.root.position.set(4, 0, 0);
+    rabbitRig.root.rotation.y = 0;
+    const dt = 1 / 60;
+    for (let i = 0; i < 45; i++) {
+      rabbit.z += 4.0 * dt;
+      renderer.update(dt, null);
+    }
+    rabbit.animPhase = Math.PI * 0.5;
+    rabbitRig.root.position.set(rabbit.x, rabbit.y, rabbit.z);
+    renderer.update(0, null);
+    scene.updateMatrixWorld(true);
+    const startHopRootZ = rabbitRig.root.position.z;
+    const startHopFootZ = rabbitRig.leftFoot.localToWorld(worldPt.copy(soleLocal)).z;
+
+    let hopStanceSlip = 0;
+    for (let step = 0; step < 7; step++) {
+      rabbit.z += 4.0 * dt;
+      renderer.update(dt, null);
+      scene.updateMatrixWorld(true);
+      const footW = rabbitRig.leftFoot.localToWorld(worldPt.copy(soleLocal));
+      hopStanceSlip = Math.max(hopStanceSlip, Math.abs(footW.z - startHopFootZ));
+    }
+    expect(rabbitRig.root.position.z - startHopRootZ).toBeGreaterThan(0.15);
+    expect(hopStanceSlip).toBeLessThan(0.012);
+
+    // Continue into the airborne hop arc and verify the hind feet lift well off the ground
+    let peakAirFootY = 0;
+    for (let step = 0; step < 18; step++) {
+      rabbit.z += 4.0 * dt;
+      renderer.update(dt, null);
+      scene.updateMatrixWorld(true);
+      const footW = rabbitRig.leftFoot.localToWorld(worldPt.copy(soleLocal));
+      peakAirFootY = Math.max(peakAirFootY, footW.y - rabbitRig.root.position.y);
+    }
+    expect(peakAirFootY).toBeGreaterThan(0.12);
+
     renderer.dispose();
   });
 });

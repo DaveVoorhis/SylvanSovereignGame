@@ -10,6 +10,7 @@ import {
 } from '@simulation/terrain/ObstacleMap';
 import type { WorldState } from '@simulation/WorldState';
 import { resolveLifeStage, type Creature } from './Creature';
+import { computeStrideMetrics } from './StrideKinematics';
 
 export { HEARTH_FIRE_KEEP_OUT_RADIUS };
 
@@ -1807,37 +1808,61 @@ export class CreatureAI {
         world.terrain.getBridgeDeckY(creature.x, creature.z) === null &&
         world.terrain.getHeightAt(creature.x, creature.z) < world.terrain.waterLevel + 0.05;
 
-      const speedMult =
-        creature.activity === 'fleeing'
-          ? 1.28
-          : creature.activity === 'fighting'
-            ? 1.12
-            : creature.activity === 'trading'
-              ? 1.04
-              : isEmigrating
-                ? isFordingWater
-                  ? 0.78
-                  : 1.32
-                : isRegionalFestivalTraveler
-                  ? isFordingWater
-                    ? 0.8
-                    : 1.15
-                  : creature.isDancingAtCelebration
-                    ? 0.62
-                    : creature.activity === 'building' || creature.activity === 'gathering_timber'
-                      ? 0.94
-                      : creature.activity === 'foraging'
-                        ? 0.86
-                        : creature.activity === 'playing'
-                          ? 0.84
-                          : creature.activity === 'socialising' ||
-                              creature.activity === 'praying' ||
-                              creature.activity === 'courting' ||
-                              creature.activity === 'nesting'
-                            ? 0.78
-                            : creature.getTotalInventory() >= 5
-                              ? 0.92
-                              : 0.74;
+      // Choose natural pace (slow stroll, steady walk, or energetic run) based on activity, urgency & vitality
+      const creatureSeed = creature.id.charCodeAt(creature.id.length - 1) * 0.73;
+      const playfulBurst = Math.sin(world.elapsedSeconds * 0.6 + creatureSeed) > -0.15;
+      const isStormDash =
+        creature.activity === 'resting' && (world.weather === 'storm' || world.weather === 'rain');
+      const isHungryDash = creature.activity === 'foraging' && creature.hunger > 75 && dist > 4.5;
+
+      let speedMult: number;
+      if (creature.activity === 'fleeing') {
+        speedMult = 1.42;
+      } else if (creature.activity === 'fighting') {
+        speedMult = dist > 2.4 ? 1.32 : 0.95;
+      } else if (isEmigrating) {
+        speedMult = isFordingWater ? 0.76 : 1.32;
+      } else if (isRegionalFestivalTraveler) {
+        speedMult = isFordingWater ? 0.78 : 1.15;
+      } else if (isStormDash) {
+        speedMult = 1.24;
+      } else if (isHungryDash) {
+        speedMult = 1.22;
+      } else if (creature.activity === 'playing') {
+        speedMult = playfulBurst && dist > 2.2 ? 1.26 : 0.68;
+      } else if (creature.activity === 'trading') {
+        speedMult = dist > 22 && creature.energy > 65 ? 1.16 : 1.02;
+      } else if (creature.activity === 'building' || creature.activity === 'gathering_timber') {
+        speedMult = 0.94;
+      } else if (creature.activity === 'foraging') {
+        speedMult = dist < 5.0 ? 0.62 : 0.88;
+      } else if (creature.activity === 'resting') {
+        speedMult = 0.88;
+      } else if (creature.isDancingAtCelebration || creature.activity === 'celebrating') {
+        speedMult = 0.62;
+      } else if (
+        creature.activity === 'socialising' ||
+        creature.activity === 'praying' ||
+        creature.activity === 'courting' ||
+        creature.activity === 'nesting'
+      ) {
+        speedMult = 0.58;
+      } else if (creature.getTotalInventory() >= 5) {
+        speedMult = 0.92;
+      } else {
+        // Idle woodland strolling
+        speedMult = 0.54;
+      }
+
+      // Tired or elder creatures naturally ease down into a calmer stroll unless in danger or trekking
+      if (!isUrgentActivity && !isEmigrating) {
+        if (creature.energy < 24) {
+          speedMult = Math.min(speedMult, 0.6);
+        }
+        if (creature.lifeStage === 'elder') {
+          speedMult *= 0.84;
+        }
+      }
 
       const arriveT = Math.min(1, Math.max(0, (dist - stopDist) / 1.75));
       const arriveSmooth = arriveT * arriveT * (3 - 2 * arriveT);
@@ -2325,11 +2350,39 @@ export class CreatureAI {
 
       const movedX = creature.x - prevX;
       const movedZ = creature.z - prevZ;
-      const actualSpeed = dt > 1e-4 ? Math.hypot(movedX, movedZ) / dt : 0;
-      const gaitSpeed = Math.min(creature.def.baseSpeed * 1.3, actualSpeed);
-      creature.animPhase += dt * (gaitSpeed * 1.9);
-      const targetIntensity = Math.min(1, actualSpeed / Math.max(1.4, creature.def.baseSpeed * 0.78));
+      const movedDist = Math.hypot(movedX, movedZ);
+      const actualSpeed = dt > 1e-4 ? movedDist / dt : 0;
+      const speedRatio = actualSpeed / Math.max(0.8, creature.def.baseSpeed);
+      const targetEffort = Math.min(1.5, speedRatio);
+      creature.gaitEffort += (targetEffort - creature.gaitEffort) * (1 - Math.exp(-7.5 * dt));
+      const targetIntensity = Math.min(1, creature.gaitEffort / 0.85);
       creature.moveIntensity += (targetIntensity - creature.moveIntensity) * (1 - Math.exp(-8.5 * dt));
+      creature.gait =
+        creature.gaitEffort < 0.12
+          ? 'idle'
+          : creature.gaitEffort < 0.72
+            ? 'stroll'
+            : creature.gaitEffort < 1.12
+              ? 'walk'
+              : 'run';
+      const isAirborneBird = creature.def.aerial && creature.flightAltitude > 0.3;
+      if (isAirborneBird || creature.def.strictlyAquatic) {
+        const gaitSpeed = Math.min(creature.def.baseSpeed * 1.48, actualSpeed);
+        const strideScale = Math.max(0.62, Math.sqrt(creature.getSizeScale()));
+        creature.animPhase += dt * ((gaitSpeed * 1.95) / strideScale);
+      } else {
+        const fwdDist = Math.max(
+          0,
+          movedX * Math.sin(creature.heading) + movedZ * Math.cos(creature.heading),
+        );
+        const strideMetrics = computeStrideMetrics(
+          creature.def.locomotion,
+          creature.gaitEffort,
+          creature.getSizeScale(),
+        );
+        // Advance stride cycle in exact 1:1 lockstep with forward ground displacement
+        creature.animPhase += (fwdDist / strideMetrics.cycleLengthWorld) * Math.PI * 2;
+      }
 
       if (creature.def.aerial) {
         const targetAlt = dist > 5 ? 2.4 + Math.sin(creature.animPhase * 0.4) * 0.5 : 0.2;
@@ -2351,7 +2404,9 @@ export class CreatureAI {
           creature.navLoopCount = 0;
         } else {
           creature.navProgressTimer += dt;
-          if (creature.navProgressTimer >= 2.1) {
+          // Allow calmly strolling creatures more time to curve around hearth fires & cottages
+          const stallTimeout = 2.1 / Math.max(0.55, Math.min(1.0, speedMult));
+          if (creature.navProgressTimer >= stallTimeout) {
             creature.navBestGoalDist = postDist;
             creature.navProgressTimer = 0;
             creature.navLoopCount += 1;
@@ -2393,7 +2448,9 @@ export class CreatureAI {
     } else if (creature.def.aerial) {
       creature.currentSpeed *= Math.exp(-9 * dt);
       creature.headingVel *= Math.exp(-10 * dt);
+      creature.gaitEffort *= Math.exp(-6.5 * dt);
       creature.moveIntensity *= Math.exp(-6.5 * dt);
+      creature.gait = creature.gaitEffort < 0.12 ? 'idle' : 'stroll';
       creature.steerHeading = creature.heading;
       creature.flightAltitude += (0 - creature.flightAltitude) * (1 - Math.exp(-4.2 * dt));
       creature.navBestGoalDist = Infinity;
@@ -2401,7 +2458,9 @@ export class CreatureAI {
     } else {
       creature.currentSpeed *= Math.exp(-9 * dt);
       creature.headingVel *= Math.exp(-10 * dt);
+      creature.gaitEffort *= Math.exp(-6.5 * dt);
       creature.moveIntensity *= Math.exp(-6.5 * dt);
+      creature.gait = creature.gaitEffort < 0.12 ? 'idle' : 'stroll';
       creature.steerHeading = creature.heading;
       creature.navBestGoalDist = Infinity;
       creature.navProgressTimer = 0;

@@ -15,6 +15,7 @@ import type { SelectionTarget } from './Types';
 import type { CreaturePovPose } from '@rendering/CameraController';
 import { SceneManager } from '@rendering/SceneManager';
 import type { Creature } from '@simulation/creatures/Creature';
+import { computeStrideMetrics } from '@simulation/creatures/StrideKinematics';
 import { WorldState } from '@simulation/WorldState';
 import { HudManager } from '@ui/HudManager';
 import { nextPaintFrame, type SplashScreen } from '@ui/SplashScreen';
@@ -244,16 +245,31 @@ export class GameEngine {
       onFollowCreature: (creatureId) => {
         const c = this.world.getCreature(creatureId);
         if (!c) return;
-        if (this.povCreatureId) {
+        const wasInPov = this.povCreatureId !== null;
+        if (wasInPov) {
           this.exitCreaturePov(false);
         }
-        if (this.sceneManager.cameraController.isFollowing()) {
+        if (!wasInPov && this.sceneManager.cameraController.isFollowing()) {
           this.sceneManager.cameraController.follow(null);
         } else {
-          this.sceneManager.cameraController.follow(() => {
+          this.selection = { kind: 'creature', id: creatureId };
+          this.sceneManager.setSelection(this.selection);
+          const followProvider = () => {
             const live = this.world.getCreature(creatureId);
             return live && live.alive ? { x: live.x, y: live.y, z: live.z } : null;
-          });
+          };
+          if (wasInPov) {
+            // Pull cleanly back behind & above the creature into third-person Follow mode
+            const yaw = c.heading;
+            const camX = c.x - Math.sin(yaw) * 7.5;
+            const camZ = c.z - Math.cos(yaw) * 7.5;
+            const terrainAtCam = this.world.terrain.getHeightAt(camX, camZ);
+            const waterLevel = this.world.getEffectiveWaterLevel();
+            const camY = Math.max(c.y + 3.6, terrainAtCam + 2.0, waterLevel + 1.8);
+            this.sceneManager.cameraController.follow(followProvider, { x: camX, y: camY, z: camZ });
+          } else {
+            this.sceneManager.cameraController.follow(followProvider);
+          }
         }
         this.refreshHudNow();
       },
@@ -513,22 +529,42 @@ export class GameEngine {
 
     const waterLevel = this.world.getEffectiveWaterLevel();
     const move = c.activity === 'resting' ? 0 : c.moveIntensity;
+    const pace = Math.max(0, Math.min(1, (c.gaitEffort - 0.32) / 0.96));
     const phase = this.povBobPhase;
+    // Double-frequency smooth cosine step arc (two gentle footfalls per left+right stride cycle)
     const smoothStep = 0.5 - 0.5 * Math.cos(phase * 2);
+    const lateralShift = Math.sin(phase);
+    const isSwimmingInWater =
+      Boolean(c.def.aquatic) &&
+      this.world.terrain.getHeightAt(c.x, c.z) < waterLevel - 0.02;
 
     let bobOffset = 0;
+    let swayOffset = 0;
     if (c.activity !== 'resting') {
-      if (c.def.locomotion === 'hop') {
-        bobOffset = smoothStep * 0.065 * move;
-      } else if (c.def.locomotion === 'fly') {
-        const flyAmp = c.flightAltitude > 0.3 ? 1.0 : move;
-        bobOffset = Math.sin(phase * 1.1) * 0.032 * flyAmp;
-      } else if (c.def.locomotion === 'swim') {
+      if (c.def.strictlyAquatic || isSwimmingInWater) {
         bobOffset = Math.sin(phase * 1.0) * 0.012 * (0.35 + 0.65 * move);
+        swayOffset = lateralShift * 0.006 * move;
+      } else if (c.def.locomotion === 'hop') {
+        // Gentle hop rise scaled naturally from calm stroll hops to brisk bounding runs
+        const smoothHop = 0.5 - 0.5 * Math.cos(phase);
+        bobOffset = smoothHop * (0.042 + pace * 0.056) * move;
+        swayOffset = lateralShift * 0.005 * move;
+      } else if (c.def.locomotion === 'fly') {
+        if (c.flightAltitude > 0.3) {
+          bobOffset = Math.sin(phase * 1.0) * 0.03;
+          swayOffset = Math.sin(phase * 0.5) * 0.008;
+        } else {
+          // Avian ground walking: crisp subtle step bob synced to feet
+          bobOffset = smoothStep * (0.016 + pace * 0.026) * move;
+          swayOffset = lateralShift * (0.006 + pace * 0.008) * move;
+        }
       } else if (c.def.locomotion === 'slither') {
-        bobOffset = Math.sin(phase * 1.1) * 0.01 * move;
+        bobOffset = Math.sin(phase * 1.0) * 0.008 * move;
+        swayOffset = lateralShift * (0.008 + pace * 0.009) * move;
       } else {
-        bobOffset = smoothStep * 0.022 * move;
+        // Walking / strolling / running head-bob: gentle vertical step arc + subtle left-right weight shift
+        bobOffset = smoothStep * (0.016 + pace * 0.036) * move;
+        swayOffset = lateralShift * (0.008 + pace * 0.014) * move;
       }
     } else {
       bobOffset = c.def.strictlyAquatic ? -0.02 : -0.12;
@@ -556,6 +592,7 @@ export class GameEngine {
       heading: c.heading,
       eyeHeight,
       bobOffset,
+      swayOffset,
       alive: c.alive,
     };
   }
@@ -592,17 +629,27 @@ export class GameEngine {
             this.exitCreaturePov();
           }
         } else if (this.simSpeed > 0) {
-          // Advance POV head-bob in calm real-time cadence (capped even at 2x-4x sim speed)
-          const cadenceScale = 1 + Math.min(0.65, (Math.sqrt(Math.max(1, this.simSpeed)) - 1) * 0.55);
-          const activeMotion =
-            host.activity === 'resting'
-              ? 0
-              : host.def.locomotion === 'fly' && host.flightAltitude > 0.3
-                ? 0.85
-                : host.def.strictlyAquatic
-                  ? 0.4 + 0.6 * host.moveIntensity
-                  : host.moveIntensity;
-          this.povBobPhase += realDt * 3.1 * cadenceScale * activeMotion;
+          // Advance POV step phase in sync with the host creature's physical stride cycle
+          // (gently capped at high sim speeds for comfortable first-person viewing)
+          const simScale = 1 + Math.min(0.45, (Math.sqrt(Math.max(1, this.simSpeed)) - 1) * 0.35);
+          const isAirborne = host.def.locomotion === 'fly' && host.flightAltitude > 0.3;
+          let omega = 0;
+          if (host.activity !== 'resting') {
+            if (isAirborne) {
+              omega = 3.6;
+            } else if (host.def.strictlyAquatic) {
+              omega = (1.8 + host.moveIntensity * 2.2);
+            } else {
+              const metrics = computeStrideMetrics(
+                host.def.locomotion,
+                host.gaitEffort,
+                host.getSizeScale(),
+              );
+              const rawStrideOmega = (host.currentSpeed / metrics.cycleLengthWorld) * Math.PI * 2;
+              omega = Math.min(18, rawStrideOmega);
+            }
+          }
+          this.povBobPhase += realDt * omega * simScale;
         }
       }
 
