@@ -6,14 +6,38 @@ export class DeityPanel {
   private readonly bodyEl: HTMLElement;
   private readonly feedbackEl: HTMLElement;
   private readonly whisperButtons: HTMLButtonElement[] = [];
+  private open = true;
 
-  constructor(private readonly onWhisper: (intent: PrayerIntent) => string) {
+  constructor(
+    private readonly onWhisper: (intent: PrayerIntent) => string,
+    private readonly onClose: () => void,
+  ) {
     this.element = document.createElement('aside');
     this.element.className = 'hud-deity glass-panel';
 
     const title = document.createElement('div');
     title.className = 'panel-header';
-    title.innerHTML = `<span>✦ Procedural Deity</span><span class="badge-auto">Autonomous</span>`;
+
+    const titleLabel = document.createElement('span');
+    titleLabel.textContent = '✦ Deity';
+
+    const headerActions = document.createElement('div');
+    headerActions.className = 'panel-header-actions';
+
+    const autoBadge = document.createElement('span');
+    autoBadge.className = 'badge-auto';
+    autoBadge.textContent = 'Autonomous';
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'close-btn';
+    closeBtn.textContent = '✕';
+    closeBtn.title = 'Close Deity panel';
+    closeBtn.setAttribute('aria-label', 'Close Deity panel');
+    closeBtn.addEventListener('click', () => this.onClose());
+
+    headerActions.append(autoBadge, closeBtn);
+    title.append(titleLabel, headerActions);
 
     this.bodyEl = document.createElement('div');
     this.bodyEl.className = 'deity-body';
@@ -36,6 +60,7 @@ export class DeityPanel {
 
     for (const [intent, label] of intents) {
       const btn = document.createElement('button');
+      btn.type = 'button';
       btn.className = 'hud-btn small';
       btn.textContent = label;
       btn.addEventListener('click', () => {
@@ -53,7 +78,17 @@ export class DeityPanel {
     this.element.append(title, this.bodyEl, whisperSection);
   }
 
+  isOpen(): boolean {
+    return this.open;
+  }
+
+  setOpen(open: boolean): void {
+    this.open = open;
+    this.element.classList.toggle('hidden', !open);
+  }
+
   update(world: WorldState): void {
+    if (!this.open) return;
     const d = world.deity;
     const favored = d.favoredSettlementId ? world.getSettlement(d.favoredSettlementId)?.name : 'None yet';
 

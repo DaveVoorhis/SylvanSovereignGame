@@ -8,6 +8,8 @@ export interface TopBarCallbacks {
   onToggleCinematic: () => boolean;
   onToggleCreatureView: () => void;
   onToggleCreatureDirectory: () => void;
+  onToggleDeityPanel: () => void;
+  onToggleChroniclePanel: () => void;
   onToggleZenMode: () => void;
   onResetOverview: () => void;
   onNewWorld: () => void;
@@ -90,6 +92,8 @@ export class TopBar {
   private readonly speedButtons: HTMLButtonElement[] = [];
   private readonly cinematicBtn: HTMLButtonElement;
   private readonly povToggleBtn: HTMLButtonElement;
+  private readonly deityBtn: HTMLButtonElement;
+  private readonly chronicleBtn: HTMLButtonElement;
   private readonly zenBtn: HTMLButtonElement;
   private readonly qualitySelect: HTMLSelectElement;
 
@@ -321,7 +325,27 @@ export class TopBar {
       this.eventCycleIndex = (this.eventCycleIndex + 1) % this.activeEventSettlementIds.length;
       this.callbacks.onFocusSettlement(targetId);
     });
-    eventSlot.appendChild(this.eventBadgeEl);
+    const panelGroup = document.createElement('div');
+    panelGroup.className = 'panel-toggle-group';
+
+    this.deityBtn = document.createElement('button');
+    this.deityBtn.type = 'button';
+    this.deityBtn.className = 'hud-btn panel-toggle-btn active';
+    this.deityBtn.textContent = '✦ Deity';
+    this.deityBtn.title = 'Hide Deity panel';
+    this.deityBtn.setAttribute('aria-pressed', 'true');
+    this.deityBtn.addEventListener('click', () => this.callbacks.onToggleDeityPanel());
+
+    this.chronicleBtn = document.createElement('button');
+    this.chronicleBtn.type = 'button';
+    this.chronicleBtn.className = 'hud-btn panel-toggle-btn active';
+    this.chronicleBtn.textContent = '📜 Chronicle';
+    this.chronicleBtn.title = 'Hide Living Chronicle';
+    this.chronicleBtn.setAttribute('aria-pressed', 'true');
+    this.chronicleBtn.addEventListener('click', () => this.callbacks.onToggleChroniclePanel());
+
+    panelGroup.append(this.deityBtn, this.chronicleBtn);
+    eventSlot.append(this.eventBadgeEl, panelGroup);
 
     subRow.append(this.settlementsBar, eventSlot);
     this.element.append(mainRow, subRow);
@@ -339,6 +363,18 @@ export class TopBar {
 
   setDirectoryOpen(open: boolean): void {
     this.kinBtn.classList.toggle('active', open);
+  }
+
+  setDeityOpen(open: boolean): void {
+    this.deityBtn.classList.toggle('active', open);
+    this.deityBtn.setAttribute('aria-pressed', String(open));
+    this.deityBtn.title = open ? 'Hide Deity panel' : 'Open Deity panel';
+  }
+
+  setChronicleOpen(open: boolean): void {
+    this.chronicleBtn.classList.toggle('active', open);
+    this.chronicleBtn.setAttribute('aria-pressed', String(open));
+    this.chronicleBtn.title = open ? 'Hide Living Chronicle' : 'Open Living Chronicle';
   }
 
   update(world: WorldState, inCreaturePov: boolean): void {

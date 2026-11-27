@@ -110,10 +110,12 @@ body,
 }
 
 .topbar-main {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  column-gap: 10px;
+  row-gap: 6px;
 }
 
 .topbar-left {
@@ -212,6 +214,8 @@ body,
   display: flex;
   align-items: center;
   justify-content: center;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
   gap: 5px;
   min-width: 0;
 }
@@ -299,6 +303,8 @@ body,
 .topbar-controls {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
   flex-shrink: 0;
 }
@@ -447,7 +453,25 @@ body,
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 8px;
   flex-shrink: 0;
+}
+
+.panel-toggle-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.hud-btn.panel-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .celebration-pill {
@@ -568,11 +592,18 @@ body,
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   font-size: 13px;
   font-weight: 700;
   color: var(--accent-gold);
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   padding-bottom: 6px;
+}
+
+.panel-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .badge-auto {
@@ -1282,18 +1313,10 @@ body,
 }
 
 @media (max-width: 1120px) {
-  .topbar-main {
-    grid-template-columns: auto 1fr;
-    row-gap: 6px;
-  }
-  .topbar-controls {
-    justify-content: flex-end;
-    flex-wrap: wrap;
-  }
   .topbar-telemetry {
-    grid-column: 1 / -1;
+    order: 3;
+    flex-basis: 100%;
     justify-content: flex-start;
-    flex-wrap: wrap;
   }
 }
 

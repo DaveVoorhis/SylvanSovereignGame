@@ -58,6 +58,8 @@ export class HudManager {
       onToggleCinematic: callbacks.onToggleCinematic,
       onToggleCreatureView: callbacks.onToggleCreatureView,
       onToggleCreatureDirectory: () => this.toggleCreatureDirectory(),
+      onToggleDeityPanel: () => this.toggleDeityPanel(),
+      onToggleChroniclePanel: () => this.toggleChroniclePanel(),
       onToggleZenMode: callbacks.onToggleZenMode,
       onResetOverview: callbacks.onResetOverview,
       onNewWorld: callbacks.onNewWorld,
@@ -65,8 +67,13 @@ export class HudManager {
       onFocusSettlement: callbacks.onFocusSettlement,
     });
 
-    this.deityPanel = new DeityPanel(callbacks.onWhisper);
-    this.chroniclePanel = new ChroniclePanel(callbacks.onFocusPosition);
+    this.deityPanel = new DeityPanel(callbacks.onWhisper, () => this.setDeityPanelOpen(false));
+    this.chroniclePanel = new ChroniclePanel(callbacks.onFocusPosition, () =>
+      this.setChroniclePanelOpen(false),
+    );
+    this.topBar.setDeityOpen(this.deityPanel.isOpen());
+    this.topBar.setChronicleOpen(this.chroniclePanel.isOpen());
+
     this.inspectorPanel = new InspectorPanel({
       onClose: callbacks.onClearSelection,
       onFollowCreature: callbacks.onFollowCreature,
@@ -123,6 +130,30 @@ export class HudManager {
       this.topBarResizeObserver.observe(this.topBar.element);
       syncOffset();
     }
+  }
+
+  setDeityPanelOpen(open: boolean): void {
+    this.deityPanel.setOpen(open);
+    this.topBar.setDeityOpen(open);
+    if (open && this.lastWorld) {
+      this.deityPanel.update(this.lastWorld);
+    }
+  }
+
+  toggleDeityPanel(): void {
+    this.setDeityPanelOpen(!this.deityPanel.isOpen());
+  }
+
+  setChroniclePanelOpen(open: boolean): void {
+    this.chroniclePanel.setOpen(open);
+    this.topBar.setChronicleOpen(open);
+    if (open && this.lastWorld) {
+      this.chroniclePanel.update(this.lastWorld.chronicle.entries, true);
+    }
+  }
+
+  toggleChroniclePanel(): void {
+    this.setChroniclePanelOpen(!this.chroniclePanel.isOpen());
   }
 
   isCreatureDirectoryOpen(): boolean {

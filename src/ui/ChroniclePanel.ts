@@ -4,14 +4,38 @@ export class ChroniclePanel {
   readonly element: HTMLElement;
   private readonly listEl: HTMLElement;
   private lastHeadId = -1;
+  private open = true;
 
-  constructor(private readonly onFocusPosition: (pos: Vec2) => void) {
+  constructor(
+    private readonly onFocusPosition: (pos: Vec2) => void,
+    private readonly onClose: () => void,
+  ) {
     this.element = document.createElement('section');
     this.element.className = 'hud-chronicle glass-panel';
 
     const header = document.createElement('div');
     header.className = 'panel-header';
-    header.innerHTML = `<span>📜 Living Chronicle</span><span class="hint">Click event to fly</span>`;
+
+    const titleLabel = document.createElement('span');
+    titleLabel.textContent = '📜 Living Chronicle';
+
+    const headerActions = document.createElement('div');
+    headerActions.className = 'panel-header-actions';
+
+    const hintEl = document.createElement('span');
+    hintEl.className = 'hint';
+    hintEl.textContent = 'Click event to fly';
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'close-btn';
+    closeBtn.textContent = '✕';
+    closeBtn.title = 'Close Living Chronicle';
+    closeBtn.setAttribute('aria-label', 'Close Living Chronicle');
+    closeBtn.addEventListener('click', () => this.onClose());
+
+    headerActions.append(hintEl, closeBtn);
+    header.append(titleLabel, headerActions);
 
     this.listEl = document.createElement('div');
     this.listEl.className = 'chronicle-list';
@@ -19,9 +43,19 @@ export class ChroniclePanel {
     this.element.append(header, this.listEl);
   }
 
-  update(entries: readonly ChronicleEntry[]): void {
+  isOpen(): boolean {
+    return this.open;
+  }
+
+  setOpen(open: boolean): void {
+    this.open = open;
+    this.element.classList.toggle('hidden', !open);
+  }
+
+  update(entries: readonly ChronicleEntry[], force = false): void {
+    if (!this.open) return;
     const headId = entries[0]?.id ?? -1;
-    if (headId === this.lastHeadId) return;
+    if (!force && headId === this.lastHeadId) return;
     this.lastHeadId = headId;
 
     this.listEl.innerHTML = '';
