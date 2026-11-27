@@ -1689,4 +1689,287 @@ describe('RealmOverviewLogic', () => {
       }
     }
   });
+
+  it('renders a compact Villages dropdown in TopBar preserving all village pill info, selection toggle, and war/celebration alerts', () => {
+    type FakeNode = {
+      tagName: string;
+      type: string;
+      className: string;
+      textContent: string;
+      title: string;
+      value: string;
+      selected: boolean;
+      disabled: boolean;
+      dataset: Record<string, string>;
+      style: Record<string, string>;
+      attrs: Map<string, string>;
+      children: FakeNode[];
+      focused: boolean;
+      removed: boolean;
+      classList: {
+        classes: Set<string>;
+        add: (...c: string[]) => void;
+        remove: (...c: string[]) => void;
+        toggle: (c: string, force?: boolean) => boolean;
+        contains: (c: string) => boolean;
+      };
+      append: (...nodes: FakeNode[]) => void;
+      appendChild: (node: FakeNode) => FakeNode;
+      contains: (target: unknown) => boolean;
+      remove: () => void;
+      focus: () => void;
+      setAttribute: (name: string, value: string) => void;
+      addEventListener: (event: string, fn: (ev?: unknown) => void) => void;
+      removeEventListener: (event: string, fn: (ev?: unknown) => void) => void;
+      click: () => void;
+      dispatch: (event: string, ev?: unknown) => void;
+    };
+
+    const makeNode = (tagName: string): FakeNode => {
+      const classes = new Set<string>();
+      const attrs = new Map<string, string>();
+      const listeners = new Map<string, Set<(ev?: unknown) => void>>();
+      let classNameVal = '';
+      const node: FakeNode = {
+        tagName,
+        type: '',
+        get className() {
+          return classNameVal;
+        },
+        set className(val: string) {
+          classNameVal = val;
+          classes.clear();
+          for (const token of val.split(/\s+/).filter(Boolean)) {
+            classes.add(token);
+          }
+        },
+        textContent: '',
+        title: '',
+        value: '',
+        selected: false,
+        disabled: false,
+        dataset: {},
+        style: {},
+        attrs,
+        children: [],
+        focused: false,
+        removed: false,
+        classList: {
+          classes,
+          add: (...c: string[]) => c.forEach((t) => classes.add(t)),
+          remove: (...c: string[]) => c.forEach((t) => classes.delete(t)),
+          toggle: (c: string, force?: boolean) => {
+            const next = force !== undefined ? force : !classes.has(c);
+            if (next) classes.add(c);
+            else classes.delete(c);
+            return next;
+          },
+          contains: (c: string) => classes.has(c),
+        },
+        append: (...nodes: FakeNode[]) => {
+          node.children.push(...nodes);
+        },
+        appendChild: (child: FakeNode) => {
+          node.children.push(child);
+          return child;
+        },
+        contains: (target: unknown): boolean => {
+          if (target === node) return true;
+          return node.children.some((c) => c.contains(target));
+        },
+        remove: () => {
+          node.removed = true;
+        },
+        focus: () => {
+          node.focused = true;
+        },
+        setAttribute: (name: string, value: string) => {
+          attrs.set(name, value);
+        },
+        addEventListener: (event: string, fn: (ev?: unknown) => void) => {
+          let set = listeners.get(event);
+          if (!set) {
+            set = new Set();
+            listeners.set(event, set);
+          }
+          set.add(fn);
+        },
+        removeEventListener: (event: string, fn: (ev?: unknown) => void) => {
+          listeners.get(event)?.delete(fn);
+        },
+        click: () => {
+          for (const fn of [...(listeners.get('click') ?? [])]) fn();
+        },
+        dispatch: (event: string, ev: unknown = {}) => {
+          for (const fn of [...(listeners.get(event) ?? [])]) fn(ev);
+        },
+      };
+      return node;
+    };
+
+    const docListeners = new Map<string, Set<(ev?: unknown) => void>>();
+    const prevDocument = (globalThis as { document?: unknown }).document;
+    (globalThis as { document?: unknown }).document = {
+      createElement: (tag: string) => makeNode(tag),
+      activeElement: null,
+      addEventListener: (type: string, fn: (ev?: unknown) => void) => {
+        let set = docListeners.get(type);
+        if (!set) {
+          set = new Set();
+          docListeners.set(type, set);
+        }
+        set.add(fn);
+      },
+      removeEventListener: (type: string, fn: (ev?: unknown) => void) => {
+        docListeners.get(type)?.delete(fn);
+      },
+    };
+
+    try {
+      const world = new WorldState(new EventBus(), {
+        seed: 90421,
+        initialSettlements: 3,
+        initialWaterwaySettlements: 0,
+        initialCreaturesPerSettlement: 5,
+      });
+      const [sA, sB, sC] = world.settlements;
+      // Start a border war between sA and sB so war state + badges are exercised
+      world.diplomacy.adjustRelation(sA, sB, -100, world, 'border dispute');
+
+      let focusedId: string | null = null;
+      let closeInspectorCalls = 0;
+      const topBar = new TopBar({
+        onSetSpeed: () => {},
+        onToggleCinematic: () => false,
+        onToggleCreatureView: () => {},
+        isCreatureDirectoryOpen: () => false,
+        onSetCreatureDirectoryOpen: () => {},
+        isRealmOverviewTabOpen: () => false,
+        onOpenRealmOverviewTab: () => {},
+        onCloseRealmOverview: () => {},
+        isDeityPanelOpen: () => false,
+        onSetDeityPanelOpen: () => {},
+        isChroniclePanelOpen: () => false,
+        onSetChroniclePanelOpen: () => {},
+        isSaveModalOpen: () => false,
+        onSetSaveModalOpen: () => {},
+        onToggleFullscreen: () => {},
+        onToggleZenMode: () => {},
+        onToggleMute: () => false,
+        onResetOverview: () => {},
+        onNewWorld: () => {},
+        onChangeQuality: () => {},
+        onFocusSettlement: (id) => {
+          focusedId = id;
+        },
+        onFocusPosition: () => {},
+        onCloseInspector: () => {
+          closeInspectorCalls++;
+          focusedId = null;
+        },
+      });
+
+      topBar.update(world, false, null);
+
+      const root = topBar.element as unknown as FakeNode;
+      const subRow = root.children[1];
+      const dropdown = subRow.children[0];
+      const triggerBtn = dropdown.children[0];
+      const menuEl = dropdown.children[1];
+      const menuHeader = menuEl.children[0];
+      const listEl = menuEl.children[1];
+
+      // Starts closed, trigger shows compact Villages label + count + war alert badge
+      expect(topBar.isVillageMenuOpen()).toBe(false);
+      expect(menuEl.classList.contains('hidden')).toBe(true);
+      expect(triggerBtn.attrs.get('aria-expanded')).toBe('false');
+      expect(triggerBtn.children[2].textContent).toBe('Villages');
+      expect(triggerBtn.children[4].textContent).toBe(String(world.settlements.length));
+      expect(triggerBtn.children[5].classList.contains('is-hidden')).toBe(false);
+      expect(triggerBtn.children[5].textContent).toContain('⚔️');
+      expect(menuHeader.children[1].textContent).toContain('kin');
+      expect(menuHeader.children[1].textContent).toContain('at war');
+
+      // Every village option carries banner color dot, icon, name, status, adaptation label, pop, and tooltip
+      expect(listEl.children.length).toBe(world.settlements.length);
+      const optA = listEl.children[0];
+      const optC = listEl.children[2];
+      const hexA = `#${sA.bannerColor.toString(16).padStart(6, '0')}`;
+      expect(optA.children[0].style.background).toBe(hexA);
+      expect(optA.children[1].textContent).toBe('⚔️');
+      expect(optA.children[2].textContent).toBe(sA.name);
+      expect(optA.children[3].textContent).toBe('At War');
+      expect(optA.children[4].children[0].textContent).toBe(sA.getAdaptationProfile().shortLabel);
+      expect(Number(optA.children[4].children[2].textContent)).toBeGreaterThan(0);
+      expect(optA.classList.contains('at-war')).toBe(true);
+      expect(optA.title).toContain('At War with');
+
+      expect(optC.children[1].textContent).toBe(sC.getAdaptationProfile().icon);
+      expect(optC.children[2].textContent).toBe(sC.name);
+      expect(optC.children[4].children[0].textContent).toBe(sC.getAdaptationProfile().shortLabel);
+      expect(optC.title).toContain(sC.getAdaptationProfile().title);
+
+      // Opening dropdown sets ARIA expanded and lifts topbar z-index class
+      triggerBtn.click();
+      expect(topBar.isVillageMenuOpen()).toBe(true);
+      expect(menuEl.classList.contains('hidden')).toBe(false);
+      expect(triggerBtn.attrs.get('aria-expanded')).toBe('true');
+      expect(root.classList.contains('village-menu-open')).toBe(true);
+
+      // Clicking a village focuses it and closes the dropdown
+      optC.click();
+      expect(focusedId).toBe(sC.id);
+      expect(topBar.isVillageMenuOpen()).toBe(false);
+      expect(menuEl.classList.contains('hidden')).toBe(true);
+
+      // Updating with active settlement selection reflects that village on the trigger button
+      topBar.update(world, false, { kind: 'settlement', id: sC.id });
+      expect(triggerBtn.classList.contains('has-selection')).toBe(true);
+      expect(triggerBtn.children[0].classList.contains('is-hidden')).toBe(false);
+      expect(triggerBtn.children[2].textContent).toBe(sC.name);
+      expect(triggerBtn.children[3].classList.contains('is-hidden')).toBe(false);
+      expect(triggerBtn.children[3].children[0].textContent).toBe(
+        sC.getAdaptationProfile().shortLabel,
+      );
+      expect(optC.classList.contains('active')).toBe(true);
+      expect(optC.attrs.get('aria-selected')).toBe('true');
+      expect(optC.title).toContain('Click to close inspector');
+
+      // Re-opening and clicking the already-selected village closes the inspector
+      triggerBtn.click();
+      expect(topBar.isVillageMenuOpen()).toBe(true);
+      optC.click();
+      expect(closeInspectorCalls).toBe(1);
+      expect(focusedId).toBeNull();
+      expect(topBar.isVillageMenuOpen()).toBe(false);
+
+      // Outside pointerdown closes an open dropdown
+      triggerBtn.click();
+      expect(topBar.isVillageMenuOpen()).toBe(true);
+      for (const fn of [...(docListeners.get('pointerdown') ?? [])]) {
+        fn({ target: makeNode('canvas') });
+      }
+      expect(topBar.isVillageMenuOpen()).toBe(false);
+
+      // Escape key closes an open dropdown and focuses trigger
+      triggerBtn.click();
+      expect(topBar.isVillageMenuOpen()).toBe(true);
+      dropdown.dispatch('keydown', {
+        key: 'Escape',
+        preventDefault: () => {},
+        stopPropagation: () => {},
+      });
+      expect(topBar.isVillageMenuOpen()).toBe(false);
+      expect(triggerBtn.focused).toBe(true);
+
+      topBar.dispose();
+      expect(docListeners.get('pointerdown')?.size ?? 0).toBe(0);
+    } finally {
+      if (prevDocument === undefined) {
+        delete (globalThis as { document?: unknown }).document;
+      } else {
+        (globalThis as { document?: unknown }).document = prevDocument;
+      }
+    }
+  });
 });

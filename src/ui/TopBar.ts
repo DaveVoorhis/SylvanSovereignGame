@@ -40,11 +40,12 @@ interface TelemetrySlotNodes {
   lastEmpty: boolean | null;
 }
 
-interface SettlementPillNodes {
+interface SettlementOptionNodes {
   readonly button: HTMLButtonElement;
   readonly dotEl: HTMLElement;
   readonly iconEl: HTMLElement;
   readonly nameEl: HTMLElement;
+  readonly statusEl: HTMLElement;
   readonly metaLabelEl: HTMLElement;
   readonly popEl: HTMLElement;
   readonly pillHandle: DialogPillHandle;
@@ -53,6 +54,8 @@ interface SettlementPillNodes {
   lastWar: boolean;
   lastCel: boolean;
   lastScope: string | null;
+  lastStatusClass: string;
+  lastSelected: boolean | null;
 }
 
 const SEASON_ICONS: Record<Season, string> = {
@@ -110,9 +113,33 @@ export class TopBar {
   private readonly savePill: DialogPillHandle;
   private readonly eventPill: DialogPillHandle;
 
-  // Band 2: reconciled settlement pills + dedicated right-anchored event slot
-  private readonly settlementsBar: HTMLElement;
-  private readonly settlementPills = new Map<string, SettlementPillNodes>();
+  // Band 2: compact Villages dropdown + dedicated right-anchored event & panel slot
+  private readonly villageDropdownEl: HTMLElement;
+  private readonly villageTriggerBtn: HTMLButtonElement;
+  private readonly villageTriggerDotEl: HTMLElement;
+  private readonly villageTriggerIconEl: HTMLElement;
+  private readonly villageTriggerLabelEl: HTMLElement;
+  private readonly villageTriggerMetaEl: HTMLElement;
+  private readonly villageTriggerAdaptEl: HTMLElement;
+  private readonly villageTriggerPopEl: HTMLElement;
+  private readonly villageTriggerCountEl: HTMLElement;
+  private readonly villageTriggerWarBadgeEl: HTMLElement;
+  private readonly villageTriggerCelBadgeEl: HTMLElement;
+  private readonly villageMenuEl: HTMLElement;
+  private readonly villageMenuCountEl: HTMLElement;
+  private readonly villageMenuSummaryEl: HTMLElement;
+  private readonly villageListEl: HTMLElement;
+  private readonly settlementOptions = new Map<string, SettlementOptionNodes>();
+  private villageMenuOpen = false;
+  private lastTriggerHasSelection = false;
+  private lastTriggerBannerHex = '';
+  private lastTriggerWar = false;
+  private lastTriggerCel = false;
+  private lastTriggerScope: string | null = null;
+  private lastTriggerWarBadgeVisible = false;
+  private lastTriggerCelBadgeVisible = false;
+  private readonly onDocumentPointerDownBound: (ev: Event) => void;
+
   private readonly deityEventBadgeEl: HTMLButtonElement;
   private readonly deityEventIconEl: HTMLElement;
   private readonly deityEventTextEl: HTMLElement;
@@ -391,12 +418,118 @@ export class TopBar {
 
     mainRow.append(leftZone, telemetry, controls);
 
-    // === BAND 2: Reconciled Settlement Strip + Right-Anchored Celebration Slot ===
+    // === BAND 2: Compact Village Dropdown + Right-Anchored Event & Panel Slot ===
     const subRow = document.createElement('div');
     subRow.className = 'topbar-subrow';
 
-    this.settlementsBar = document.createElement('div');
-    this.settlementsBar.className = 'settlement-pills';
+    this.villageDropdownEl = document.createElement('div');
+    this.villageDropdownEl.className = 'village-dropdown';
+
+    this.villageTriggerBtn = document.createElement('button');
+    this.villageTriggerBtn.type = 'button';
+    this.villageTriggerBtn.className = 'village-dropdown-trigger';
+    this.villageTriggerBtn.setAttribute('aria-haspopup', 'listbox');
+    this.villageTriggerBtn.setAttribute('aria-expanded', 'false');
+    this.villageTriggerBtn.setAttribute('aria-controls', 'village-dropdown-list');
+    this.villageTriggerBtn.title = 'Browse and jump to villages';
+
+    this.villageTriggerDotEl = document.createElement('span');
+    this.villageTriggerDotEl.className = 'dot is-hidden';
+
+    this.villageTriggerIconEl = document.createElement('span');
+    this.villageTriggerIconEl.className = 'adapt-icon';
+    this.villageTriggerIconEl.textContent = '🏘️';
+
+    this.villageTriggerLabelEl = document.createElement('span');
+    this.villageTriggerLabelEl.className = 'village-trigger-label';
+    this.villageTriggerLabelEl.textContent = 'Villages';
+
+    this.villageTriggerMetaEl = document.createElement('small');
+    this.villageTriggerMetaEl.className = 'village-trigger-meta is-hidden';
+    this.villageTriggerAdaptEl = document.createElement('span');
+    const triggerSepEl = document.createElement('span');
+    triggerSepEl.textContent = ' · ';
+    this.villageTriggerPopEl = document.createElement('span');
+    this.villageTriggerPopEl.className = 'settlement-pop';
+    this.villageTriggerMetaEl.append(this.villageTriggerAdaptEl, triggerSepEl, this.villageTriggerPopEl);
+
+    this.villageTriggerCountEl = document.createElement('span');
+    this.villageTriggerCountEl.className = 'village-trigger-count';
+    this.villageTriggerCountEl.textContent = '0';
+
+    this.villageTriggerWarBadgeEl = document.createElement('span');
+    this.villageTriggerWarBadgeEl.className = 'village-alert-badge is-war is-hidden';
+
+    this.villageTriggerCelBadgeEl = document.createElement('span');
+    this.villageTriggerCelBadgeEl.className = 'village-alert-badge is-cel is-hidden';
+
+    const triggerChevronEl = document.createElement('span');
+    triggerChevronEl.className = 'village-trigger-chevron';
+    triggerChevronEl.setAttribute('aria-hidden', 'true');
+    triggerChevronEl.textContent = '▾';
+
+    this.villageTriggerBtn.append(
+      this.villageTriggerDotEl,
+      this.villageTriggerIconEl,
+      this.villageTriggerLabelEl,
+      this.villageTriggerMetaEl,
+      this.villageTriggerCountEl,
+      this.villageTriggerWarBadgeEl,
+      this.villageTriggerCelBadgeEl,
+      triggerChevronEl,
+    );
+    this.villageTriggerBtn.addEventListener('click', () => {
+      this.setVillageMenuOpen(!this.villageMenuOpen);
+    });
+
+    this.villageMenuEl = document.createElement('div');
+    this.villageMenuEl.className = 'village-dropdown-menu hidden';
+
+    const menuHeader = document.createElement('div');
+    menuHeader.className = 'village-dropdown-header';
+    const menuTitleGroup = document.createElement('span');
+    menuTitleGroup.className = 'village-dropdown-title-group';
+    const menuTitleEl = document.createElement('span');
+    menuTitleEl.className = 'village-dropdown-title';
+    menuTitleEl.textContent = 'Villages';
+    this.villageMenuCountEl = document.createElement('span');
+    this.villageMenuCountEl.className = 'village-dropdown-count';
+    this.villageMenuCountEl.textContent = '0';
+    menuTitleGroup.append(menuTitleEl, this.villageMenuCountEl);
+
+    this.villageMenuSummaryEl = document.createElement('span');
+    this.villageMenuSummaryEl.className = 'village-dropdown-summary';
+    this.villageMenuSummaryEl.textContent = '0 kin';
+    menuHeader.append(menuTitleGroup, this.villageMenuSummaryEl);
+
+    this.villageListEl = document.createElement('div');
+    this.villageListEl.className = 'village-dropdown-list';
+    this.villageListEl.setAttribute('id', 'village-dropdown-list');
+    this.villageListEl.setAttribute('role', 'listbox');
+    this.villageListEl.setAttribute('aria-label', 'Select a village');
+
+    this.villageMenuEl.append(menuHeader, this.villageListEl);
+    this.villageDropdownEl.append(this.villageTriggerBtn, this.villageMenuEl);
+
+    this.villageDropdownEl.addEventListener('keydown', (ev: Event) => {
+      this.handleVillageDropdownKeyDown(ev as KeyboardEvent);
+    });
+
+    this.onDocumentPointerDownBound = (ev: Event) => {
+      if (!this.villageMenuOpen) return;
+      const target = ev.target as Node | null;
+      if (
+        target &&
+        typeof this.villageDropdownEl.contains === 'function' &&
+        this.villageDropdownEl.contains(target)
+      ) {
+        return;
+      }
+      this.setVillageMenuOpen(false);
+    };
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      document.addEventListener('pointerdown', this.onDocumentPointerDownBound);
+    }
 
     const eventSlot = document.createElement('div');
     eventSlot.className = 'topbar-event-slot';
@@ -471,8 +604,84 @@ export class TopBar {
     panelGroup.append(this.deityBtn, this.chronicleBtn);
     eventSlot.append(this.deityEventBadgeEl, this.eventBadgeEl, panelGroup);
 
-    subRow.append(this.settlementsBar, eventSlot);
+    subRow.append(this.villageDropdownEl, eventSlot);
     this.element.append(mainRow, subRow);
+  }
+
+  isVillageMenuOpen(): boolean {
+    return this.villageMenuOpen;
+  }
+
+  closeVillageMenu(): void {
+    this.setVillageMenuOpen(false);
+  }
+
+  private setVillageMenuOpen(open: boolean): void {
+    if (this.villageMenuOpen === open) return;
+    this.villageMenuOpen = open;
+    this.villageMenuEl.classList.toggle('hidden', !open);
+    this.villageTriggerBtn.classList.toggle('is-open', open);
+    this.element.classList.toggle('village-menu-open', open);
+    this.villageTriggerBtn.setAttribute('aria-expanded', String(open));
+  }
+
+  private handleVillageDropdownKeyDown(ev: KeyboardEvent): void {
+    const options = Array.from(this.settlementOptions.values()).map((n) => n.button);
+    if (ev.key === 'Escape') {
+      if (!this.villageMenuOpen) return;
+      ev.preventDefault();
+      if (typeof ev.stopPropagation === 'function') ev.stopPropagation();
+      this.setVillageMenuOpen(false);
+      if (typeof this.villageTriggerBtn.focus === 'function') {
+        this.villageTriggerBtn.focus();
+      }
+      return;
+    }
+
+    if (options.length === 0) return;
+
+    const focusAt = (index: number): void => {
+      const clamped = ((index % options.length) + options.length) % options.length;
+      const target = options[clamped];
+      if (target && typeof target.focus === 'function') {
+        target.focus();
+      }
+    };
+
+    const activeEl = typeof document !== 'undefined' ? (document.activeElement as unknown) : null;
+    const currentIdx = options.findIndex((btn) => btn === activeEl);
+
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      if (!this.villageMenuOpen) {
+        this.setVillageMenuOpen(true);
+        const selectedIdx = this.findSelectedOptionIndex(options);
+        focusAt(selectedIdx >= 0 ? selectedIdx : 0);
+      } else {
+        focusAt(currentIdx >= 0 ? currentIdx + 1 : 0);
+      }
+    } else if (ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      if (!this.villageMenuOpen) {
+        this.setVillageMenuOpen(true);
+        const selectedIdx = this.findSelectedOptionIndex(options);
+        focusAt(selectedIdx >= 0 ? selectedIdx : options.length - 1);
+      } else {
+        focusAt(currentIdx >= 0 ? currentIdx - 1 : options.length - 1);
+      }
+    } else if (this.villageMenuOpen && ev.key === 'Home') {
+      ev.preventDefault();
+      focusAt(0);
+    } else if (this.villageMenuOpen && ev.key === 'End') {
+      ev.preventDefault();
+      focusAt(options.length - 1);
+    }
+  }
+
+  private findSelectedOptionIndex(options: HTMLButtonElement[]): number {
+    if (this.activeSelection?.kind !== 'settlement') return -1;
+    const activeId = this.activeSelection.id;
+    return options.findIndex((btn) => btn.dataset.settlementId === activeId);
   }
 
   setActiveSpeed(speed: number): void {
@@ -521,8 +730,14 @@ export class TopBar {
     this.chroniclePill.sync();
     this.savePill.sync();
     this.eventPill.sync();
-    for (const nodes of this.settlementPills.values()) {
+    for (const [id, nodes] of this.settlementOptions) {
       nodes.pillHandle.sync();
+      const selected =
+        this.activeSelection?.kind === 'settlement' && this.activeSelection.id === id;
+      if (nodes.lastSelected !== selected) {
+        nodes.lastSelected = selected;
+        nodes.button.setAttribute('aria-selected', String(selected));
+      }
     }
   }
 
@@ -574,7 +789,10 @@ export class TopBar {
       const c = world.creatures[i];
       if (!c.alive) continue;
       aliveCount++;
-      this.settlementPopCounts.set(c.settlementId, (this.settlementPopCounts.get(c.settlementId) ?? 0) + 1);
+      this.settlementPopCounts.set(
+        c.settlementId,
+        (this.settlementPopCounts.get(c.settlementId) ?? 0) + 1,
+      );
       if (c.lifeStage === 'young' || c.lifeStage === 'juvenile') youngCount++;
       if (c.activity === 'trading') caravans++;
       else if (c.activity === 'emigrating') pioneerCount++;
@@ -603,7 +821,10 @@ export class TopBar {
         this.deityEventBadgeEl.classList.add(nextClass);
         this.lastDeityBadgeClass = nextClass;
       }
-      const rem = Math.max(0, Math.ceil(activeInf.startedAt + activeInf.duration - world.elapsedSeconds));
+      const rem = Math.max(
+        0,
+        Math.ceil(activeInf.startedAt + activeInf.duration - world.elapsedSeconds),
+      );
       const meta = DIVINE_EVENT_CATALOG[activeInf.type];
       this.setTextIfChanged(this.deityEventIconEl, activeInf.icon);
       this.setTextIfChanged(this.deityEventTextEl, `${activeInf.label} (${rem}s)`);
@@ -623,7 +844,7 @@ export class TopBar {
       if (this.deityEventBadgeEl.title !== '') this.deityEventBadgeEl.title = '';
     }
 
-    // 4. Right-anchored Celebration Event Slot (never nudges Band 1 or settlement pills)
+    // 4. Right-anchored Celebration Event Slot (never nudges Band 1 or village dropdown)
     const nationalHoliday = world.festivals.getNationalHoliday();
     const activeRegional = world.festivals.activeCelebrations.find((c) => c.scope === 'regional');
     const activeLocals = world.festivals.activeCelebrations.filter((c) => c.scope === 'local');
@@ -634,7 +855,9 @@ export class TopBar {
     if (nationalHoliday) {
       nextTargets = [
         nationalHoliday.hostSettlementId,
-        ...nationalHoliday.participatingSettlementIds.filter((id) => id !== nationalHoliday.hostSettlementId),
+        ...nationalHoliday.participatingSettlementIds.filter(
+          (id) => id !== nationalHoliday.hostSettlementId,
+        ),
       ];
       const hostName = world.getSettlement(nationalHoliday.hostSettlementId)?.name;
       nextEventBadgeClass = 'scope-national';
@@ -698,16 +921,34 @@ export class TopBar {
       this.eventBadgeEl.disabled = nextEventDisabled;
     }
 
-    // 5. Reconcile settlement pills in-place by settlement.id (preserves hover & DOM stability)
+    // 5. Reconcile village dropdown options in-place by settlement.id (preserves hover & DOM stability)
     const activeIds = this.activeSettlementIds;
     activeIds.clear();
+
+    const selectedSettlementId =
+      selection?.kind === 'settlement' ? selection.id : null;
+    let totalVillagePop = 0;
+    let warCount = 0;
+    let celCount = 0;
+    let selectedTriggerState: {
+      hex: string;
+      icon: string;
+      name: string;
+      shortLabel: string;
+      pop: number;
+      isWar: boolean;
+      isCel: boolean;
+      scope: string | null;
+      tooltipBase: string;
+    } | null = null;
+
     for (const s of world.settlements) {
       activeIds.add(s.id);
-      let nodes = this.settlementPills.get(s.id);
+      let nodes = this.settlementOptions.get(s.id);
       if (!nodes) {
-        nodes = this.createSettlementPill(s.id);
-        this.settlementPills.set(s.id, nodes);
-        this.settlementsBar.appendChild(nodes.button);
+        nodes = this.createSettlementOption(s.id);
+        this.settlementOptions.set(s.id, nodes);
+        this.villageListEl.appendChild(nodes.button);
       }
 
       const cel = world.festivals.getCelebrationForSettlement(s.id);
@@ -716,12 +957,16 @@ export class TopBar {
       const pop = this.settlementPopCounts.get(s.id) ?? 0;
       const profile = s.getAdaptationProfile();
 
+      totalVillagePop += pop;
       const isWar = Boolean(war);
+      const isCel = Boolean(cel);
+      if (isWar) warCount++;
+      if (isCel) celCount++;
+
       if (nodes.lastWar !== isWar) {
         nodes.lastWar = isWar;
         nodes.button.classList.toggle('at-war', isWar);
       }
-      const isCel = Boolean(cel);
       if (nodes.lastCel !== isCel) {
         nodes.lastCel = isCel;
         nodes.button.classList.toggle('celebrating', isCel);
@@ -739,15 +984,32 @@ export class TopBar {
 
       if (nodes.lastBannerHex !== hex) {
         nodes.lastBannerHex = hex;
-        nodes.dotEl.style.background = hex;
+        if (nodes.dotEl.style) {
+          nodes.dotEl.style.background = hex;
+        }
       }
 
-      // Swap the fixed-width icon box to the festival icon during celebrations so pill width never shifts
       const displayIcon = war ? '⚔️' : cel ? cel.icon : profile.icon;
       this.setTextIfChanged(nodes.iconEl, displayIcon);
       this.setTextIfChanged(nodes.nameEl, s.name);
       this.setTextIfChanged(nodes.metaLabelEl, profile.shortLabel);
       this.setTextIfChanged(nodes.popEl, String(pop));
+
+      let nextStatusClass = 'is-hidden';
+      let nextStatusText = '';
+      if (war) {
+        nextStatusClass = 'is-war';
+        nextStatusText = 'At War';
+      } else if (cel) {
+        nextStatusClass = scope === 'national' ? 'is-cel-national' : 'is-cel';
+        nextStatusText = scope === 'national' ? 'Holiday' : 'Festival';
+      }
+      if (nodes.lastStatusClass !== nextStatusClass) {
+        nodes.statusEl.classList.remove(nodes.lastStatusClass);
+        nodes.statusEl.classList.add(nextStatusClass);
+        nodes.lastStatusClass = nextStatusClass;
+      }
+      this.setTextIfChanged(nodes.statusEl, nextStatusText);
 
       if (war) {
         const enemyId = war.settlementAId === s.id ? war.settlementBId : war.settlementAId;
@@ -758,14 +1020,115 @@ export class TopBar {
           ? `${s.name} — ${cel.icon} ${cel.name} (${cel.scope}): ${cel.theme}`
           : `${s.name} — ${profile.title} (${getBiomeDisplayName(s.biome)}): ${profile.summary}`;
       }
+
+      if (s.id === selectedSettlementId) {
+        selectedTriggerState = {
+          hex,
+          icon: displayIcon,
+          name: s.name,
+          shortLabel: profile.shortLabel,
+          pop,
+          isWar,
+          isCel,
+          scope,
+          tooltipBase: nodes.tooltipState.base,
+        };
+      }
     }
 
-    // Remove pills only if a settlement no longer exists (e.g. after New World reset)
-    for (const [id, nodes] of this.settlementPills) {
+    // Remove options only if a settlement no longer exists (e.g. after New World reset)
+    for (const [id, nodes] of this.settlementOptions) {
       if (!activeIds.has(id)) {
         nodes.pillHandle.dispose();
-        nodes.button.remove();
-        this.settlementPills.delete(id);
+        if (typeof nodes.button.remove === 'function') {
+          nodes.button.remove();
+        }
+        this.settlementOptions.delete(id);
+      }
+    }
+
+    // 5b. Sync compact trigger button + dropdown header summary
+    const settlementCount = world.settlements.length;
+    const countStr = String(settlementCount);
+    this.setTextIfChanged(this.villageTriggerCountEl, countStr);
+    this.setTextIfChanged(this.villageMenuCountEl, countStr);
+
+    const summaryParts = [`${totalVillagePop} kin`];
+    if (warCount > 0) summaryParts.push(`⚔️ ${warCount} at war`);
+    if (celCount > 0) summaryParts.push(`🎉 ${celCount} celebrating`);
+    this.setTextIfChanged(this.villageMenuSummaryEl, summaryParts.join(' · '));
+
+    const showWarBadge = warCount > 0;
+    if (this.lastTriggerWarBadgeVisible !== showWarBadge) {
+      this.lastTriggerWarBadgeVisible = showWarBadge;
+      this.villageTriggerWarBadgeEl.classList.toggle('is-hidden', !showWarBadge);
+    }
+    if (showWarBadge) {
+      this.setTextIfChanged(this.villageTriggerWarBadgeEl, `⚔️ ${warCount}`);
+    }
+
+    const showCelBadge = celCount > 0;
+    if (this.lastTriggerCelBadgeVisible !== showCelBadge) {
+      this.lastTriggerCelBadgeVisible = showCelBadge;
+      this.villageTriggerCelBadgeEl.classList.toggle('is-hidden', !showCelBadge);
+    }
+    if (showCelBadge) {
+      this.setTextIfChanged(this.villageTriggerCelBadgeEl, `🎉 ${celCount}`);
+    }
+
+    const hasSelection = selectedTriggerState !== null;
+    if (this.lastTriggerHasSelection !== hasSelection) {
+      this.lastTriggerHasSelection = hasSelection;
+      this.villageTriggerBtn.classList.toggle('has-selection', hasSelection);
+      this.villageTriggerDotEl.classList.toggle('is-hidden', !hasSelection);
+      this.villageTriggerMetaEl.classList.toggle('is-hidden', !hasSelection);
+    }
+
+    const nextTriggerWar = selectedTriggerState?.isWar ?? false;
+    if (this.lastTriggerWar !== nextTriggerWar) {
+      this.lastTriggerWar = nextTriggerWar;
+      this.villageTriggerBtn.classList.toggle('at-war', nextTriggerWar);
+    }
+
+    const nextTriggerCel = selectedTriggerState?.isCel ?? false;
+    if (this.lastTriggerCel !== nextTriggerCel) {
+      this.lastTriggerCel = nextTriggerCel;
+      this.villageTriggerBtn.classList.toggle('celebrating', nextTriggerCel);
+    }
+
+    const nextTriggerScope = selectedTriggerState?.scope ?? null;
+    if (this.lastTriggerScope !== nextTriggerScope) {
+      if (this.lastTriggerScope) {
+        this.villageTriggerBtn.classList.remove(`scope-${this.lastTriggerScope}`);
+      }
+      if (nextTriggerScope) {
+        this.villageTriggerBtn.classList.add(`scope-${nextTriggerScope}`);
+      }
+      this.lastTriggerScope = nextTriggerScope;
+    }
+
+    if (selectedTriggerState) {
+      if (this.lastTriggerBannerHex !== selectedTriggerState.hex) {
+        this.lastTriggerBannerHex = selectedTriggerState.hex;
+        if (this.villageTriggerDotEl.style) {
+          this.villageTriggerDotEl.style.background = selectedTriggerState.hex;
+        }
+      }
+      this.setTextIfChanged(this.villageTriggerIconEl, selectedTriggerState.icon);
+      this.setTextIfChanged(this.villageTriggerLabelEl, selectedTriggerState.name);
+      this.setTextIfChanged(this.villageTriggerAdaptEl, selectedTriggerState.shortLabel);
+      this.setTextIfChanged(this.villageTriggerPopEl, String(selectedTriggerState.pop));
+      const triggerTitle = `${selectedTriggerState.tooltipBase} — Click to browse villages`;
+      if (this.villageTriggerBtn.title !== triggerTitle) {
+        this.villageTriggerBtn.title = triggerTitle;
+      }
+    } else {
+      this.setTextIfChanged(this.villageTriggerIconEl, '🏘️');
+      this.setTextIfChanged(this.villageTriggerLabelEl, 'Villages');
+      const villageWord = settlementCount === 1 ? 'village' : 'villages';
+      const triggerTitle = `${settlementCount} ${villageWord} · ${summaryParts.join(' · ')} — Click to choose a village`;
+      if (this.villageTriggerBtn.title !== triggerTitle) {
+        this.villageTriggerBtn.title = triggerTitle;
       }
     }
 
@@ -773,6 +1136,9 @@ export class TopBar {
   }
 
   dispose(): void {
+    if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+      document.removeEventListener('pointerdown', this.onDocumentPointerDownBound);
+    }
     this.kinPill.dispose();
     this.youngSlot.pillHandle.dispose();
     this.buildingsSlot.pillHandle.dispose();
@@ -782,10 +1148,10 @@ export class TopBar {
     this.chroniclePill.dispose();
     this.savePill.dispose();
     this.eventPill.dispose();
-    for (const nodes of this.settlementPills.values()) {
+    for (const nodes of this.settlementOptions.values()) {
       nodes.pillHandle.dispose();
     }
-    this.settlementPills.clear();
+    this.settlementOptions.clear();
   }
 
   private createTelemetryPill(
@@ -823,10 +1189,12 @@ export class TopBar {
     return { root, valueEl, pillHandle, lastEmpty: null };
   }
 
-  private createSettlementPill(settlementId: string): SettlementPillNodes {
+  private createSettlementOption(settlementId: string): SettlementOptionNodes {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'settlement-pill';
+    button.className = 'village-option';
+    button.setAttribute('role', 'option');
+    button.setAttribute('aria-selected', 'false');
     button.dataset.settlementId = settlementId;
 
     const dotEl = document.createElement('span');
@@ -838,6 +1206,9 @@ export class TopBar {
     const nameEl = document.createElement('span');
     nameEl.className = 'settlement-name';
 
+    const statusEl = document.createElement('span');
+    statusEl.className = 'village-option-status is-hidden';
+
     const metaWrap = document.createElement('small');
     metaWrap.className = 'settlement-meta';
     const metaLabelEl = document.createElement('span');
@@ -847,15 +1218,21 @@ export class TopBar {
     popEl.className = 'settlement-pop';
     metaWrap.append(metaLabelEl, sepEl, popEl);
 
-    button.append(dotEl, iconEl, nameEl, metaWrap);
+    button.append(dotEl, iconEl, nameEl, statusEl, metaWrap);
 
     const tooltipState = { base: '' };
     const pillHandle = bindDialogPill({
       button,
       isOpen: () =>
         this.activeSelection?.kind === 'settlement' && this.activeSelection.id === settlementId,
-      open: () => this.callbacks.onFocusSettlement(settlementId),
-      close: () => this.callbacks.onCloseInspector(),
+      open: () => {
+        this.setVillageMenuOpen(false);
+        this.callbacks.onFocusSettlement(settlementId);
+      },
+      close: () => {
+        this.setVillageMenuOpen(false);
+        this.callbacks.onCloseInspector();
+      },
       getTitle: (open) => {
         if (!tooltipState.base) return '';
         return open
@@ -869,6 +1246,7 @@ export class TopBar {
       dotEl,
       iconEl,
       nameEl,
+      statusEl,
       metaLabelEl,
       popEl,
       pillHandle,
@@ -877,6 +1255,8 @@ export class TopBar {
       lastWar: false,
       lastCel: false,
       lastScope: null,
+      lastStatusClass: 'is-hidden',
+      lastSelected: null,
     };
   }
 

@@ -204,7 +204,8 @@ export class HudManager {
       const syncOffset = () => {
         const rect = this.topBar.element.getBoundingClientRect();
         if (rect.height > 0) {
-          const nextOffsetPx = Math.ceil(rect.height + 22);
+          const topGap = rect.top > 0 ? rect.top : 8;
+          const nextOffsetPx = Math.ceil(topGap + rect.height + 8);
           if (nextOffsetPx !== lastOffsetPx) {
             lastOffsetPx = nextOffsetPx;
             this.root.style.setProperty('--hud-top-offset', `${nextOffsetPx}px`);
@@ -289,6 +290,7 @@ export class HudManager {
 
   isAnyModalOpen(): boolean {
     return (
+      this.topBar.isVillageMenuOpen() ||
       this.directoryModal.isOpen() ||
       this.realmOverviewModal.isOpen() ||
       this.saveLoadModal.isOpen() ||
@@ -297,6 +299,9 @@ export class HudManager {
   }
 
   closeModals(): void {
+    if (this.topBar.isVillageMenuOpen()) {
+      this.topBar.closeVillageMenu();
+    }
     if (this.directoryModal.isOpen()) {
       this.directoryModal.close();
     }
@@ -313,6 +318,7 @@ export class HudManager {
   }
 
   openNewWorldConfirm(onConfirm: () => void): void {
+    this.topBar.closeVillageMenu();
     if (this.directoryModal.isOpen()) {
       this.directoryModal.close();
     }
@@ -343,6 +349,7 @@ export class HudManager {
   setCreatureDirectoryOpen(open: boolean): void {
     if (open) {
       if (!this.lastWorld) return;
+      this.topBar.closeVillageMenu();
       if (this.realmOverviewModal.isOpen()) {
         this.realmOverviewModal.close();
       }
@@ -365,6 +372,7 @@ export class HudManager {
 
   openRealmOverviewTab(tab: RealmOverviewTab): void {
     if (!this.lastWorld) return;
+    this.topBar.closeVillageMenu();
     if (this.directoryModal.isOpen()) {
       this.directoryModal.close();
     }
@@ -386,6 +394,7 @@ export class HudManager {
 
   setSaveModalOpen(open: boolean): void {
     if (open) {
+      this.topBar.closeVillageMenu();
       if (this.directoryModal.isOpen()) {
         this.directoryModal.close();
       }
@@ -404,6 +413,7 @@ export class HudManager {
 
   openCreatureLineage(creatureId: string): void {
     if (!this.lastWorld) return;
+    this.topBar.closeVillageMenu();
     if (this.realmOverviewModal.isOpen()) {
       this.realmOverviewModal.close();
     }
