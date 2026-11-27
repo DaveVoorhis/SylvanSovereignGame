@@ -159,7 +159,7 @@ export class WorldState {
         0.18,
         angle,
       );
-      if (!def.aerial && !this.terrain.isWalkable(safe.x, safe.z, def.amphibious)) {
+      if (!this.terrain.canCreatureTraverse(safe.x, safe.z, def)) {
         continue;
       }
 
@@ -179,7 +179,41 @@ export class WorldState {
       if (minCreatureGap >= 0.2) break;
     }
 
-    const y = Math.max(this.terrain.getHeightAt(x, z), this.terrain.waterLevel);
+    // Ensure strictlyAquatic creatures never spawn stranded on dry land
+    if (def.strictlyAquatic && !this.terrain.isSwimmable(x, z)) {
+      for (let attempt = 0; attempt < 28; attempt++) {
+        const angle = this.rng.range(0, Math.PI * 2);
+        const radius = this.rng.range(1.6, 18.0);
+        const wx = settlement.center.x + Math.cos(angle) * radius;
+        const wz = settlement.center.z + Math.sin(angle) * radius;
+        if (this.terrain.isSwimmable(wx, wz)) {
+          const safe = this.obstacles.pushPointOutsideObstacles(
+            wx,
+            wz,
+            settlement.center.x,
+            settlement.center.z,
+            obstacleR,
+            0,
+            0.18,
+            angle,
+          );
+          if (this.terrain.isSwimmable(safe.x, safe.z)) {
+            x = safe.x;
+            z = safe.z;
+            break;
+          }
+        }
+      }
+    }
+
+    const groundH = this.terrain.getHeightAt(x, z);
+    const waterDepth = Math.max(0.28, this.terrain.waterLevel - groundH);
+    const fishSubmersion = Math.min(0.38, Math.max(0.24, waterDepth * 0.52));
+    const y = def.strictlyAquatic
+      ? Math.max(groundH + 0.1, this.terrain.waterLevel - fishSubmersion)
+      : def.aquatic && groundH < this.terrain.waterLevel
+        ? Math.max(groundH, this.terrain.waterLevel - 0.44)
+        : Math.max(groundH, this.terrain.waterLevel);
     const name = options.familySurname
       ? generateOffspringName(() => this.rng.next(), options.familySurname)
       : generateCreatureName(() => this.rng.next());

@@ -11,6 +11,7 @@ export interface BuildingBlueprint {
   readonly devotionValue: number;
   readonly maxPerSettlement: number;
   readonly minCompletedToUnlock?: number;
+  readonly waterwayOnly?: boolean;
   readonly description: string;
 }
 
@@ -29,6 +30,12 @@ export const ALL_BUILDING_TYPES: readonly BuildingType[] = [
   'fountain_plaza',
   'library',
   'guildhall',
+  'beaver_lodge',
+  'otter_boathouse',
+  'waterwheel_mill',
+  'lily_market',
+  'aquatic_sanctuary',
+  'tide_shrine',
 ];
 
 export const BUILDING_CATALOG: Record<BuildingType, BuildingBlueprint> = {
@@ -205,6 +212,92 @@ export const BUILDING_CATALOG: Record<BuildingType, BuildingBlueprint> = {
     minCompletedToUnlock: 6,
     description: 'Monumental civic hall with twin gables and a gleaming bell cupola anchoring a growing city.',
   },
+  beaver_lodge: {
+    type: 'beaver_lodge',
+    displayName: 'Beaver Timber Lodge',
+    cost: { timber: 10 },
+    frameStyle: 'timber',
+    footprintRadius: 2.3,
+    housingCapacity: 4,
+    prosperityValue: 12,
+    devotionValue: 2,
+    maxPerSettlement: 8,
+    waterwayOnly: true,
+    description:
+      'Domed river-branch lodge woven by beavers with a mossy cap, cozy hearth chimney, and submerged splash-entry.',
+  },
+  otter_boathouse: {
+    type: 'otter_boathouse',
+    displayName: 'Otter Floating Boathouse',
+    cost: { timber: 13, herbs: 3 },
+    frameStyle: 'timber',
+    footprintRadius: 2.5,
+    housingCapacity: 5,
+    prosperityValue: 18,
+    devotionValue: 2,
+    maxPerSettlement: 7,
+    waterwayOnly: true,
+    description:
+      'Buoyant timber houseboat moored to cedar river-pilings with glowing brass portholes and hanging river-lanterns.',
+  },
+  waterwheel_mill: {
+    type: 'waterwheel_mill',
+    displayName: 'River Waterwheel Mill',
+    cost: { timber: 14, stone: 4 },
+    frameStyle: 'timber',
+    footprintRadius: 2.6,
+    housingCapacity: 1,
+    prosperityValue: 24,
+    devotionValue: 2,
+    maxPerSettlement: 3,
+    waterwayOnly: true,
+    description:
+      'Piling-mounted cedar mill harnessing the river current with a turning paddle wheel to saw driftwood and grind reeds.',
+  },
+  lily_market: {
+    type: 'lily_market',
+    displayName: 'Floating Lily-Pad Bazaar',
+    cost: { timber: 11, herbs: 4 },
+    frameStyle: 'timber',
+    footprintRadius: 2.4,
+    housingCapacity: 0,
+    prosperityValue: 22,
+    devotionValue: 2,
+    maxPerSettlement: 4,
+    waterwayOnly: true,
+    description:
+      'Colorful floating market rafted atop giant water-lily pads with coral awnings, kelp garlands, and river-pearl stalls.',
+  },
+  aquatic_sanctuary: {
+    type: 'aquatic_sanctuary',
+    displayName: 'Coral-Glass Koi Sanctuary',
+    cost: { timber: 13, stone: 6, herbs: 5 },
+    frameStyle: 'masonry',
+    footprintRadius: 2.7,
+    housingCapacity: 3,
+    prosperityValue: 30,
+    devotionValue: 8,
+    maxPerSettlement: 3,
+    minCompletedToUnlock: 3,
+    waterwayOnly: true,
+    description:
+      'Sunlit half-submerged glass-and-coral dome with open water arches where river koi and otters tend luminous water gardens.',
+  },
+  tide_shrine: {
+    type: 'tide_shrine',
+    displayName: 'River-Pearl Tide Shrine',
+    cost: { timber: 10, stone: 7, herbs: 5 },
+    frameStyle: 'masonry',
+    footprintRadius: 2.4,
+    housingCapacity: 0,
+    prosperityValue: 22,
+    devotionValue: 18,
+    maxPerSettlement: 3,
+    minCompletedToUnlock: 2,
+    waterwayOnly: true,
+    description:
+      'Water-ringed driftwood and river-stone altar cradling a levitating iridescent river-pearl above blooming lotus lanterns.',
+  },
 };
 
 export const SETTLEMENT_NAMES = [
@@ -227,4 +320,5 @@ export const FACTION_BANNER_COLORS = [
   0xb5485b, // Berry crimson
   0xc7a338, // Golden pollen
   0x7e5ca8, // Twilight plum
+  0x2c9ea8, // River kingfisher teal
 ];

@@ -116,6 +116,22 @@ const LOCAL_ADAPTATION_FESTIVALS: Record<VillageAdaptationId, readonly FestivalT
       secondaryColorHex: 0xff6b9d,
     },
   ],
+  waterway_haven: [
+    {
+      title: 'Lantern-Dam Water Parade',
+      theme: 'Floating lotus lanterns, beaver-dam drum circles, and leaping river koi',
+      icon: '🪷',
+      colorHex: 0x38bdf8,
+      secondaryColorHex: 0xff8fab,
+    },
+    {
+      title: 'Lily-Pad River Regatta',
+      theme: 'Otter reed-skiff races, glowing river pearls, and splashing water jigs',
+      icon: '🦦',
+      colorHex: 0x2ec4b6,
+      secondaryColorHex: 0xffd166,
+    },
+  ],
 };
 
 const SEASONAL_LOCAL_FESTIVALS: Record<Season, readonly FestivalTemplate[]> = {
@@ -638,6 +654,7 @@ export class FestivalSystem {
           c.activity !== 'fighting' &&
           c.activity !== 'fleeing' &&
           c.activity !== 'emigrating' &&
+          (!c.def.strictlyAquatic || hostSettlement.adaptation === 'waterway_haven') &&
           world.terrain.getBridgeDeckY(c.x, c.z) === null,
       );
       const ratio = settlementId === hostSettlement.id ? 0.76 : 0.54;

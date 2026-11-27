@@ -96,9 +96,12 @@ export class TopBar {
   // Band 2: reconciled settlement pills + dedicated right-anchored event slot
   private readonly settlementsBar: HTMLElement;
   private readonly settlementPills = new Map<string, SettlementPillNodes>();
-  private readonly eventBadgeEl: HTMLElement;
+  private readonly eventBadgeEl: HTMLButtonElement;
   private readonly eventIconEl: HTMLElement;
   private readonly eventTextEl: HTMLElement;
+  private activeEventSettlementIds: string[] = [];
+  private activeEventKey = '';
+  private eventCycleIndex = 0;
 
   constructor(private readonly callbacks: TopBarCallbacks) {
     this.element = document.createElement('header');
@@ -302,13 +305,22 @@ export class TopBar {
     const eventSlot = document.createElement('div');
     eventSlot.className = 'topbar-event-slot';
 
-    this.eventBadgeEl = document.createElement('span');
+    this.eventBadgeEl = document.createElement('button');
+    this.eventBadgeEl.type = 'button';
     this.eventBadgeEl.className = 'celebration-pill is-idle';
+    this.eventBadgeEl.disabled = true;
     this.eventIconEl = document.createElement('span');
     this.eventIconEl.className = 'cel-slot-icon';
     this.eventTextEl = document.createElement('span');
     this.eventTextEl.className = 'cel-slot-text';
     this.eventBadgeEl.append(this.eventIconEl, this.eventTextEl);
+    this.eventBadgeEl.addEventListener('click', () => {
+      if (this.activeEventSettlementIds.length === 0) return;
+      const targetId =
+        this.activeEventSettlementIds[this.eventCycleIndex % this.activeEventSettlementIds.length];
+      this.eventCycleIndex = (this.eventCycleIndex + 1) % this.activeEventSettlementIds.length;
+      this.callbacks.onFocusSettlement(targetId);
+    });
     eventSlot.appendChild(this.eventBadgeEl);
 
     subRow.append(this.settlementsBar, eventSlot);
@@ -387,27 +399,70 @@ export class TopBar {
     // 4. Right-anchored Celebration Event Slot (never nudges Band 1 or settlement pills)
     const nationalHoliday = world.festivals.getNationalHoliday();
     const activeRegional = world.festivals.activeCelebrations.find((c) => c.scope === 'regional');
+    const activeLocals = world.festivals.activeCelebrations.filter((c) => c.scope === 'local');
+
+    let nextEventKey = '';
+    let nextTargets: string[] = [];
 
     this.eventBadgeEl.classList.remove('scope-national', 'scope-regional', 'scope-local', 'is-idle');
     if (nationalHoliday) {
+      nextEventKey = nationalHoliday.id;
+      nextTargets = [
+        nationalHoliday.hostSettlementId,
+        ...nationalHoliday.participatingSettlementIds.filter((id) => id !== nationalHoliday.hostSettlementId),
+      ];
+      const hostName = world.getSettlement(nationalHoliday.hostSettlementId)?.name;
       this.eventBadgeEl.classList.add('scope-national');
-      this.eventBadgeEl.title = nationalHoliday.theme;
+      this.eventBadgeEl.title = hostName
+        ? `${nationalHoliday.theme} — Click to go to ${hostName}`
+        : `${nationalHoliday.theme} — Click to visit celebration`;
       this.setTextIfChanged(this.eventIconEl, nationalHoliday.icon);
       this.setTextIfChanged(this.eventTextEl, `Holiday: ${nationalHoliday.name}`);
     } else if (activeRegional) {
+      nextEventKey = activeRegional.id;
+      nextTargets = [activeRegional.hostSettlementId];
+      const hostName = world.getSettlement(activeRegional.hostSettlementId)?.name;
       this.eventBadgeEl.classList.add('scope-regional');
-      this.eventBadgeEl.title = activeRegional.theme;
+      this.eventBadgeEl.title = hostName
+        ? `${activeRegional.theme} — Click to go to ${hostName}`
+        : `${activeRegional.theme} — Click to visit celebration`;
       this.setTextIfChanged(this.eventIconEl, activeRegional.icon);
       this.setTextIfChanged(this.eventTextEl, `${activeRegional.name} (${celebratingCount})`);
-    } else if (celebratingCount > 0) {
+    } else if (activeLocals.length > 0 || celebratingCount > 0) {
+      if (activeLocals.length > 0) {
+        nextEventKey = activeLocals.map((c) => c.id).join(',');
+        nextTargets = Array.from(new Set(activeLocals.map((c) => c.hostSettlementId)));
+      } else {
+        const fallbackIds = new Set<string>();
+        for (const c of world.creatures) {
+          if (c.alive && c.activity === 'celebrating') {
+            fallbackIds.add(c.celebrationHostSettlementId ?? c.settlementId);
+          }
+        }
+        nextTargets = Array.from(fallbackIds);
+        nextEventKey = `local:${nextTargets.join(',')}`;
+      }
+      const primaryLocal = activeLocals[0];
+      const hostName = nextTargets[0] ? world.getSettlement(nextTargets[0])?.name : undefined;
       this.eventBadgeEl.classList.add('scope-local');
-      this.eventBadgeEl.title = 'Village celebration underway';
-      this.setTextIfChanged(this.eventIconEl, '🎉');
+      this.eventBadgeEl.title = primaryLocal
+        ? `${primaryLocal.name}: ${primaryLocal.theme} — Click to go to ${hostName ?? 'celebration'}`
+        : hostName
+          ? `Village celebration underway — Click to go to ${hostName}`
+          : 'Village celebration underway — Click to visit';
+      this.setTextIfChanged(this.eventIconEl, primaryLocal?.icon ?? '🎉');
       this.setTextIfChanged(this.eventTextEl, `${celebratingCount} Celebrating`);
     } else {
       this.eventBadgeEl.classList.add('is-idle');
       this.eventBadgeEl.title = '';
     }
+
+    if (nextEventKey !== this.activeEventKey) {
+      this.activeEventKey = nextEventKey;
+      this.eventCycleIndex = 0;
+    }
+    this.activeEventSettlementIds = nextTargets;
+    this.eventBadgeEl.disabled = nextTargets.length === 0;
 
     // 5. Reconcile settlement pills in-place by settlement.id (preserves hover & DOM stability)
     const activeIds = new Set<string>();

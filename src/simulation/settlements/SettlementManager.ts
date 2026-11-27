@@ -68,7 +68,10 @@ export class SettlementManager {
       usedNames.add(name);
 
       const bannerColor = FACTION_BANNER_COLORS[idx % FACTION_BANNER_COLORS.length];
-      const groundY = world.terrain.getHeightAt(site.x, site.z);
+      const groundY =
+        adaptation === 'waterway_haven'
+          ? world.terrain.waterLevel
+          : world.terrain.getHeightAt(site.x, site.z);
 
       const settlement = new Settlement({
         id,
@@ -89,7 +92,12 @@ export class SettlementManager {
       this.placeBuilding(settlement, profile.starterCivic, world, true);
       const plot = this.placeBuilding(settlement, profile.starterPlot, world, false);
       if (!plot) {
-        this.placeBuilding(settlement, 'burrow_cottage', world, false);
+        this.placeBuilding(
+          settlement,
+          adaptation === 'waterway_haven' ? 'beaver_lodge' : 'burrow_cottage',
+          world,
+          false,
+        );
       }
       settlement.recalculateTierAndRadius();
 
@@ -126,6 +134,92 @@ export class SettlementManager {
         settlement.center,
       );
     });
+
+    // Spawn dedicated aquatic waterway villages (beavers, otters, river koi) when configured
+    const extraWaterwayCount = world.config.initialWaterwaySettlements ?? 0;
+    if (extraWaterwayCount > 0) {
+      const occupied: Vec2[] = world.settlements.map((s) => s.center);
+      const origin = sites[0];
+      const waterSpacing = Math.max(40, world.terrain.size * 0.12);
+      const maxRadius = world.terrain.playableRadius - 22;
+
+      for (let w = 0; w < extraWaterwayCount; w++) {
+        const waterSite = world.terrain.findWaterwaySettlementSite(
+          occupied,
+          waterSpacing,
+          maxRadius,
+          world.rng,
+          origin,
+        );
+        if (!waterSite) break;
+        occupied.push(waterSite);
+
+        const seqIdx = this.settlementSeq - 1;
+        const id = `settlement_${this.settlementSeq++}`;
+        const adaptation = 'waterway_haven' as const;
+        const profile = VILLAGE_ADAPTATION_CATALOG[adaptation];
+        const name =
+          profile.settlementNames.find((n) => !usedNames.has(n)) ??
+          SETTLEMENT_NAMES.find((n) => !usedNames.has(n)) ??
+          `Willow-Dam ${w + 1}`;
+        usedNames.add(name);
+
+        const bannerColor = FACTION_BANNER_COLORS[seqIdx % FACTION_BANNER_COLORS.length];
+        const settlement = new Settlement({
+          id,
+          name,
+          bannerColor,
+          center: waterSite,
+          groundY: world.terrain.waterLevel,
+          biome: 'water',
+          adaptation,
+          foundingSpecies: [...profile.adaptedSpecies],
+        });
+
+        world.settlements.push(settlement);
+        world.structureRevision++;
+
+        this.placeBuilding(settlement, profile.starterHome, world, true);
+        this.placeBuilding(settlement, profile.starterCivic, world, true);
+        const plot = this.placeBuilding(settlement, profile.starterPlot, world, false);
+        if (!plot) {
+          this.placeBuilding(settlement, 'beaver_lodge', world, false);
+        }
+        settlement.recalculateTierAndRadius();
+
+        // Populate with matched pairs of beavers, otters, and river koi!
+        const roles: CreatureRole[] = [
+          'builder',
+          'forager',
+          'builder',
+          'merchant',
+          'artisan',
+          'forager',
+          'guard',
+          'mystic',
+          'forager',
+          'builder',
+        ];
+        const aquaticFounders: SpeciesId[] = ['beaver', 'otter', 'fish'];
+        for (let i = 0; i < world.config.initialCreaturesPerSettlement; i++) {
+          const species = aquaticFounders[Math.floor(i / 2) % aquaticFounders.length];
+          const role = roles[i % roles.length];
+          world.spawnCreature(settlement, species, role, {
+            ageDays: world.rng.range(2.4, 5.4),
+            reproductionCooldown: world.rng.range(8, 22),
+          });
+        }
+
+        world.chronicle.record(
+          world.day,
+          world.season,
+          'settlement',
+          `${settlement.name} Founded (${profile.shortLabel})`,
+          `Beavers, otters, and river koi founded ${settlement.name} as a ${profile.title} in the Woodland Waterway with ${world.config.initialCreaturesPerSettlement} inhabitants.`,
+          settlement.center,
+        );
+      }
+    }
   }
 
   tick(world: WorldState, dt: number): void {
@@ -194,6 +288,36 @@ export class SettlementManager {
         settlement.stockpile.timber += guildhalls * 0.26 * dt;
         settlement.stockpile.stone += guildhalls * 0.22 * dt;
         settlement.treasury += guildhalls * 0.35 * dt;
+      }
+
+      // Waterwheel Mills saw driftwood timber, grind reed flour & fashion river crafts
+      const waterwheels = settlement.getCompletedCount('waterwheel_mill');
+      if (waterwheels > 0) {
+        settlement.stockpile.timber += waterwheels * 0.25 * dt;
+        settlement.stockpile.acorns += waterwheels * 0.16 * dt;
+        settlement.stockpile.crafts += waterwheels * 0.12 * dt;
+      }
+
+      // Lily-Pad Markets harvest aquatic herbs, riverberries, and trade coin
+      const lilyMarkets = settlement.getCompletedCount('lily_market');
+      if (lilyMarkets > 0) {
+        settlement.stockpile.herbs += lilyMarkets * 0.18 * dt;
+        settlement.stockpile.berries += lilyMarkets * 0.16 * dt;
+        settlement.treasury += lilyMarkets * 0.26 * dt;
+      }
+
+      // Aquatic Sanctuaries cultivate lotus herbs, pearl crafts & river devotion
+      const sanctuaries = settlement.getCompletedCount('aquatic_sanctuary');
+      if (sanctuaries > 0) {
+        settlement.stockpile.herbs += sanctuaries * 0.22 * dt;
+        settlement.stockpile.crafts += sanctuaries * 0.18 * dt;
+        settlement.devotionTotal += sanctuaries * 0.12 * dt;
+      }
+
+      // Tide Shrines channel serene waterway prayers
+      const tideShrines = settlement.getCompletedCount('tide_shrine');
+      if (tideShrines > 0) {
+        settlement.devotionTotal += tideShrines * 0.15 * dt;
       }
     }
 
@@ -365,10 +489,17 @@ export class SettlementManager {
       SETTLEMENT_NAMES.find((n) => !usedNames.has(n)) ??
       SETTLEMENT_NAMES[seqIdx % SETTLEMENT_NAMES.length];
     const bannerColor = FACTION_BANNER_COLORS[seqIdx % FACTION_BANNER_COLORS.length];
-    const groundY = world.terrain.getHeightAt(party.targetX, party.targetZ);
+    const groundY =
+      adaptation === 'waterway_haven'
+        ? world.terrain.waterLevel
+        : world.terrain.getHeightAt(party.targetX, party.targetZ);
 
     const foundingSpecies = Array.from(
-      new Set([...party.species, ...profile.adaptedSpecies]),
+      new Set(
+        adaptation === 'waterway_haven'
+          ? [...profile.adaptedSpecies, ...party.species]
+          : [...party.species, ...profile.adaptedSpecies],
+      ),
     ).slice(0, 4);
 
     const settlement = new Settlement({
@@ -605,8 +736,16 @@ export class SettlementManager {
       const isStrictlyLarger = newBp.footprintRadius > oldBp.footprintRadius + 0.05;
       const isMuchGrander = newBp.prosperityValue >= oldBp.prosperityValue + 12;
       if (!isStrictlyLarger && !isMuchGrander) return false;
-      if (b.type === 'burrow_cottage') return settlement.getCompletedCount('burrow_cottage') >= 2;
-      if (b.type === 'market_stall' || b.type === 'granary' || b.type === 'workshop') {
+      if (b.type === 'burrow_cottage' || b.type === 'beaver_lodge') {
+        return settlement.getCompletedCount(b.type) >= 2;
+      }
+      if (
+        b.type === 'market_stall' ||
+        b.type === 'granary' ||
+        b.type === 'workshop' ||
+        b.type === 'lily_market' ||
+        b.type === 'otter_boathouse'
+      ) {
         return settlement.getCompletedCount(b.type) >= 2 || oldBp.footprintRadius < newBp.footprintRadius;
       }
       return false;
@@ -723,6 +862,7 @@ export class SettlementManager {
       (c) =>
         c.alive &&
         c.lifeStage === 'adult' &&
+        !c.def.strictlyAquatic &&
         c.settlementId === settlement.id &&
         c.activity !== 'fighting' &&
         c.activity !== 'fleeing' &&
@@ -911,8 +1051,12 @@ export class SettlementManager {
     const housing = settlement.getHousingCapacity();
     const profile = settlement.getAdaptationProfile();
 
+    const isWaterway = settlement.adaptation === 'waterway_haven';
     const eligible = ALL_BUILDING_TYPES.filter((type) => {
       const bp = BUILDING_CATALOG[type];
+      if (isWaterway ? !bp.waterwayOnly : Boolean(bp.waterwayOnly)) {
+        return false;
+      }
       if (bp.minCompletedToUnlock && completedTotal < bp.minCompletedToUnlock) {
         return false;
       }
@@ -947,7 +1091,12 @@ export class SettlementManager {
       // Early economic backbone
       if (
         count === 0 &&
-        (type === 'workshop' || type === 'granary' || type === 'market_stall' || type === 'bakery')
+        (type === 'workshop' ||
+          type === 'granary' ||
+          type === 'market_stall' ||
+          type === 'bakery' ||
+          type === 'waterwheel_mill' ||
+          type === 'lily_market')
       ) {
         score += 18;
       }
@@ -959,7 +1108,9 @@ export class SettlementManager {
           type === 'greenhouse' ||
           type === 'fountain_plaza' ||
           type === 'library' ||
-          type === 'guildhall')
+          type === 'guildhall' ||
+          type === 'aquatic_sanctuary' ||
+          type === 'tide_shrine')
       ) {
         score += 24;
       }
@@ -1023,10 +1174,25 @@ export class SettlementManager {
           continue;
         }
         if (world.rng.chance(0.68)) {
-          const nestAngle = world.rng.range(0, Math.PI * 2);
-          const nestR = world.rng.range(2.6, Math.min(6.2, Math.max(3.4, settlement.radius * 0.55)));
-          const nx = settlement.center.x + Math.cos(nestAngle) * nestR;
-          const nz = settlement.center.z + Math.sin(nestAngle) * nestR;
+          let nx = settlement.center.x;
+          let nz = settlement.center.z;
+          if (adult.def.aquatic) {
+            const maxNestR = Math.min(6.8, Math.max(3.4, settlement.radius * 0.55));
+            for (let tries = 0; tries < 10; tries++) {
+              const nestAngle = world.rng.range(0, Math.PI * 2);
+              const nestR = world.rng.range(2.4, maxNestR);
+              const candX = settlement.center.x + Math.cos(nestAngle) * nestR;
+              const candZ = settlement.center.z + Math.sin(nestAngle) * nestR;
+              nx = candX;
+              nz = candZ;
+              if (world.terrain.canCreatureTraverse(candX, candZ, adult.def)) break;
+            }
+          } else {
+            const nestAngle = world.rng.range(0, Math.PI * 2);
+            const nestR = world.rng.range(2.6, Math.min(6.2, Math.max(3.4, settlement.radius * 0.55)));
+            nx = settlement.center.x + Math.cos(nestAngle) * nestR;
+            nz = settlement.center.z + Math.sin(nestAngle) * nestR;
+          }
           adult.activity = 'nesting';
           adult.targetCreatureId = mate.id;
           adult.targetX = nx;
@@ -1155,6 +1321,7 @@ export class SettlementManager {
     world: WorldState,
   ): { x: number; z: number; groundY: number; rotation: number } | null {
     const bp = BUILDING_CATALOG[type];
+    const isWaterwayBuilding = Boolean(bp.waterwayOnly) || settlement.adaptation === 'waterway_haven';
     const maxSlope = settlement.adaptation === 'mountain_stone' ? 0.27 : 0.22;
 
     // Measure current farthest building so cities grow organically outward in concentric rings
@@ -1167,26 +1334,47 @@ export class SettlementManager {
       if (d > farthest) farthest = d;
     }
 
-    const maxAllowedRadius = Math.min(31, Math.max(settlement.radius + 6, farthest + 9.5));
-    const ringBands: [number, number][] = [
-      [3.8, Math.min(11.5, maxAllowedRadius)],
-      [8.5, Math.min(18.5, maxAllowedRadius)],
-      [14.0, Math.min(25.0, maxAllowedRadius)],
-      [19.0, maxAllowedRadius],
-    ];
+    const maxAllowedRadius = isWaterwayBuilding
+      ? Math.min(36, Math.max(settlement.radius + 7, farthest + 10.5))
+      : Math.min(31, Math.max(settlement.radius + 6, farthest + 9.5));
+    const ringBands: [number, number][] = isWaterwayBuilding
+      ? [
+          [3.8, Math.min(12.0, maxAllowedRadius)],
+          [8.5, Math.min(19.5, maxAllowedRadius)],
+          [14.0, Math.min(27.0, maxAllowedRadius)],
+          [19.0, maxAllowedRadius],
+        ]
+      : [
+          [3.8, Math.min(11.5, maxAllowedRadius)],
+          [8.5, Math.min(18.5, maxAllowedRadius)],
+          [14.0, Math.min(25.0, maxAllowedRadius)],
+          [19.0, maxAllowedRadius],
+        ];
+    const attemptsPerRing = isWaterwayBuilding ? 56 : 34;
 
     for (const [rMin, rMax] of ringBands) {
       if (rMax <= rMin + 0.5) continue;
 
-      for (let attempt = 0; attempt < 34; attempt++) {
+      for (let attempt = 0; attempt < attemptsPerRing; attempt++) {
         const angle = world.rng.range(0, Math.PI * 2);
         const dist = world.rng.range(rMin, rMax);
         const x = settlement.center.x + Math.cos(angle) * dist;
         const z = settlement.center.z + Math.sin(angle) * dist;
 
         if (!world.terrain.isWithinPlayableArea(x, z, 3.5)) continue;
-        if (!world.terrain.isWalkable(x, z, false)) continue;
-        if (world.terrain.getSlopeAt(x, z) > maxSlope) continue;
+        if (isWaterwayBuilding) {
+          const swimmable = world.terrain.isSwimmable(x, z);
+          const bankEdgeOk =
+            !swimmable &&
+            (type === 'beaver_lodge' || type === 'waterwheel_mill') &&
+            world.terrain.getCoastSignedDistance(x, z) > 12 &&
+            world.terrain.getHeightAt(x, z) <= world.terrain.waterLevel + 0.26 &&
+            world.terrain.getWaterDistance(x, z) < 3.6;
+          if (!swimmable && !bankEdgeOk) continue;
+        } else {
+          if (!world.terrain.isWalkable(x, z, false)) continue;
+          if (world.terrain.getSlopeAt(x, z) > maxSlope) continue;
+        }
 
         // Avoid stepping onto any settlement's central hearth plaza
         let overlapsPlaza = false;
@@ -1216,7 +1404,9 @@ export class SettlementManager {
         }
         if (overlaps) continue;
 
-        const groundY = world.terrain.getHeightAt(x, z);
+        const groundY = isWaterwayBuilding
+          ? world.terrain.waterLevel
+          : world.terrain.getHeightAt(x, z);
         const rotation =
           Math.atan2(settlement.center.x - x, settlement.center.z - z) +
           world.rng.range(-0.35, 0.35);

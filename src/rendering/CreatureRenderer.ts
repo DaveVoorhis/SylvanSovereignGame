@@ -45,6 +45,7 @@ interface CreatureRig {
   readonly baseTailX: number;
   workChipCooldown: number;
   readonly adaptation: VillageAdaptationId;
+  readonly swimRipple?: THREE.Mesh;
 }
 
 interface SparkVisual {
@@ -116,6 +117,15 @@ interface SharedGeometries {
   readonly reedHat: THREE.BufferGeometry;
   readonly strawHat: THREE.BufferGeometry;
   readonly furCollar: THREE.BufferGeometry;
+  readonly beaverTail: THREE.BufferGeometry;
+  readonly otterTail: THREE.BufferGeometry;
+  readonly fishBody: THREE.BufferGeometry;
+  readonly fishTailFin: THREE.BufferGeometry;
+  readonly fishDorsalFin: THREE.BufferGeometry;
+  readonly fishPectoralFinL: THREE.BufferGeometry;
+  readonly fishPectoralFinR: THREE.BufferGeometry;
+  readonly lilyHat: THREE.BufferGeometry;
+  readonly swimRipple: THREE.BufferGeometry;
 }
 
 function hashString(str: string): number {
@@ -341,6 +351,121 @@ function buildStrawHatGeo(): THREE.BufferGeometry {
     new THREE.Vector2(0.0, 0.175),
   ];
   return new THREE.LatheGeometry(pts, 20);
+}
+
+function buildBeaverTailGeo(): THREE.BufferGeometry {
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0);
+  shape.bezierCurveTo(-0.07, -0.08, -0.15, -0.26, -0.13, -0.46);
+  shape.quadraticCurveTo(0, -0.62, 0.13, -0.46);
+  shape.bezierCurveTo(0.15, -0.26, 0.07, -0.08, 0, 0);
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.036,
+    bevelEnabled: true,
+    bevelThickness: 0.014,
+    bevelSize: 0.012,
+    bevelSegments: 2,
+  });
+  geo.rotateX(Math.PI / 2);
+  geo.translate(0, 0.02, 0);
+  return geo;
+}
+
+function buildFishBodyGeo(): THREE.BufferGeometry {
+  // Streamlined hydrofoil koi profile revolved around Y, then oriented along +Z (nose forward)
+  const pts = [
+    new THREE.Vector2(0.0, -0.36),
+    new THREE.Vector2(0.045, -0.32),
+    new THREE.Vector2(0.115, -0.18),
+    new THREE.Vector2(0.19, 0.0),
+    new THREE.Vector2(0.215, 0.16),
+    new THREE.Vector2(0.175, 0.3),
+    new THREE.Vector2(0.095, 0.4),
+    new THREE.Vector2(0.0, 0.45),
+  ];
+  const geo = new THREE.LatheGeometry(pts, 20);
+  geo.rotateX(Math.PI / 2);
+  geo.scale(0.84, 1.04, 1.0);
+  return geo;
+}
+
+function buildFishTailFinGeo(): THREE.BufferGeometry {
+  // Flowing forked koi caudal fin in the Y-Z plane extending toward -Z
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0.045);
+  shape.quadraticCurveTo(-0.18, 0.19, -0.36, 0.25);
+  shape.quadraticCurveTo(-0.26, 0.08, -0.18, 0.0);
+  shape.quadraticCurveTo(-0.26, -0.08, -0.36, -0.25);
+  shape.quadraticCurveTo(-0.18, -0.19, 0, -0.045);
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.022,
+    bevelEnabled: true,
+    bevelThickness: 0.006,
+    bevelSize: 0.005,
+    bevelSegments: 1,
+  });
+  geo.translate(0, 0, -0.011);
+  geo.rotateY(-Math.PI / 2);
+  return geo;
+}
+
+function buildFishDorsalFinGeo(): THREE.BufferGeometry {
+  const shape = new THREE.Shape();
+  shape.moveTo(0.16, 0.0);
+  shape.quadraticCurveTo(0.04, 0.2, -0.16, 0.17);
+  shape.quadraticCurveTo(-0.24, 0.09, -0.2, 0.0);
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.018,
+    bevelEnabled: true,
+    bevelThickness: 0.005,
+    bevelSize: 0.004,
+    bevelSegments: 1,
+  });
+  geo.translate(0, 0, -0.009);
+  geo.rotateY(-Math.PI / 2);
+  return geo;
+}
+
+function buildFishPectoralFinGeo(side: -1 | 1): THREE.BufferGeometry {
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0);
+  shape.quadraticCurveTo(side * 0.14, 0.05, side * 0.23, -0.08);
+  shape.quadraticCurveTo(side * 0.12, -0.16, 0, -0.06);
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.014,
+    bevelEnabled: true,
+    bevelThickness: 0.004,
+    bevelSize: 0.004,
+    bevelSegments: 1,
+  });
+  geo.rotateX(Math.PI * 0.42);
+  return geo;
+}
+
+function buildLilyHatGeo(): THREE.BufferGeometry {
+  // Notched floating water-lily pad cap
+  const shape = new THREE.Shape();
+  const r = 0.36;
+  const notch = 0.26;
+  shape.moveTo(0, 0);
+  for (let i = 0; i <= 22; i++) {
+    const a = notch + (i / 22) * (Math.PI * 2 - notch * 2);
+    shape.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+  }
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.028,
+    bevelEnabled: true,
+    bevelThickness: 0.012,
+    bevelSize: 0.01,
+    bevelSegments: 2,
+  });
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(0, 0.02, 0);
+  return geo;
 }
 
 function buildWebbedFootGeo(): THREE.BufferGeometry {
@@ -741,6 +866,23 @@ function createSharedGeometries(): SharedGeometries {
   workChip.scale(1.4, 0.52, 0.85);
   workChip.computeVertexNormals();
 
+  const otterCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0, -0.05, -0.22),
+    new THREE.Vector3(0, -0.07, -0.48),
+    new THREE.Vector3(0, -0.04, -0.72),
+  ]);
+  const otterTail = createTaperedTubeGeo(
+    otterCurve,
+    14,
+    12,
+    (t) => THREE.MathUtils.lerp(0.088, 0.022, Math.pow(t, 0.82)),
+    true,
+  );
+
+  const swimRipple = new THREE.RingGeometry(0.42, 0.54, 24);
+  swimRipple.rotateX(-Math.PI / 2);
+
   return {
     tunic,
     mantle,
@@ -790,6 +932,15 @@ function createSharedGeometries(): SharedGeometries {
     reedHat: buildReedHatGeo(),
     strawHat: buildStrawHatGeo(),
     furCollar,
+    beaverTail: buildBeaverTailGeo(),
+    otterTail,
+    fishBody: buildFishBodyGeo(),
+    fishTailFin: buildFishTailFinGeo(),
+    fishDorsalFin: buildFishDorsalFinGeo(),
+    fishPectoralFinL: buildFishPectoralFinGeo(-1),
+    fishPectoralFinR: buildFishPectoralFinGeo(1),
+    lilyHat: buildLilyHatGeo(),
+    swimRipple,
   };
 }
 
@@ -840,6 +991,11 @@ export class CreatureRenderer {
   private readonly steelMat: THREE.MeshStandardMaterial;
   private readonly reedWeaveMat: THREE.MeshStandardMaterial;
   private readonly strawWeaveMat: THREE.MeshStandardMaterial;
+  private readonly beaverToothMat: THREE.MeshPhysicalMaterial;
+  private readonly fishFinMat: THREE.MeshPhysicalMaterial;
+  private readonly lilyPadHatMat: THREE.MeshPhysicalMaterial;
+  private readonly lotusPinkMat: THREE.MeshPhysicalMaterial;
+  private readonly swimRippleMat: THREE.MeshBasicMaterial;
 
   constructor(
     scene: THREE.Scene,
@@ -1021,6 +1177,43 @@ export class CreatureRenderer {
       sheenRoughness: 0.8,
       ...fabricDetail,
     });
+    this.beaverToothMat = new THREE.MeshPhysicalMaterial({
+      color: 0xf4ead2,
+      roughness: 0.22,
+      clearcoat: 0.45,
+      clearcoatRoughness: 0.2,
+    });
+    this.fishFinMat = new THREE.MeshPhysicalMaterial({
+      color: 0xffb36b,
+      roughness: 0.22,
+      clearcoat: 0.65,
+      clearcoatRoughness: 0.14,
+      iridescence: 0.55,
+      transparent: true,
+      opacity: 0.84,
+      side: THREE.DoubleSide,
+    });
+    this.lilyPadHatMat = new THREE.MeshPhysicalMaterial({
+      color: 0x3b9652,
+      roughness: 0.42,
+      clearcoat: 0.35,
+      clearcoatRoughness: 0.28,
+      sheen: 0.28,
+      sheenColor: new THREE.Color(0x9be29c),
+    });
+    this.lotusPinkMat = new THREE.MeshPhysicalMaterial({
+      color: 0xf68db3,
+      roughness: 0.36,
+      sheen: 0.48,
+      sheenColor: new THREE.Color(0xffd6e6),
+    });
+    this.swimRippleMat = new THREE.MeshBasicMaterial({
+      color: 0xc8f4ff,
+      transparent: true,
+      opacity: 0.44,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
 
     this.trackDisposables(
       this.eyeMat,
@@ -1049,6 +1242,11 @@ export class CreatureRenderer {
       this.steelMat,
       this.reedWeaveMat,
       this.strawWeaveMat,
+      this.beaverToothMat,
+      this.fishFinMat,
+      this.lilyPadHatMat,
+      this.lotusPinkMat,
+      this.swimRippleMat,
     );
 
     scene.add(this.rootGroup);
@@ -1224,7 +1422,11 @@ export class CreatureRenderer {
 
       const isBird = c.def.locomotion === 'fly';
       const isSnake = c.def.locomotion === 'slither';
+      const isFish = c.species === 'fish';
       const isAirborne = isBird && c.flightAltitude > 0.3;
+      const isSwimmingInWater =
+        Boolean(c.def.aquatic) &&
+        this.world.terrain.getHeightAt(c.x, c.z) < this.world.terrain.waterLevel - 0.02;
 
       if (c.def.locomotion === 'hop') {
         const hopWave = Math.abs(Math.sin(phase));
@@ -1247,17 +1449,33 @@ export class CreatureRenderer {
       } else if (c.def.locomotion === 'scurry') {
         bobY = Math.abs(Math.sin(phase * 1.6)) * 0.11;
         tiltZ += Math.sin(phase * 1.6) * 0.11;
+      } else if (isFish) {
+        bobY = Math.sin(phase * 1.4 + seed) * 0.055;
+        tiltZ += Math.sin(phase * 2.1 + seed) * 0.1;
+        tiltX = Math.sin(phase * 1.1 + seed) * 0.06;
+        if (rig.leftArm) {
+          rig.leftArm.rotation.y = 0.18 + Math.sin(phase * 2.8 + seed) * 0.42;
+          rig.leftArm.rotation.z = Math.cos(phase * 2.8 + seed) * 0.18;
+        }
+        if (rig.rightArm) {
+          rig.rightArm.rotation.y = -0.18 - Math.sin(phase * 2.8 + seed) * 0.42;
+          rig.rightArm.rotation.z = -Math.cos(phase * 2.8 + seed) * 0.18;
+        }
       } else if (isSnake) {
         bobY = Math.sin(phase * 1.3) * 0.032;
         tiltZ += Math.sin(phase * 1.8) * 0.16;
         tiltX = 0.07;
+      } else if (isSwimmingInWater) {
+        bobY = Math.sin(phase * 1.5 + seed) * 0.045;
+        tiltX = 0.28;
+        tiltZ += Math.sin(phase * 1.5 + seed) * 0.08;
       } else {
         bobY = Math.abs(Math.sin(phase)) * 0.13;
         tiltZ += Math.sin(phase) * 0.07;
       }
 
       // Arm & foot stride animation for ground-walking/hopping creatures
-      if (!isBird && !isSnake) {
+      if (!isBird && !isSnake && !isFish) {
         const stride = c.activity === 'resting' ? 0 : Math.sin(phase * (c.def.locomotion === 'scurry' ? 1.6 : 1.0));
         if (rig.leftArm) {
           rig.leftArm.rotation.x = stride * 0.52;
@@ -1436,10 +1654,16 @@ export class CreatureRenderer {
           rig.rightArm.rotation.x = -0.75;
         }
       } else if (c.activity === 'resting') {
-        bobY = -0.11;
-        tiltX = 0.2;
-        squashY = 0.94 + Math.sin(t * 2.4 + seed) * 0.022;
-        headPitch = 0.25;
+        if (isFish) {
+          bobY = -0.04 + Math.sin(t * 1.8 + seed) * 0.02;
+          tiltX = 0.04;
+          headPitch = 0.05;
+        } else {
+          bobY = -0.11;
+          tiltX = 0.2;
+          squashY = 0.94 + Math.sin(t * 2.4 + seed) * 0.022;
+          headPitch = 0.25;
+        }
       }
 
       const effectiveScale = c.getSizeScale();
@@ -1448,6 +1672,7 @@ export class CreatureRenderer {
       rig.bodyGroup.position.y = bobY;
       rig.bodyGroup.rotation.z = tiltZ;
       rig.bodyGroup.rotation.x = tiltX;
+      rig.bodyGroup.rotation.y = isFish ? Math.sin(phase * 2.4 + seed) * 0.12 : 0;
 
       // Adorable youthful proportions: slightly larger head on newborn young & juveniles
       const headScale = c.lifeStage === 'young' ? 1.18 : c.lifeStage === 'juvenile' ? 1.08 : 1.0;
@@ -1463,9 +1688,15 @@ export class CreatureRenderer {
         rig.rightEar.rotation.z = rig.baseRightEarZ - twitch * 0.5 - bounce;
       }
 
-      // Expressive wagging / bobbing tails
+      // Expressive wagging / bobbing / swimming tails
       if (rig.tail) {
-        if (isSnake) {
+        if (isFish) {
+          rig.tail.rotation.y = Math.sin(phase * 3.4 + seed) * 0.56;
+          rig.tail.rotation.x = Math.sin(phase * 1.7 + seed) * 0.06;
+        } else if (isSwimmingInWater) {
+          rig.tail.rotation.y = Math.sin(phase * 2.4 + seed) * 0.44;
+          rig.tail.rotation.x = rig.baseTailX + Math.sin(phase * 2.4 + seed) * 0.14;
+        } else if (isSnake) {
           rig.tail.rotation.y = Math.sin(phase * 2.1 + seed) * 0.48;
           rig.tail.rotation.x = rig.baseTailX;
         } else if (c.species === 'cat') {
@@ -1477,12 +1708,23 @@ export class CreatureRenderer {
         }
       }
 
+      if (rig.swimRipple) {
+        rig.swimRipple.visible = isSwimmingInWater;
+        if (isSwimmingInWater) {
+          const pulse = (t * 0.85 + seed * 0.25) % 1;
+          rig.swimRipple.scale.setScalar(0.84 + pulse * 0.42);
+          rig.swimRipple.position.y = this.world.terrain.waterLevel - rig.root.position.y + 0.025;
+        }
+      }
+
       // Twinkling golden fairy-ring selection halo
       const isSelected = selection?.kind === 'creature' && selection.id === c.id;
       rig.selectionGroup.visible = isSelected;
       if (isSelected) {
         rig.selectionGroup.rotation.y += dt * 1.8;
-        rig.selectionGroup.position.y = 0.08 + Math.sin(t * 4) * 0.03;
+        rig.selectionGroup.position.y = isFish
+          ? this.world.terrain.waterLevel - rig.root.position.y + 0.06 + Math.sin(t * 4) * 0.025
+          : 0.08 + Math.sin(t * 4) * 0.03;
       }
     }
 
@@ -1523,10 +1765,12 @@ export class CreatureRenderer {
     const isGlossyBird = isCrow || isMagpie;
     const isSnake = species === 'snake';
     const isTurtle = species === 'turtle';
+    const isFish = species === 'fish';
+    const isAquaticMammal = species === 'beaver' || species === 'otter';
     const isBird = def.silhouette === 'bird' || def.silhouette === 'owl';
-    const furMap = isFrog || isSnake || isTurtle ? null : (this.textures?.furMap ?? null);
-    const furNormal = isFrog || isSnake ? null : (this.textures?.furNormal ?? null);
-    const furBump = isFrog || isGlossyBird ? null : (this.textures?.furBump ?? null);
+    const furMap = isFrog || isSnake || isTurtle || isFish ? null : (this.textures?.furMap ?? null);
+    const furNormal = isFrog || isSnake || isFish ? null : (this.textures?.furNormal ?? null);
+    const furBump = isFrog || isGlossyBird || isFish ? null : (this.textures?.furBump ?? null);
     const fabricBump = this.textures?.fabricBump ?? null;
     const fabricNormal = this.textures?.fabricNormal ?? null;
 
@@ -1548,15 +1792,15 @@ export class CreatureRenderer {
 
     const primary = new THREE.MeshPhysicalMaterial({
       color: def.primaryColor,
-      map: isGlossyBird ? null : furMap,
+      map: isGlossyBird || isFish ? null : furMap,
       ...furDetailPrimary,
-      roughness: isFrog ? 0.28 : isSnake ? 0.36 : isGlossyBird ? 0.32 : isTurtle ? 0.66 : isBird ? 0.74 : 0.88,
-      metalness: isGlossyBird ? 0.15 : 0.0,
-      clearcoat: isFrog ? 0.68 : isSnake ? 0.52 : isTurtle ? 0.12 : 0.0,
-      clearcoatRoughness: isFrog ? 0.2 : isSnake ? 0.24 : isTurtle ? 0.45 : 0.0,
-      iridescence: isMagpie ? 0.72 : isCrow ? 0.58 : 0.0,
-      iridescenceIOR: 1.36,
-      sheen: isFrog ? 0.0 : isSnake ? 0.14 : isTurtle ? 0.18 : isGlossyBird ? 0.38 : isBird ? 0.65 : 0.85,
+      roughness: isFish ? 0.18 : isFrog ? 0.28 : isSnake ? 0.36 : isGlossyBird ? 0.32 : isAquaticMammal ? 0.54 : isTurtle ? 0.66 : isBird ? 0.74 : 0.88,
+      metalness: isFish ? 0.14 : isGlossyBird ? 0.15 : 0.0,
+      clearcoat: isFish ? 0.92 : isFrog ? 0.68 : isSnake ? 0.52 : isAquaticMammal ? 0.34 : isTurtle ? 0.12 : 0.0,
+      clearcoatRoughness: isFish ? 0.08 : isFrog ? 0.2 : isSnake ? 0.24 : isAquaticMammal ? 0.28 : isTurtle ? 0.45 : 0.0,
+      iridescence: isFish ? 0.92 : isMagpie ? 0.72 : isCrow ? 0.58 : 0.0,
+      iridescenceIOR: isFish ? 1.42 : 1.36,
+      sheen: isFrog ? 0.0 : isFish ? 0.22 : isSnake ? 0.14 : isTurtle ? 0.18 : isGlossyBird ? 0.38 : isAquaticMammal ? 0.72 : isBird ? 0.65 : 0.85,
       sheenRoughness: isGlossyBird ? 0.4 : isBird ? 0.48 : 0.62,
       sheenColor: primarySheen,
     });
@@ -1633,8 +1877,13 @@ export class CreatureRenderer {
       this.turtleShellRimMat,
       this.reedWeaveMat,
       this.strawWeaveMat,
+      this.beaverToothMat,
+      this.fishFinMat,
+      this.lilyPadHatMat,
+      this.lotusPinkMat,
+      this.swimRippleMat,
     ];
-    const archetypes: SpeciesId[] = ['fox', 'owl', 'frog', 'crow', 'magpie', 'snake', 'turtle'];
+    const archetypes: SpeciesId[] = ['fox', 'owl', 'frog', 'crow', 'magpie', 'snake', 'turtle', 'beaver', 'otter', 'fish'];
     for (const sp of archetypes) {
       const set = this.getSpeciesMaterialsById(sp);
       mats.push(set.primary, set.secondary, set.accent, set.cloak);
@@ -1776,71 +2025,84 @@ export class CreatureRenderer {
     const isFrog = c.species === 'frog';
     const isSnake = c.species === 'snake';
     const isTurtle = c.species === 'turtle';
+    const isBeaver = c.species === 'beaver';
+    const isOtter = c.species === 'otter';
+    const isFish = c.species === 'fish';
     const isBear = c.species === 'bear';
-    const isSlender = c.species === 'weasel' || isSnake;
+    const isSlender = c.species === 'weasel' || isSnake || isOtter;
     const isStout =
       c.species === 'badger' ||
       c.species === 'hedgehog' ||
       c.species === 'owl' ||
       isBear ||
+      isBeaver ||
       c.species === 'raccoon';
     const homeSettlement = this.world.getSettlement(c.settlementId);
     const adaptation: VillageAdaptationId = homeSettlement?.adaptation ?? 'forest_canopy';
     const adaptMats = this.getAdaptationMaterials(adaptation);
 
-    // 1. Cozy pear-shaped woodland tunic + regional biome-adapted shoulder capelet + belt & buckle
-    const tunic = addPart(new THREE.Mesh(this.geo.tunic, mats.cloak));
-    if (isBear) tunic.scale.set(1.22, 0.98, 1.18);
-    else if (isStout) tunic.scale.set(1.16, 0.96, 1.12);
-    else if (isSnake) {
-      tunic.scale.set(0.68, 0.8, 0.72);
-      tunic.position.y = 0.2;
-    } else if (isSlender) tunic.scale.set(0.84, 1.06, 0.86);
-    else if (isBird) tunic.scale.set(0.96, 0.94, 1.04);
+    // 1. Cozy pear-shaped woodland tunic + regional biome-adapted shoulder capelet + belt & buckle (skipped for swimming koi fish)
+    let chestBib!: THREE.Mesh;
+    if (!isFish) {
+      const tunic = addPart(new THREE.Mesh(this.geo.tunic, mats.cloak));
+      if (isBear) tunic.scale.set(1.22, 0.98, 1.18);
+      else if (isStout) tunic.scale.set(1.16, 0.96, 1.12);
+      else if (isSnake) {
+        tunic.scale.set(0.68, 0.8, 0.72);
+        tunic.position.y = 0.2;
+      } else if (isSlender) tunic.scale.set(0.84, 1.06, 0.86);
+      else if (isBird) tunic.scale.set(0.96, 0.94, 1.04);
 
-    // Regional biome-adapted shoulder mantle
-    const mantleMat = adaptMats.mantle;
-    const mantle = addPart(new THREE.Mesh(this.geo.mantle, mantleMat));
-    if (isBear) mantle.scale.set(1.22, 0.98, 1.18);
-    else if (isStout) mantle.scale.set(1.16, 0.96, 1.12);
-    else if (isSnake) {
-      mantle.scale.set(0.76, 0.86, 0.78);
-      mantle.position.y = 0.14;
-    } else if (isSlender) mantle.scale.set(0.86, 1.04, 0.88);
-    if (isFrog) mantle.scale.set(1.14, 0.85, 1.14);
+      // Regional biome-adapted shoulder mantle
+      const mantleMat = adaptMats.mantle;
+      const mantle = addPart(new THREE.Mesh(this.geo.mantle, mantleMat));
+      if (isBear) mantle.scale.set(1.22, 0.98, 1.18);
+      else if (isStout) mantle.scale.set(1.16, 0.96, 1.12);
+      else if (isSnake) {
+        mantle.scale.set(0.76, 0.86, 0.78);
+        mantle.position.y = 0.14;
+      } else if (isSlender) mantle.scale.set(0.86, 1.04, 0.88);
+      if (isFrog) mantle.scale.set(1.14, 0.85, 1.14);
 
-    // Cozy leather belt & shiny brass clasp
-    const belt = addPart(new THREE.Mesh(this.geo.belt, this.leatherMat));
-    belt.position.y = isSnake ? 0.56 : 0.44;
-    if (isBear) belt.scale.set(1.2, 1, 1.18);
-    else if (isStout) belt.scale.set(1.15, 1, 1.12);
-    else if (isSnake) belt.scale.set(0.68, 0.88, 0.7);
-    else if (isSlender) belt.scale.set(0.84, 1, 0.86);
-    const buckle = addPart(new THREE.Mesh(this.geo.buckle, this.brassMat));
-    buckle.position.set(0, isSnake ? 0.56 : 0.44, isBear ? 0.34 : isStout ? 0.32 : isSnake ? 0.2 : isSlender ? 0.24 : 0.285);
+      // Cozy leather belt & shiny brass clasp
+      const belt = addPart(new THREE.Mesh(this.geo.belt, this.leatherMat));
+      belt.position.y = isSnake ? 0.56 : 0.44;
+      if (isBear) belt.scale.set(1.2, 1, 1.18);
+      else if (isStout) belt.scale.set(1.15, 1, 1.12);
+      else if (isSnake) belt.scale.set(0.68, 0.88, 0.7);
+      else if (isSlender) belt.scale.set(0.84, 1, 0.86);
+      const buckle = addPart(new THREE.Mesh(this.geo.buckle, this.brassMat));
+      buckle.position.set(0, isSnake ? 0.56 : 0.44, isBear ? 0.34 : isStout ? 0.32 : isSnake ? 0.2 : isSlender ? 0.24 : 0.285);
 
-    // Soft plush chest/belly bib showing above the tunic collar
-    const chestBib = addPart(
-      new THREE.Mesh(this.sphereGeo(0.21, 14, 12), mats.secondary),
-    );
-    if (isSnake) {
-      chestBib.scale.set(0.62, 0.92, 0.65);
-      chestBib.position.set(0, 0.66, 0.08);
-    } else if (isTurtle) {
-      // Warm ochre turtle plastron front shield
-      chestBib.scale.set(1.14, 1.24, 0.62);
-      chestBib.position.set(0, 0.49, 0.19);
-    } else {
-      chestBib.scale.set(isSlender ? 0.82 : 0.95, 1.02, 0.85);
-      chestBib.position.set(0, 0.57, isBird ? 0.14 : 0.11);
+      // Soft plush chest/belly bib showing above the tunic collar
+      chestBib = addPart(
+        new THREE.Mesh(this.sphereGeo(0.21, 14, 12), mats.secondary),
+      );
+      if (isSnake) {
+        chestBib.scale.set(0.62, 0.92, 0.65);
+        chestBib.position.set(0, 0.66, 0.08);
+      } else if (isTurtle) {
+        // Warm ochre turtle plastron front shield
+        chestBib.scale.set(1.14, 1.24, 0.62);
+        chestBib.position.set(0, 0.49, 0.19);
+      } else {
+        chestBib.scale.set(isSlender ? 0.82 : 0.95, 1.02, 0.85);
+        chestBib.position.set(0, 0.57, isBird ? 0.14 : 0.11);
+      }
     }
 
     // 2. Articulated Head Group (for cute tilts, bobs, and expressions)
     const headGroup = new THREE.Group();
-    headGroup.position.set(0, isSnake ? 0.98 : isTurtle ? 0.98 : 0.95, isTurtle ? 0.12 : 0.04);
+    headGroup.position.set(
+      0,
+      isFish ? 0.0 : isSnake ? 0.98 : isTurtle ? 0.98 : 0.95,
+      isFish ? 0.24 : isTurtle ? 0.12 : 0.04,
+    );
     bodyGroup.add(headGroup);
 
-    const headMesh = addPart(new THREE.Mesh(this.geo.head, mats.primary), headGroup);
+    const headMesh = isFish
+      ? new THREE.Object3D()
+      : addPart(new THREE.Mesh(this.geo.head, mats.primary), headGroup);
     if (isFrog) {
       headMesh.scale.set(1.22, 0.82, 1.06);
     } else if (c.species === 'owl') {
@@ -1909,21 +2171,23 @@ export class CreatureRenderer {
       }
     };
 
-    // 3. Articulated Feet (or coiled serpentine lower body for snakes)
+    // 3. Articulated Feet (or coiled serpentine lower body for snakes; skipped for swimming fish)
     let leftFoot: THREE.Object3D | undefined;
     let rightFoot: THREE.Object3D | undefined;
-    if (isSnake) {
+    if (isFish) {
+      // Fish glide with pectoral & caudal fins
+    } else if (isSnake) {
       addPart(new THREE.Mesh(this.geo.snakeCoil, mats.primary));
     } else {
       const footGeo = isBird
         ? this.geo.birdFoot
-        : isFrog || isTurtle
+        : isFrog || isTurtle || isBeaver || isOtter
           ? this.geo.webbedFoot
           : this.geo.boot;
       const footMat =
         c.species === 'pigeon'
           ? this.nosePinkMat
-          : isBird
+          : isBird || isBeaver || isOtter
             ? mats.accent
             : isFrog || isTurtle
               ? mats.primary
@@ -1984,7 +2248,7 @@ export class CreatureRenderer {
       }
       bodyGroup.add(rPivot);
       rightArm = rPivot;
-    } else if (!isSnake) {
+    } else if (!isSnake && !isFish) {
       const armOffset = isBear ? 0.33 : isStout ? 0.3 : isSlender ? 0.22 : 0.26;
       const pawMat =
         c.species === 'badger' || isBear || c.species === 'raccoon'
@@ -2673,6 +2937,138 @@ export class CreatureRenderer {
       stub.position.set(0, 0, -0.06);
       bodyGroup.add(tailGroup);
       tail = tailGroup;
+    } else if (isBeaver) {
+      // Plump woodland beaver — rosy rounded cheeks, iconic ivory buck teeth, small ears & broad paddle tail!
+      headMesh.scale.set(1.14, 0.96, 1.06);
+      for (const sx of [-0.115, 0.115]) {
+        const cheek = addPart(new THREE.Mesh(this.sphereGeo(0.115, 12, 10), mats.secondary), headGroup);
+        cheek.scale.set(1.08, 0.88, 0.94);
+        cheek.position.set(sx, -0.06, 0.19);
+      }
+      const snout = addPart(new THREE.Mesh(this.sphereGeo(0.11, 12, 10), mats.secondary), headGroup);
+      snout.scale.set(1.08, 0.78, 1.02);
+      snout.position.set(0, -0.045, 0.24);
+      const nose = addPart(new THREE.Mesh(this.geo.nose, this.noseBlackMat), headGroup);
+      nose.scale.set(1.35, 0.95, 0.92);
+      nose.position.set(0, -0.005, 0.32);
+
+      // Two prominent glossy ivory beaver incisors!
+      for (const sx of [-0.028, 0.028]) {
+        const tooth = addPart(new THREE.Mesh(this.boxGeo(0.044, 0.088, 0.028), this.beaverToothMat), headGroup);
+        tooth.position.set(sx, -0.105, 0.305);
+      }
+
+      buildCuteEye(-0.12, 0.055, 0.23, 1.02);
+      buildCuteEye(0.12, 0.055, 0.23, 1.02);
+      addWhiskers(-0.04, 0.27, 0.09);
+
+      for (const side of [-1, 1] as const) {
+        const ePivot = new THREE.Group();
+        ePivot.position.set(side * 0.19, 0.18, -0.02);
+        const ear = addPart(new THREE.Mesh(this.sphereGeo(0.068, 10, 8), mats.primary), ePivot);
+        ear.scale.set(0.92, 0.95, 0.56);
+        headGroup.add(ePivot);
+        if (side === -1) {
+          leftEar = ePivot;
+          baseLeftEarZ = 0.22;
+        } else {
+          rightEar = ePivot;
+          baseRightEarZ = -0.22;
+        }
+      }
+
+      // Broad flat leathery paddle tail
+      const tailGroup = new THREE.Group();
+      tailGroup.position.set(0, 0.2, -0.27);
+      addPart(new THREE.Mesh(this.geo.beaverTail, mats.accent), tailGroup);
+      bodyGroup.add(tailGroup);
+      tail = tailGroup;
+      baseTailX = 0.16;
+    } else if (isOtter) {
+      // Playful sleek river otter — cream throat & muzzle, wide whiskers, tiny rounded ears & streamlined rudder tail!
+      headMesh.scale.set(1.04, 0.9, 1.12);
+      const muzzle = addPart(new THREE.Mesh(this.sphereGeo(0.135, 12, 10), mats.secondary), headGroup);
+      muzzle.scale.set(1.16, 0.78, 0.96);
+      muzzle.position.set(0, -0.055, 0.22);
+      const nose = addPart(new THREE.Mesh(this.geo.nose, this.noseBlackMat), headGroup);
+      nose.scale.set(1.38, 0.9, 0.95);
+      nose.position.set(0, -0.015, 0.315);
+
+      buildCuteEye(-0.115, 0.055, 0.23, 1.08);
+      buildCuteEye(0.115, 0.055, 0.23, 1.08);
+      addWhiskers(-0.045, 0.27, 0.105);
+
+      for (const side of [-1, 1] as const) {
+        const ePivot = new THREE.Group();
+        ePivot.position.set(side * 0.195, 0.15, -0.01);
+        const ear = addPart(new THREE.Mesh(this.sphereGeo(0.056, 10, 8), mats.primary), ePivot);
+        ear.scale.set(0.88, 0.92, 0.52);
+        headGroup.add(ePivot);
+        if (side === -1) {
+          leftEar = ePivot;
+          baseLeftEarZ = 0.26;
+        } else {
+          rightEar = ePivot;
+          baseRightEarZ = -0.26;
+        }
+      }
+
+      // Strong tapered rudder tail
+      const tailGroup = new THREE.Group();
+      tailGroup.position.set(0, 0.22, -0.25);
+      addPart(new THREE.Mesh(this.geo.otterTail, mats.primary), tailGroup);
+      bodyGroup.add(tailGroup);
+      tail = tailGroup;
+      baseTailX = 0.08;
+    } else if (isFish) {
+      // Shimmering River Koi — centered at local y=0 so world c.y submerges the body cleanly inside the water!
+      const koiBody = addPart(new THREE.Mesh(this.geo.fishBody, mats.primary));
+      koiBody.position.set(0, 0.0, 0);
+
+      // Calico white & ruby koi markings hugging the dorsal back
+      const patchA = addPart(new THREE.Mesh(this.sphereGeo(0.145, 12, 10), mats.secondary));
+      patchA.scale.set(0.95, 0.72, 1.25);
+      patchA.position.set(0, 0.07, 0.12);
+      const patchB = addPart(new THREE.Mesh(this.sphereGeo(0.11, 10, 8), mats.accent));
+      patchB.scale.set(0.88, 0.65, 1.15);
+      patchB.position.set(0.02, 0.06, -0.1);
+
+      // Flowing translucent dorsal crest
+      const dorsal = addPart(new THREE.Mesh(this.geo.fishDorsalFin, this.fishFinMat));
+      dorsal.position.set(0, 0.18, 0.02);
+
+      // Articulated side pectoral fins (stored as leftArm/rightArm for sculling swim motion)
+      const lFinPivot = new THREE.Group();
+      lFinPivot.position.set(-0.15, -0.05, 0.1);
+      addPart(new THREE.Mesh(this.geo.fishPectoralFinL, this.fishFinMat), lFinPivot);
+      bodyGroup.add(lFinPivot);
+      leftArm = lFinPivot;
+
+      const rFinPivot = new THREE.Group();
+      rFinPivot.position.set(0.15, -0.05, 0.1);
+      addPart(new THREE.Mesh(this.geo.fishPectoralFinR, this.fishFinMat), rFinPivot);
+      bodyGroup.add(rFinPivot);
+      rightArm = rFinPivot;
+
+      // Articulated forked flowing koi tail fin
+      const tailGroup = new THREE.Group();
+      tailGroup.position.set(0, 0.0, -0.34);
+      addPart(new THREE.Mesh(this.geo.fishTailFin, this.fishFinMat), tailGroup);
+      bodyGroup.add(tailGroup);
+      tail = tailGroup;
+
+      // Expressive clearcoated eyes + dainty koi mouth & golden barbels on headGroup
+      buildCuteEye(-0.125, 0.04, 0.06, 1.02, this.owlIrisMat);
+      buildCuteEye(0.125, 0.04, 0.06, 1.02, this.owlIrisMat);
+      const lips = addPart(new THREE.Mesh(this.sphereGeo(0.046, 8, 6), this.nosePinkMat), headGroup);
+      lips.scale.set(1.2, 0.68, 0.72);
+      lips.position.set(0, -0.03, 0.21);
+      for (const side of [-1, 1] as const) {
+        const barbel = addPart(new THREE.Mesh(this.cylGeo(0.008, 0.004, 0.14, 6), this.brassMat), headGroup);
+        barbel.rotation.z = side * 0.78;
+        barbel.rotation.x = 0.35;
+        barbel.position.set(side * 0.08, -0.055, 0.17);
+      }
     } else {
       // Mouse & Rat — charming oversized cupped pink-lined saucer ears, cute tapered snout, whiskers & curled tail!
       const isMouse = c.species === 'mouse';
@@ -2723,7 +3119,19 @@ export class CreatureRenderer {
     }
 
     // 6. Whimsical Role Accessories (ALL 6 roles!)
-    if (c.role === 'mystic') {
+    if (isFish) {
+      if (c.role === 'mystic') {
+        const pearl = addPart(new THREE.Mesh(this.octaGeo(0.075, 1), this.crystalGlowMat), headGroup);
+        pearl.position.set(0, 0.24, -0.02);
+      } else if (c.role === 'guard') {
+        const crest = addPart(new THREE.Mesh(this.torusGeo(0.11, 0.018, 6, 14), this.brassMat), headGroup);
+        crest.rotation.x = Math.PI / 2;
+        crest.position.set(0, 0.15, -0.02);
+      } else if (c.role === 'artisan' || c.role === 'merchant') {
+        const lantern = addPart(new THREE.Mesh(this.sphereGeo(0.052, 8, 6), this.lanternGlowMat), headGroup);
+        lantern.position.set(0, 0.2, 0.04);
+      }
+    } else if (c.role === 'mystic') {
       // Crooked star-trimmed wizard hat + golden band
       const hat = addPart(new THREE.Mesh(this.geo.wizardHat, mats.cloak), headGroup);
       hat.position.set(0, 0.2, 0.0);
@@ -2804,7 +3212,7 @@ export class CreatureRenderer {
 
     // Builder's idle wooden mallet (hidden whenever an active construction stage tool is equipped)
     let idleBuilderMallet: THREE.Group | undefined;
-    if (c.role === 'builder' && !isBird && !isSnake && rightArm) {
+    if (c.role === 'builder' && !isBird && !isSnake && !isFish && rightArm) {
       idleBuilderMallet = new THREE.Group();
       idleBuilderMallet.name = 'idle_builder_mallet';
       const handle = addPart(new THREE.Mesh(this.cylGeo(0.022, 0.026, 0.36, 8), this.woodMat), idleBuilderMallet);
@@ -2823,10 +3231,10 @@ export class CreatureRenderer {
     }
 
     // 6b. Stage-specific handheld construction tools (axe, spade, mason's trowel, carpenter's hammer)
-    const toolMount: THREE.Object3D = !isBird && !isSnake && rightArm ? rightArm : headGroup;
+    const toolMount: THREE.Object3D = !isBird && !isSnake && !isFish && rightArm ? rightArm : headGroup;
     const toolHolder = new THREE.Group();
     toolHolder.name = 'work_tool_holder';
-    if (isBird || isSnake) {
+    if (isBird || isSnake || isFish) {
       toolHolder.position.set(0, -0.04, 0.32);
       toolHolder.scale.setScalar(0.65);
     } else {
@@ -2906,14 +3314,16 @@ export class CreatureRenderer {
 
     // 6c. Emigrating pioneer pack (leather satchel + rolled cloak bedroll, shown during village-founding treks)
     const pioneerPack = new THREE.Group();
-    const pBackZ = isTurtle ? -0.45 : isBear ? -0.34 : -0.29;
-    const pBag = addPart(new THREE.Mesh(this.boxGeo(0.3, 0.34, 0.2), this.leatherMat), pioneerPack);
-    pBag.position.set(0, isTurtle ? 0.62 : 0.56, pBackZ);
-    const pRoll = addPart(new THREE.Mesh(this.cylGeo(0.07, 0.07, 0.34, 10), mats.scarf), pioneerPack);
-    pRoll.rotation.z = Math.PI / 2;
-    pRoll.position.set(0, isTurtle ? 0.82 : 0.76, pBackZ);
-    const pLantern = addPart(new THREE.Mesh(this.cylGeo(0.045, 0.038, 0.11, 8), this.lanternGlowMat), pioneerPack);
-    pLantern.position.set(-0.18, isTurtle ? 0.5 : 0.44, pBackZ - 0.05);
+    if (!isFish) {
+      const pBackZ = isTurtle ? -0.45 : isBear ? -0.34 : -0.29;
+      const pBag = addPart(new THREE.Mesh(this.boxGeo(0.3, 0.34, 0.2), this.leatherMat), pioneerPack);
+      pBag.position.set(0, isTurtle ? 0.62 : 0.56, pBackZ);
+      const pRoll = addPart(new THREE.Mesh(this.cylGeo(0.07, 0.07, 0.34, 10), mats.scarf), pioneerPack);
+      pRoll.rotation.z = Math.PI / 2;
+      pRoll.position.set(0, isTurtle ? 0.82 : 0.76, pBackZ);
+      const pLantern = addPart(new THREE.Mesh(this.cylGeo(0.045, 0.038, 0.11, 8), this.lanternGlowMat), pioneerPack);
+      pLantern.position.set(-0.18, isTurtle ? 0.5 : 0.44, pBackZ - 0.05);
+    }
     pioneerPack.visible = false;
     bodyGroup.add(pioneerPack);
 
@@ -2964,18 +3374,33 @@ export class CreatureRenderer {
       }
     } else if (adaptation === 'desert_oasis') {
       // Breezy saffron linen sun-scarf collar + desert headwrap band
-      const scarf = addPart(new THREE.Mesh(this.geo.furCollar, adaptMats.accent));
-      scarf.scale.set(0.95, 0.65, 0.95);
-      scarf.position.set(0, 0.78, 0.02);
-      if (!hasRoleHat && !isFrog) {
+      if (!isFish) {
+        const scarf = addPart(new THREE.Mesh(this.geo.furCollar, adaptMats.accent));
+        scarf.scale.set(0.95, 0.65, 0.95);
+        scarf.position.set(0, 0.78, 0.02);
+      }
+      if (!hasRoleHat && !isFrog && !isFish) {
         const wrap = addPart(new THREE.Mesh(this.torusGeo(0.24, 0.036, 8, 18), adaptMats.accent), headGroup);
         wrap.rotation.x = Math.PI / 2 + 0.12;
         wrap.position.set(0, 0.16, 0);
       }
+    } else if (adaptation === 'waterway_haven') {
+      // Floating water-lily pad cap topped with a dainty pink lotus bud!
+      if (isFish) {
+        const lotus = addPart(new THREE.Mesh(this.sphereGeo(0.055, 8, 6), this.lotusPinkMat), headGroup);
+        lotus.scale.set(1.15, 0.72, 1.15);
+        lotus.position.set(0, 0.14, 0.02);
+      } else if (!hasRoleHat && !isFrog) {
+        const lilyCap = addPart(new THREE.Mesh(this.geo.lilyHat, this.lilyPadHatMat), headGroup);
+        lilyCap.position.set(0, 0.21, -0.01);
+        const lotusBud = addPart(new THREE.Mesh(this.sphereGeo(0.068, 10, 8), this.lotusPinkMat), headGroup);
+        lotusBud.scale.set(1.15, 0.78, 1.15);
+        lotusBud.position.set(0.08, 0.28, 0.04);
+      }
     }
 
     // Subtle natural individual touch: some creatures tuck a tiny woodland leaf sprig behind an ear
-    if (seed > 0.72 && c.role !== 'mystic' && c.role !== 'guard') {
+    if (seed > 0.72 && c.role !== 'mystic' && c.role !== 'guard' && !isFish) {
       const sprig = addPart(new THREE.Mesh(this.sphereGeo(0.042, 8, 6), this.leafMat), headGroup);
       sprig.scale.set(1.25, 0.38, 0.85);
       sprig.rotation.set(0.3, 0.4, 0.5);
@@ -2996,6 +3421,14 @@ export class CreatureRenderer {
     }
     selectionGroup.visible = false;
     root.add(selectionGroup);
+
+    let swimRipple: THREE.Mesh | undefined;
+    if (def.aquatic) {
+      swimRipple = new THREE.Mesh(this.geo.swimRipple, this.swimRippleMat);
+      swimRipple.position.y = 0.06;
+      swimRipple.visible = false;
+      root.add(swimRipple);
+    }
 
     return {
       root,
@@ -3018,6 +3451,7 @@ export class CreatureRenderer {
       baseTailX,
       workChipCooldown: 0.15,
       adaptation,
+      swimRipple,
     };
   }
 

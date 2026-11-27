@@ -10,6 +10,10 @@ export interface SpeciesDefinition {
   readonly locomotion: LocomotionKind;
   readonly amphibious: boolean;
   readonly aerial: boolean;
+  /** True for aquatic swimmers (beavers, otters, fish) able to swim through full-depth inland waterways. */
+  readonly aquatic?: boolean;
+  /** True for water-dwelling creatures (fish) that live exclusively in inland freshwater waterways. */
+  readonly strictlyAquatic?: boolean;
   readonly bodyScale: number;
   readonly baseSpeed: number;
   readonly maxHealth: number;
@@ -38,7 +42,10 @@ export interface SpeciesDefinition {
     | 'raccoon'
     | 'weasel'
     | 'snake'
-    | 'turtle';
+    | 'turtle'
+    | 'beaver'
+    | 'otter'
+    | 'fish';
   readonly lore: string;
 }
 
@@ -568,6 +575,87 @@ export const SPECIES_CATALOG: Record<SpeciesId, SpeciesDefinition> = {
     silhouette: 'bird',
     lore: 'Iridescent treasure-seekers and garrulous jewelers who prize every gleaming coin and glass bead.',
   },
+  beaver: {
+    id: 'beaver',
+    displayName: 'Beaver',
+    pluralName: 'Beavers',
+    youngSingular: 'kit',
+    youngPlural: 'kits',
+    litterSizeRange: [2, 4],
+    locomotion: 'swim',
+    amphibious: true,
+    aerial: false,
+    aquatic: true,
+    strictlyAquatic: false,
+    bodyScale: 1.06,
+    baseSpeed: 3.7,
+    maxHealth: 118,
+    strength: 19,
+    sociability: 0.84,
+    tradeAffinity: 0.8,
+    buildSkill: 0.98,
+    courage: 0.82,
+    primaryColor: 0x6b4228,
+    secondaryColor: 0xc29e7a,
+    accentColor: 0x2e231e,
+    cloakColor: 0x2f6964,
+    silhouette: 'beaver',
+    lore: 'Tireless river-engineers and dam-architects who weave timber lodges and spinning waterwheels across the currents.',
+  },
+  otter: {
+    id: 'otter',
+    displayName: 'Otter',
+    pluralName: 'Otters',
+    youngSingular: 'pup',
+    youngPlural: 'pups',
+    litterSizeRange: [2, 3],
+    locomotion: 'swim',
+    amphibious: true,
+    aerial: false,
+    aquatic: true,
+    strictlyAquatic: false,
+    bodyScale: 0.98,
+    baseSpeed: 4.5,
+    maxHealth: 98,
+    strength: 15,
+    sociability: 0.94,
+    tradeAffinity: 0.9,
+    buildSkill: 0.86,
+    courage: 0.78,
+    primaryColor: 0x694d3b,
+    secondaryColor: 0xdccbb6,
+    accentColor: 0x3b2b22,
+    cloakColor: 0x2d7680,
+    silhouette: 'otter',
+    lore: 'Playful river-swimmers, boathouse weavers, and joyful traders who glide between lily markets holding lucky pebbles.',
+  },
+  fish: {
+    id: 'fish',
+    displayName: 'River Koi',
+    pluralName: 'River Koi',
+    youngSingular: 'fry',
+    youngPlural: 'fry',
+    litterSizeRange: [3, 4],
+    locomotion: 'swim',
+    amphibious: true,
+    aerial: false,
+    aquatic: true,
+    strictlyAquatic: true,
+    bodyScale: 0.94,
+    baseSpeed: 4.4,
+    maxHealth: 82,
+    strength: 10,
+    sociability: 0.92,
+    tradeAffinity: 0.86,
+    buildSkill: 0.84,
+    courage: 0.68,
+    primaryColor: 0xdc5a2c,
+    secondaryColor: 0xf4ead8,
+    accentColor: 0x2b8c9e,
+    cloakColor: 0x236f7d,
+    silhouette: 'fish',
+    lore: 'Shimmering iridescent river koi who tend coral-glass sanctuaries, gather water-pearls, and guide lantern parades along woodland streams.',
+  },
 };
 
 export const ALL_SPECIES_IDS = Object.keys(SPECIES_CATALOG) as SpeciesId[];
@@ -578,12 +666,14 @@ const FIRST_NAMES = [
   'Saffron', 'Corvus', 'Nettle', 'Orin', 'Moss', 'Cinder', 'Pebble', 'Vesper',
   'Sylva', 'Gorse', 'Maple', 'Fern', 'Kestrel', 'Acorn', 'Rye', 'Oakhart',
   'Beryl', 'Pipkin', 'Tallow', 'Reed', 'Yarrow', 'Cress', 'Ember', 'Nutmeg',
+  'Ripple', 'Koi', 'Brook', 'Lilly', 'Eddy', 'Coral',
 ];
 
 const SURNAMES = [
   'Burrow', 'Feather', 'Tail', 'Whisker', 'Hollow', 'Brook', 'Bark', 'Thorn',
   'Dewdrop', 'Mossback', 'Quill', 'Puddle', 'Bough', 'Trotter', 'Flint', 'Grove',
   'Meadows', 'Claw', 'Sprig', 'Lantern', 'Root', 'Bracken', 'Hearth', 'Wing',
+  'Damkeeper', 'Lilypad', 'Riverfin', 'Waterwheel',
 ];
 
 export function generateCreatureName(nextRand: () => number): string {

@@ -1982,6 +1982,133 @@ export class TerrainMap {
     return !this.isImpassableMountainAt(x, z, h, slope);
   }
 
+  /** Returns true if (x, z) lies inside a playable inland river, tributary, or pond (never deep sea). */
+  isSwimmable(x: number, z: number): boolean {
+    if (!this.isWithinPlayableArea(x, z)) return false;
+    if (this.isDeepSeaAt(x, z)) return false;
+    if (this.getCoastSignedDistance(x, z) <= 8) return false;
+    return this.getHeightAt(x, z) <= this.waterLevel - 0.28;
+  }
+
+  /** Unified terrain traversability check respecting aerial, strictlyAquatic, aquatic, and amphibious traits. */
+  canCreatureTraverse(
+    x: number,
+    z: number,
+    def: { aerial: boolean; amphibious: boolean; aquatic?: boolean; strictlyAquatic?: boolean },
+  ): boolean {
+    if (def.aerial) return !this.isNaturalBoundBlocked(x, z);
+    if (def.strictlyAquatic) return this.isSwimmable(x, z);
+    if (def.aquatic) return this.isWalkable(x, z, true) || this.isSwimmable(x, z);
+    return this.isWalkable(x, z, def.amphibious);
+  }
+
+  /** Picks a deterministic swimmable point inside an inland pond or river segment for waterway life. */
+  getWaterwaySpot(rng: SeededRandom): Vec2 | null {
+    const usePond = this.ponds.length > 0 && rng.chance(0.45);
+    if (usePond) {
+      for (let i = 0; i < 6; i++) {
+        const pond = this.ponds[rng.int(0, this.ponds.length - 1)];
+        const ang = rng.range(0, Math.PI * 2);
+        const r = Math.sqrt(rng.next()) * pond.radius * 0.72;
+        const x = pond.x + Math.cos(ang) * r * pond.scaleX;
+        const z = pond.z + Math.sin(ang) * r * pond.scaleZ;
+        if (this.isSwimmable(x, z)) return { x, z };
+      }
+    }
+    if (this.riverSegments.length > 0) {
+      for (let i = 0; i < 12; i++) {
+        const seg = this.riverSegments[rng.int(0, this.riverSegments.length - 1)];
+        const t = rng.range(0.15, 0.85);
+        const x = seg.ax + seg.dx * t;
+        const z = seg.az + seg.dz * t;
+        if (this.isSwimmable(x, z)) return { x, z };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Finds a scenic, spacious inland river bend or woodland pond suitable for founding an aquatic
+   * waterway village (beavers, otters, river koi), ensuring ample surrounding swimmable water
+   * for lodges, boathouses, waterwheel mills, and floating lily-pad markets.
+   */
+  findWaterwaySettlementSite(
+    existing: readonly Vec2[],
+    minSpacing: number,
+    maxRadius: number,
+    rng: SeededRandom,
+    origin?: Vec2,
+  ): Vec2 | null {
+    const evaluate = (spacing: number): Vec2 | null => {
+      const minSpacingSq = spacing * spacing;
+      let bestX = 0;
+      let bestZ = 0;
+      let bestScore = -Infinity;
+
+      const scoreCandidate = (x: number, z: number, baseBonus: number): void => {
+        if (Math.hypot(x, z) > maxRadius) return;
+        for (const site of existing) {
+          const dx = site.x - x;
+          const dz = site.z - z;
+          if (dx * dx + dz * dz < minSpacingSq) return;
+        }
+        if (this.getCoastSignedDistance(x, z) < 18) return;
+        if (this.getAlpineDepthAt(x, z) > 16) return;
+        if (!this.isSwimmable(x, z)) return;
+
+        // Measure surrounding swimmable water area so watery homes & landmarks have plenty of room
+        let waterRoom = 0;
+        for (let k = 0; k < 8; k++) {
+          const a = (k * Math.PI * 2) / 8;
+          if (this.isSwimmable(x + Math.cos(a) * 6.0, z + Math.sin(a) * 6.0)) waterRoom += 1.5;
+          if (this.isSwimmable(x + Math.cos(a) * 10.5, z + Math.sin(a) * 10.5)) waterRoom += 1.0;
+        }
+        if (waterRoom < 4.5) return;
+
+        let score = baseBonus + waterRoom * 1.4 + rng.range(-0.4, 0.4);
+        if (origin) {
+          const d = Math.hypot(x - origin.x, z - origin.z);
+          // Favor a scenic, reachable distance from the heartland village (55-185m)
+          score += Math.max(0, 14 - Math.abs(d - 105) * 0.11);
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          bestX = x;
+          bestZ = z;
+        }
+      };
+
+      // 1. Evaluate woodland lakes & ponds (spacious still-water basins)
+      for (const pond of this.ponds) {
+        scoreCandidate(pond.x, pond.z, 8.0 + pond.radius * 0.35);
+        for (let k = 0; k < 4; k++) {
+          const a = (k * Math.PI) / 2 + 0.35;
+          const offR = pond.radius * 0.35;
+          scoreCandidate(
+            pond.x + Math.cos(a) * offR * pond.scaleX,
+            pond.z + Math.sin(a) * offR * pond.scaleZ,
+            6.5 + pond.radius * 0.25,
+          );
+        }
+      }
+
+      // 2. Evaluate wide inland river reaches & confluences
+      const step = Math.max(1, Math.floor(this.riverSegments.length / 80));
+      for (let i = 0; i < this.riverSegments.length; i += step) {
+        const seg = this.riverSegments[i];
+        const halfW = (seg.halfW0 + seg.halfW1) * 0.5;
+        if (halfW < 3.0) continue;
+        const cx = seg.ax + seg.dx * 0.5;
+        const cz = seg.az + seg.dz * 0.5;
+        scoreCandidate(cx, cz, 4.0 + halfW * 1.1 + seg.order * 1.2);
+      }
+
+      return bestScore > -Infinity ? { x: bestX, z: bestZ } : null;
+    };
+
+    return evaluate(minSpacing) ?? evaluate(minSpacing * 0.6);
+  }
+
   /** Registers a finished creature-built bridge so terrain walkability & elevation include its deck. */
   registerCompletedBridge(bridge: BridgeInstance): void {
     if (!this.completedBridges.some((b) => b.id === bridge.id)) {
@@ -2194,6 +2321,7 @@ export class TerrainMap {
         'prairie_pastoral',
         'mountain_stone',
         'riverside_stilts',
+        'waterway_haven',
       ];
       const minSpacing = Math.max(48, this.size * 0.19);
       for (const targetAdaptation of targetOrder) {
@@ -2273,6 +2401,9 @@ export class TerrainMap {
     attempts: number,
     origin?: Vec2,
   ): Vec2 | null {
+    if (target === 'waterway_haven') {
+      return this.findWaterwaySettlementSite(existing, minSpacing, maxRadius, rng, origin);
+    }
     const maxSlope = target === 'mountain_stone' ? 0.24 : 0.16;
     const minWaterDist =
       target === 'riverside_stilts' || target === 'coastal_harbor' ? 3.2 : 5.2;

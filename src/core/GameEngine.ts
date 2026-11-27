@@ -58,7 +58,7 @@ export class GameEngine {
     splash?.setProgress(10, 'Carving alpine peaks, watersheds & sunlit shores…');
     await nextPaintFrame();
 
-    const world = new WorldState(bus, { seed: resolveInitialSeed() });
+    const world = new WorldState(bus, { seed: resolveInitialSeed(), initialWaterwaySettlements: 1 });
     splash?.setProgress(22, 'Awakening the woodland sovereign & setting the stage…');
     await nextPaintFrame();
 
@@ -89,7 +89,7 @@ export class GameEngine {
   ) {
     this.bus = init?.bus ?? new EventBus();
     this.splash = init?.splash ?? null;
-    this.world = init?.world ?? new WorldState(this.bus, { seed: resolveInitialSeed() });
+    this.world = init?.world ?? new WorldState(this.bus, { seed: resolveInitialSeed(), initialWaterwaySettlements: 1 });
     this.sceneManager = new SceneManager(canvas, this.world, 'high', init?.deferSceneBuild ?? false);
 
     this.hud = new HudManager(hudRoot, {
@@ -487,7 +487,7 @@ export class GameEngine {
     this.sceneManager.setSelection(null);
     this.sceneManager.cameraController.exitCreaturePov(false);
     this.sceneManager.cameraController.follow(null);
-    this.world = new WorldState(this.bus, { seed });
+    this.world = new WorldState(this.bus, { seed, initialWaterwaySettlements: 1 });
     this.sceneManager.rebuildWorldScene(this.world);
     this.bus.emit('world:reset', { seed });
     this.refreshHudNow();
@@ -508,7 +508,7 @@ export class GameEngine {
       this.sceneManager.cameraController.exitCreaturePov(false);
       this.sceneManager.cameraController.follow(null);
 
-      this.world = new WorldState(this.bus, { seed });
+      this.world = new WorldState(this.bus, { seed, initialWaterwaySettlements: 1 });
       await this.sceneManager.rebuildWorldSceneAsync(
         this.world,
         (pct, label) => this.splash?.setProgress(pct, label),

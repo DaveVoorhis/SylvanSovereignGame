@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { EventBus } from '@core/EventBus';
 import type { BiomeType, ConstructionStage, CreatureRole } from '@core/Types';
 import { createDivineBeamVisual, DIVINE_BEAM_HEIGHT } from '@rendering/AtmosphereSystem';
+import { AmbientCritterRenderer } from '@rendering/AmbientCritterRenderer';
 import { CreatureRenderer } from '@rendering/CreatureRenderer';
 import { CameraController } from '@rendering/CameraController';
 import { DistanceFocusBlurPass } from '@rendering/DistanceFocusBlurPass';
@@ -450,7 +451,7 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     });
 
     // High-resolution articulated creatures have many sculpted sub-meshes per creature
-    expect(ALL_SPECIES_IDS).toHaveLength(21);
+    expect(ALL_SPECIES_IDS).toHaveLength(24);
     expect(meshCount).toBeGreaterThan(world.creatures.length * 10);
 
     renderer.dispose();
@@ -574,6 +575,7 @@ describe('High-Resolution Whimsical Procedural Models', () => {
       prairie_pastoral: 'prairie',
       mountain_stone: 'rocky_ridge',
       riverside_stilts: 'riverbank',
+      waterway_haven: 'water',
     };
 
     // Ensure all 6 environmental adaptations are represented with buildings and inhabitants
@@ -1377,5 +1379,184 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     grass.dispose();
     terrain.dispose();
     textures.dispose();
+  });
+
+  it('renders aquatic waterway villages, all six watery buildings, and swimming beavers, otters & river koi cleanly', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 202609,
+      initialSettlements: 0,
+      initialWaterwaySettlements: 1,
+      initialCreaturesPerSettlement: 6,
+    });
+    const ws = world.settlements.find((s) => s.adaptation === 'waterway_haven')!;
+    expect(ws).toBeDefined();
+
+    // Place all 6 bespoke watery buildings in the waterway village
+    const wateryTypes = [
+      'beaver_lodge',
+      'otter_boathouse',
+      'waterwheel_mill',
+      'lily_market',
+      'aquatic_sanctuary',
+      'tide_shrine',
+    ] as const;
+    ws.buildings.length = 0;
+    wateryTypes.forEach((type, idx) => {
+      const ang = (idx / wateryTypes.length) * Math.PI * 2;
+      ws.buildings.push({
+        id: `water_bld_${idx}`,
+        settlementId: ws.id,
+        type,
+        position: { x: ws.center.x + Math.cos(ang) * 7, z: ws.center.z + Math.sin(ang) * 7 },
+        groundY: world.terrain.waterLevel,
+        rotation: ang,
+        progress: 100,
+        completed: true,
+      });
+    });
+
+    const scene = new THREE.Scene();
+    const textures = createStubTextureLibrary();
+    const settlementRenderer = new SettlementRenderer(scene, world, textures);
+    const creatureRenderer = new CreatureRenderer(scene, world, textures);
+
+    // Advance several frames to verify waterwheel spin, floating bob, and swim animation
+    for (let i = 0; i < 6; i++) {
+      world.elapsedSeconds += 0.1;
+      settlementRenderer.update(0.1);
+      creatureRenderer.update(0.1, null);
+    }
+
+    let finiteMeshes = 0;
+    let pointLights = 0;
+    scene.traverse((obj) => {
+      if (obj instanceof THREE.PointLight) pointLights++;
+      if (obj instanceof THREE.Mesh) {
+        const pos = obj.geometry.attributes.position;
+        if (pos && pos.count > 0) {
+          expect(Number.isFinite(pos.getX(0))).toBe(true);
+          expect(Number.isFinite(pos.getY(0))).toBe(true);
+          expect(Number.isFinite(pos.getZ(0))).toBe(true);
+          finiteMeshes++;
+        }
+      }
+    });
+
+    expect(finiteMeshes).toBeGreaterThan(80);
+    expect(pointLights).toBe(6);
+
+    // Verify rendered koi fish sit submerged inside the water (center below waterLevel, not floating on top)
+    scene.updateMatrixWorld(true);
+    const fishIds = new Set(world.creatures.filter((c) => c.species === 'fish').map((c) => c.id));
+    expect(fishIds.size).toBeGreaterThan(0);
+    let checkedFish = 0;
+    for (const child of creatureRenderer.rootGroup.children) {
+      const target = child.userData.selectionTarget as { kind: string; id: string } | undefined;
+      if (target?.kind === 'creature' && fishIds.has(target.id)) {
+        const box = new THREE.Box3();
+        child.traverse((node) => {
+          if (node instanceof THREE.Mesh && node.visible && node.parent?.visible !== false && node.geometry !== (creatureRenderer as unknown as { geo: { swimRipple: THREE.BufferGeometry } }).geo.swimRipple) {
+            // Skip meshes inside hidden ancestor groups (e.g. inactive tools / selection halo)
+            let p: THREE.Object3D | null = node;
+            let allVisible = true;
+            while (p) {
+              if (!p.visible) { allVisible = false; break; }
+              p = p.parent;
+            }
+            if (allVisible) box.expandByObject(node);
+          }
+        });
+        const centerY = (box.min.y + box.max.y) * 0.5;
+        expect(centerY).toBeLessThan(world.terrain.waterLevel - 0.1);
+        expect(box.min.y).toBeLessThan(world.terrain.waterLevel - 0.25);
+        checkedFish++;
+      }
+    }
+    expect(checkedFish).toBe(fishIds.size);
+
+    creatureRenderer.dispose();
+    settlementRenderer.dispose();
+    textures.dispose();
+  });
+
+  it('renders decorative butterflies, bees, dragonflies, ladybugs, and dusk/night fireflies with seasonal transitions', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 888444,
+      initialSettlements: 1,
+      initialWaterwaySettlements: 1,
+      initialCreaturesPerSettlement: 4,
+    });
+    const scene = new THREE.Scene();
+    const critters = new AmbientCritterRenderer(scene, world, 1.0);
+
+    expect(critters.counts.butterflies).toBeGreaterThan(20);
+    expect(critters.counts.bees).toBeGreaterThan(20);
+    expect(critters.counts.dragonflies).toBeGreaterThan(20);
+    expect(critters.counts.ladybugs).toBeGreaterThan(20);
+    expect(critters.counts.fireflies).toBeGreaterThan(20);
+    expect(critters.getWarmupMaterials().length).toBe(5);
+
+    const makeSky = (daylight: number, isWinter = false) => ({
+      daylight,
+      nightFactor: 1 - daylight,
+      sunElevation: daylight,
+      sunDirection: new THREE.Vector3(0.4, 0.8, 0.4).normalize(),
+      sunColor: new THREE.Color(0xfff4d6),
+      skyTopColor: new THREE.Color(0x4a8be0),
+      skyHorizonColor: new THREE.Color(0xbce0ff),
+      fogColor: new THREE.Color(0xcce4f5),
+      fogDensity: 0.0005,
+      windStrength: 0.2,
+      isWinter,
+    });
+
+    // Bright summer day: butterflies/bees/dragonflies/ladybugs visible, fireflies hidden
+    world.season = 'summer';
+    critters.update(0.1, makeSky(0.95));
+    expect(critters.rootGroup.getObjectByName('ambient_butterflies')?.visible).toBe(true);
+    expect(critters.rootGroup.getObjectByName('ambient_bees')?.visible).toBe(true);
+    expect(critters.rootGroup.getObjectByName('ambient_dragonflies')?.visible).toBe(true);
+    expect(critters.rootGroup.getObjectByName('ambient_ladybugs')?.visible).toBe(true);
+    expect(critters.rootGroup.getObjectByName('ambient_fireflies')?.visible).toBe(false);
+
+    // Summer night: fireflies glow while daylight insects rest
+    critters.update(0.1, makeSky(0.05));
+    expect(critters.rootGroup.getObjectByName('ambient_butterflies')?.visible).toBe(false);
+    expect(critters.rootGroup.getObjectByName('ambient_fireflies')?.visible).toBe(true);
+
+    // Winter dormancy: insects tucked away cleanly
+    world.season = 'winter';
+    critters.update(0.1, makeSky(0.95, true));
+    expect(critters.rootGroup.getObjectByName('ambient_butterflies')?.visible).toBe(false);
+    expect(critters.rootGroup.getObjectByName('ambient_fireflies')?.visible).toBe(false);
+
+    // Butterflies must fly nose-first (+Z): wider forewing span sits in +Z, narrower hindwing span in -Z
+    const butterflyMesh = critters.rootGroup.getObjectByName('ambient_butterflies') as THREE.InstancedMesh;
+    const bPos = butterflyMesh.geometry.attributes.position;
+    let maxFrontSpan = 0;
+    let maxRearSpan = 0;
+    for (let i = 0; i < bPos.count; i++) {
+      const x = Math.abs(bPos.getX(i));
+      const z = bPos.getZ(i);
+      if (z > 0.04) maxFrontSpan = Math.max(maxFrontSpan, x);
+      if (z < -0.04) maxRearSpan = Math.max(maxRearSpan, x);
+    }
+    expect(maxFrontSpan).toBeGreaterThan(maxRearSpan + 0.04);
+
+    // Every instanced geometry has finite vertices
+    critters.rootGroup.traverse((obj) => {
+      if (obj instanceof THREE.InstancedMesh) {
+        const pos = obj.geometry.attributes.position;
+        expect(pos.count).toBeGreaterThan(0);
+        for (let i = 0; i < pos.count; i++) {
+          expect(Number.isFinite(pos.getX(i))).toBe(true);
+          expect(Number.isFinite(pos.getY(i))).toBe(true);
+          expect(Number.isFinite(pos.getZ(i))).toBe(true);
+        }
+      }
+    });
+
+    critters.dispose();
+    expect(scene.children.includes(critters.rootGroup)).toBe(false);
   });
 });

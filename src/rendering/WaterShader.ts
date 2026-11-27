@@ -354,7 +354,7 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
 
     // 7. Depth-aware optical clarity alpha + smooth far-horizon dissolve
     float waterAlpha = clamp(
-      mix(0.20, 0.94, 1.0 - exp(-depth * 1.85)) + fresnel * 0.34 + totalFoam * 0.36,
+      mix(0.18, 0.92, 1.0 - exp(-depth * 1.18)) + fresnel * 0.34 + totalFoam * 0.36,
       0.0,
       0.98
     );

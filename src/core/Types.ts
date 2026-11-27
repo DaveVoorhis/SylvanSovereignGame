@@ -31,7 +31,8 @@ export type VillageAdaptationId =
   | 'desert_oasis'
   | 'prairie_pastoral'
   | 'mountain_stone'
-  | 'riverside_stilts';
+  | 'riverside_stilts'
+  | 'waterway_haven';
 
 export type ResourceType = 'timber' | 'berries' | 'acorns' | 'stone' | 'herbs' | 'crafts';
 
@@ -58,9 +59,12 @@ export type SpeciesId =
   | 'snake'
   | 'turtle'
   | 'pigeon'
-  | 'magpie';
+  | 'magpie'
+  | 'beaver'
+  | 'otter'
+  | 'fish';
 
-export type LocomotionKind = 'walk' | 'hop' | 'scurry' | 'fly' | 'slither';
+export type LocomotionKind = 'walk' | 'hop' | 'scurry' | 'fly' | 'slither' | 'swim';
 
 export type LifeStage = 'young' | 'juvenile' | 'adult' | 'elder';
 
@@ -112,7 +116,13 @@ export type BuildingType =
   | 'greenhouse'
   | 'library'
   | 'fountain_plaza'
-  | 'guildhall';
+  | 'guildhall'
+  | 'beaver_lodge'
+  | 'otter_boathouse'
+  | 'waterwheel_mill'
+  | 'lily_market'
+  | 'aquatic_sanctuary'
+  | 'tide_shrine';
 
 export type SettlementTier = 'hamlet' | 'village' | 'town' | 'city' | 'metropolis';
 

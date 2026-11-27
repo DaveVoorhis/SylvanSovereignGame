@@ -94,8 +94,11 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
       'turtle',
       'pigeon',
       'magpie',
+      'beaver',
+      'otter',
+      'fish',
     ];
-    expect(ALL_SPECIES_IDS).toHaveLength(21);
+    expect(ALL_SPECIES_IDS).toHaveLength(24);
     for (const id of required) {
       expect(ALL_SPECIES_IDS).toContain(id);
       expect(SPECIES_CATALOG[id as keyof typeof SPECIES_CATALOG].displayName.length).toBeGreaterThan(0);
@@ -104,6 +107,10 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
     expect(SPECIES_CATALOG.turtle.amphibious).toBe(true);
     expect(SPECIES_CATALOG.pigeon.aerial).toBe(true);
     expect(SPECIES_CATALOG.magpie.aerial).toBe(true);
+    expect(SPECIES_CATALOG.beaver.aquatic).toBe(true);
+    expect(SPECIES_CATALOG.otter.aquatic).toBe(true);
+    expect(SPECIES_CATALOG.fish.strictlyAquatic).toBe(true);
+    expect(SPECIES_CATALOG.fish.locomotion).toBe('swim');
     // Every species must be naturally adapted to at least one biome village adaptation
     const covered = new Set(
       ALL_VILLAGE_ADAPTATIONS.flatMap((id) => VILLAGE_ADAPTATION_CATALOG[id].adaptedSpecies),
@@ -160,7 +167,7 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
         expect(Math.hypot(c.x, c.z)).toBeLessThanOrEqual(world.terrain.playableRadius + 0.5);
       }
 
-      expect(ALL_BUILDING_TYPES.length).toBe(14);
+      expect(ALL_BUILDING_TYPES.length).toBe(20);
       for (const t of ALL_BUILDING_TYPES) {
         expect(BUILDING_CATALOG[t].displayName.length).toBeGreaterThan(0);
       }
@@ -831,12 +838,12 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
       expect(s.buildings.length).toBeGreaterThanOrEqual(2);
     }
 
-    // All 6 adaptation catalog profiles are complete and distinct
-    expect(ALL_VILLAGE_ADAPTATIONS.length).toBe(6);
+    // All 7 adaptation catalog profiles (including aquatic Waterway Haven) are complete and distinct
+    expect(ALL_VILLAGE_ADAPTATIONS.length).toBe(7);
     const shortLabels = new Set(
       ALL_VILLAGE_ADAPTATIONS.map((id) => VILLAGE_ADAPTATION_CATALOG[id].shortLabel),
     );
-    expect(shortLabels.size).toBe(6);
+    expect(shortLabels.size).toBe(7);
   });
 
   it('carves the river mouth continuously through the coastal beach so it empties directly into the sea', () => {
@@ -1457,5 +1464,64 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
 
     // Every individual simulation step must stay far below multi-second freeze territory
     expect(maxStepMs).toBeLessThan(250);
+  });
+
+  it('founds aquatic waterway villages of beavers, otters, and river koi with exclusive watery homes and buildings', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 4242,
+      initialSettlements: 1,
+      initialWaterwaySettlements: 1,
+      initialCreaturesPerSettlement: 8,
+    });
+
+    const waterwayVillage = world.settlements.find((s) => s.adaptation === 'waterway_haven');
+    expect(waterwayVillage).toBeDefined();
+    expect(world.terrain.isSwimmable(waterwayVillage!.center.x, waterwayVillage!.center.z)).toBe(true);
+    expect(world.terrain.isDeepSeaAt(waterwayVillage!.center.x, waterwayVillage!.center.z)).toBe(false);
+    expect(waterwayVillage!.groundY).toBeCloseTo(world.terrain.waterLevel, 3);
+
+    // Populated with beavers, otters, and river koi
+    const residents = world.creatures.filter((c) => c.settlementId === waterwayVillage!.id);
+    const speciesPresent = new Set(residents.map((c) => c.species));
+    expect(speciesPresent.has('beaver')).toBe(true);
+    expect(speciesPresent.has('otter')).toBe(true);
+    expect(speciesPresent.has('fish')).toBe(true);
+
+    // Only waterway-exclusive buildings belong to waterway villages; land villages never build them
+    for (const b of waterwayVillage!.buildings) {
+      expect(BUILDING_CATALOG[b.type].waterwayOnly).toBe(true);
+    }
+    const landVillage = world.settlements.find((s) => s.adaptation !== 'waterway_haven')!;
+    for (const b of landVillage.buildings) {
+      expect(Boolean(BUILDING_CATALOG[b.type].waterwayOnly)).toBe(false);
+    }
+
+    // Supply abundant river materials & step 70s of autonomous building and swimming
+    waterwayVillage!.stockpile.timber += 120;
+    waterwayVillage!.stockpile.stone += 80;
+    waterwayVillage!.stockpile.herbs += 60;
+    waterwayVillage!.stockpile.crafts += 40;
+    const initialCount = waterwayVillage!.buildings.length;
+
+    for (let i = 0; i < 700; i++) {
+      world.step(0.1);
+    }
+
+    expect(waterwayVillage!.buildings.length).toBeGreaterThan(initialCount);
+    for (const b of waterwayVillage!.buildings) {
+      expect(BUILDING_CATALOG[b.type].waterwayOnly).toBe(true);
+    }
+
+    // Strictly aquatic River Koi stay cleanly inside inland freshwater with finite coordinates
+    const koi = world.creatures.filter((c) => c.alive && c.species === 'fish');
+    expect(koi.length).toBeGreaterThan(0);
+    for (const fish of koi) {
+      expect(Number.isFinite(fish.x) && Number.isFinite(fish.y) && Number.isFinite(fish.z)).toBe(true);
+      expect(world.terrain.isSwimmable(fish.x, fish.z)).toBe(true);
+      expect(world.terrain.isDeepSeaAt(fish.x, fish.z)).toBe(false);
+      // Fish swim submerged inside the water column (below waterLevel, above the riverbed)
+      expect(fish.y).toBeLessThan(world.terrain.waterLevel - 0.14);
+      expect(fish.y).toBeGreaterThan(world.terrain.getHeightAt(fish.x, fish.z));
+    }
   });
 });

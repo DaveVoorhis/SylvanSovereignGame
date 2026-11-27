@@ -12,7 +12,8 @@ export type AdaptationHatStyle =
   | 'straw_hat'
   | 'leaf_hood'
   | 'sun_scarf'
-  | 'mariner_hat';
+  | 'mariner_hat'
+  | 'lily_cap';
 
 export interface VillageAdaptationProfile {
   readonly id: VillageAdaptationId;
@@ -54,6 +55,7 @@ export const ALL_VILLAGE_ADAPTATIONS: readonly VillageAdaptationId[] = [
   'prairie_pastoral',
   'mountain_stone',
   'riverside_stilts',
+  'waterway_haven',
 ];
 
 export const VILLAGE_ADAPTATION_CATALOG: Record<VillageAdaptationId, VillageAdaptationProfile> = {
@@ -299,7 +301,7 @@ export const VILLAGE_ADAPTATION_CATALOG: Record<VillageAdaptationId, VillageAdap
     economySummary: 'Lush river-bank herbs, fertile fen berries, and eager timber-arch bridgecraft',
     summary:
       'Built high on pilings above rushing streams and misty fens, riverside folk keep dry above seasonal floods and span rivers with arched bridges.',
-    adaptedSpecies: ['frog', 'raccoon', 'turtle', 'snake', 'weasel', 'rat', 'robin', 'badger', 'mouse'],
+    adaptedSpecies: ['frog', 'raccoon', 'turtle', 'snake', 'weasel', 'rat', 'robin', 'badger', 'mouse', 'beaver', 'otter'],
     settlementNames: ['Willowford', 'Reedwalk', 'Fenbridge', 'Creekstilt', 'Brookhaven', 'Mistybank'],
     starterHome: 'burrow_cottage',
     starterCivic: 'greenhouse',
@@ -332,6 +334,53 @@ export const VILLAGE_ADAPTATION_CATALOG: Record<VillageAdaptationId, VillageAdap
       'Pushing our skiff out into the cool river current',
     ],
   },
+
+  waterway_haven: {
+    id: 'waterway_haven',
+    title: 'Waterway Dam & Lily Village',
+    shortLabel: 'Waterway',
+    icon: '🦫',
+    primaryBiomes: ['water'],
+    architectureSummary:
+      'Domed beaver timber lodges, moored otter boathouses, turning river waterwheel mills, floating lily-pad bazaars, and coral-glass koi sanctuaries',
+    clothingSummary: 'Water-lily pad caps topped with lotus buds, waterproof river-teal cloaks, and pearl-shell clasps',
+    economySummary: 'Master driftwood engineering, spinning waterwheels, lush river-kelp harvests, and shimmering pearl devotion',
+    summary:
+      'Built directly in winding rivers and tranquil woodland ponds, beavers, otters, and river koi weave timber lodges, float boathouses, and glow with lotus lanterns.',
+    adaptedSpecies: ['beaver', 'otter', 'fish', 'frog', 'turtle'],
+    settlementNames: ['Beaverdam', 'Otterbend', 'Lilyhaven', 'Rippleford', 'Mossweir', 'Koiwater'],
+    starterHome: 'beaver_lodge',
+    starterCivic: 'waterwheel_mill',
+    starterPlot: 'otter_boathouse',
+    favoredBuildings: {
+      beaver_lodge: 24,
+      otter_boathouse: 22,
+      waterwheel_mill: 22,
+      lily_market: 20,
+      aquatic_sanctuary: 22,
+      tide_shrine: 18,
+    },
+    gatherBonus: { timber: 1.28, herbs: 1.36, berries: 1.22 },
+    passiveYield: { timber: 0.58, herbs: 0.56, berries: 0.44, stone: 0.24 },
+    buildSpeedBonus: { timber: 1.3, masonry: 1.08 },
+    tradeBonusMultiplier: 1.22,
+    devotionBonusMultiplier: 1.2,
+    preferredBridgeStyle: 'timber_arch',
+    bridgeEagerness: 0.32,
+    exportSpecialties: ['herbs', 'timber'],
+    importNeeds: ['stone', 'acorns'],
+    attirePalette: {
+      mantleColor: 0x2b7378,
+      accentColor: 0x9de0cf,
+      hatStyle: 'lily_cap',
+    },
+    thoughts: [
+      'Weaving fresh alder branches into the lodge dam',
+      'Drifting past blooming lily pads in the cool current',
+      'Listening to the river waterwheel turn steadily',
+      'Polishing iridescent river-pearls beneath the lantern raft',
+    ],
+  },
 };
 
 /** Maps terrain biome & micro-climate cues to the matching environmental village adaptation. */
@@ -342,6 +391,9 @@ export function resolveVillageAdaptation(
   moisture: number,
   coastDist = 999,
 ): VillageAdaptationId {
+  if (biome === 'water' && coastDist > 10) {
+    return 'waterway_haven';
+  }
   if (biome === 'seashore' || (coastDist >= 0 && coastDist < 16 && elevation < 2.2)) {
     return 'coastal_harbor';
   }
@@ -381,6 +433,6 @@ export function getBiomeDisplayName(biome: BiomeType): string {
     case 'alpine_crag':
       return 'Alpine Mountain Crag';
     case 'water':
-      return 'Open Water';
+      return 'Woodland Waterway';
   }
 }

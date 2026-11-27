@@ -8,6 +8,7 @@ import { QUALITY_PRESETS, type QualityPreset } from '@core/Config';
 import type { SelectionTarget } from '@core/Types';
 import type { WorldState } from '@simulation/WorldState';
 import { nextPaintFrame, type LoadProgressCallback } from '@ui/SplashScreen';
+import { AmbientCritterRenderer } from './AmbientCritterRenderer';
 import { AtmosphereSystem } from './AtmosphereSystem';
 import { CameraController } from './CameraController';
 import { CreatureRenderer } from './CreatureRenderer';
@@ -74,6 +75,7 @@ export class SceneManager {
   private floraRenderer!: FloraRenderer;
   private settlementRenderer!: SettlementRenderer;
   private creatureRenderer!: CreatureRenderer;
+  private ambientCritterRenderer!: AmbientCritterRenderer;
   private loadedTextureResolution = 0;
   private readonly dofParamsScratch: {
     focusDistance: number;
@@ -270,9 +272,10 @@ export class SceneManager {
     await nextPaintFrame();
     this.settlementRenderer = new SettlementRenderer(this.scene, world, this.textures);
 
-    onProgress?.(92, 'Tailoring cloaks for foxes, badgers, owls & otters…');
+    onProgress?.(92, 'Tailoring cloaks for foxes, beavers, otters & river koi…');
     await nextPaintFrame();
     this.creatureRenderer = new CreatureRenderer(this.scene, world, this.textures);
+    this.ambientCritterRenderer = new AmbientCritterRenderer(this.scene, world, q.grassMultiplier);
 
     this.bindWorldEvents(world);
     this.focusFoundingVillage(world, immediateFocus);
@@ -298,6 +301,7 @@ export class SceneManager {
     const allMats = [
       ...this.settlementRenderer.getWarmupMaterials(),
       ...this.creatureRenderer.getWarmupMaterials(),
+      ...(this.ambientCritterRenderer?.getWarmupMaterials() ?? []),
     ];
     for (const mat of allMats) {
       if (seen.has(mat)) continue;
@@ -343,6 +347,7 @@ export class SceneManager {
     this.floraRenderer.update(dt, sky);
     this.settlementRenderer.update(dt, sky, focusTarget);
     this.creatureRenderer.update(dt, this.selection, this.povCreatureId);
+    this.ambientCritterRenderer?.update(dt, sky);
 
     if (this.dofPass) {
       const isPov = this.cameraController.isInCreaturePov();
@@ -418,6 +423,7 @@ export class SceneManager {
     this.floraRenderer = new FloraRenderer(this.scene, world, this.textures, q.grassMultiplier);
     this.settlementRenderer = new SettlementRenderer(this.scene, world, this.textures);
     this.creatureRenderer = new CreatureRenderer(this.scene, world, this.textures);
+    this.ambientCritterRenderer = new AmbientCritterRenderer(this.scene, world, q.grassMultiplier);
     this.bindWorldEvents(world);
   }
 
@@ -539,6 +545,7 @@ export class SceneManager {
     this.floraRenderer?.dispose();
     this.settlementRenderer?.dispose();
     this.creatureRenderer?.dispose();
+    this.ambientCritterRenderer?.dispose();
     if (!preserveTextures) {
       this.textures?.dispose();
       this.loadedTextureResolution = 0;

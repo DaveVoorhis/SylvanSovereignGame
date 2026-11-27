@@ -143,6 +143,7 @@ interface RenderedBuilding {
   readonly fountainRipples?: THREE.Object3D[];
   readonly fountainSpray?: THREE.Points;
   readonly swayPart?: THREE.Object3D;
+  readonly floatGroup?: THREE.Object3D;
   readonly chimneySmokes?: THREE.Points[];
   lastAppliedProgress: number;
   lastAppliedCompleted: boolean;
@@ -407,6 +408,12 @@ export class SettlementRenderer {
   private readonly ochreCanvasMat: THREE.MeshStandardMaterial;
   private readonly goldenThatchMat: THREE.MeshStandardMaterial;
   private readonly graniteMat: THREE.MeshStandardMaterial;
+  private readonly waterLilyMat: THREE.MeshStandardMaterial;
+  private readonly lotusPinkMat: THREE.MeshStandardMaterial;
+  private readonly coralMat: THREE.MeshStandardMaterial;
+  private readonly pearlGlowMat: THREE.MeshStandardMaterial;
+  private readonly bambooMat: THREE.MeshStandardMaterial;
+  private readonly beaverBranchMat: THREE.MeshStandardMaterial;
 
   // Shared sculpted architectural geometries
   private readonly bellRoofGeo: THREE.BufferGeometry;
@@ -672,7 +679,48 @@ export class SettlementRenderer {
     applyArchitecturalWeathering(this.terracottaPlasterMat, this.archUniforms, { moss: 0.14, snow: 0.22, mottle: 0.18 });
     applyArchitecturalWeathering(this.terracottaRoofMat, this.archUniforms, { moss: 0.18, snow: 0.68, mottle: 0.14 });
     applyArchitecturalWeathering(this.goldenThatchMat, this.archUniforms, { moss: 0.24, snow: 0.68, mottle: 0.16 });
+    this.waterLilyMat = new THREE.MeshStandardMaterial({
+      color: 0x2f8f4e,
+      roughness: 0.44,
+      metalness: 0.04,
+      ...makeNormalOrBump(plasterTex, textures.fabricBump, 0.26, 0.04),
+    });
+    this.lotusPinkMat = new THREE.MeshStandardMaterial({
+      color: 0xf684ac,
+      emissive: 0x401222,
+      emissiveIntensity: 0.16,
+      roughness: 0.42,
+    });
+    this.coralMat = new THREE.MeshStandardMaterial({
+      color: 0xe46f56,
+      roughness: 0.56,
+      ...makeNormalOrBump(plasterTex, textures.fabricBump, 0.34, 0.05),
+    });
+    this.pearlGlowMat = new THREE.MeshStandardMaterial({
+      color: 0xbaf6ff,
+      emissive: 0x38c9e0,
+      emissiveIntensity: 0.9,
+      roughness: 0.16,
+      metalness: 0.22,
+    });
+    this.bambooMat = new THREE.MeshStandardMaterial({
+      color: 0xc2a86b,
+      map: textures.timber.map,
+      ...makeNormalOrBump(textures.timber, null, 0.58, 0.12),
+      roughnessMap: textures.timber.roughnessMap,
+      roughness: 0.72,
+    });
+    this.beaverBranchMat = new THREE.MeshStandardMaterial({
+      color: 0x765338,
+      map: textures.timber.map,
+      ...makeNormalOrBump(textures.timber, null, 0.84, 0.2),
+      roughnessMap: textures.timber.roughnessMap,
+      roughness: 0.88,
+    });
+
     applyArchitecturalWeathering(this.graniteMat, this.archUniforms, { moss: 0.26, snow: 0.55, mottle: 0.16 });
+    applyArchitecturalWeathering(this.beaverBranchMat, this.archUniforms, { moss: 0.28, snow: 0.52, mottle: 0.16 });
+    applyArchitecturalWeathering(this.bambooMat, this.archUniforms, { moss: 0.14, snow: 0.35, mottle: 0.12 });
 
     // Bell-curved fairytale thatch cottage roof (LatheGeometry wound bottom-to-top for outward normals)
     const bellPts = [
@@ -893,6 +941,10 @@ export class SettlementRenderer {
         if (entry.wheelMesh && b.completed) {
           entry.wheelMesh.rotation.x += dt * 0.85;
         }
+        if (entry.floatGroup && b.completed) {
+          entry.floatGroup.position.y = Math.sin(t * 1.45 + b.position.x * 0.37) * 0.055;
+          entry.floatGroup.rotation.z = Math.sin(t * 1.05 + b.position.z * 0.29) * 0.025;
+        }
         if (entry.rotorMesh && b.completed) {
           entry.rotorMesh.rotation.z -= dt * 0.62;
         }
@@ -1086,7 +1138,9 @@ export class SettlementRenderer {
 
     const adaptation = settlement.adaptation;
     const plazaMat =
-      adaptation === 'riverside_stilts' || adaptation === 'coastal_harbor'
+      adaptation === 'riverside_stilts' ||
+      adaptation === 'coastal_harbor' ||
+      adaptation === 'waterway_haven'
         ? this.driftwoodMat
         : adaptation === 'mountain_stone'
           ? this.graniteMat
@@ -1094,7 +1148,11 @@ export class SettlementRenderer {
             ? this.terracottaPlasterMat
             : this.stoneMat;
     const plazaY =
-      adaptation === 'riverside_stilts' || adaptation === 'coastal_harbor' ? 0.26 : 0.06;
+      adaptation === 'riverside_stilts' ||
+      adaptation === 'coastal_harbor' ||
+      adaptation === 'waterway_haven'
+        ? 0.26
+        : 0.06;
 
     // Regional hearth plaza deck / terrace + curb stones
     const plaza = add(
@@ -1350,6 +1408,54 @@ export class SettlementRenderer {
         const neck = add(new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.09, 0.2, 8), this.terracottaRoofMat));
         neck.position.set(ax, 0.65, az);
       }
+    } else if (adaptation === 'waterway_haven') {
+      // Aquatic Waterway Haven centerpiece: deep river pilings, beaver-dam lashed log raft,
+      // giant floating lily pads & pink lotus blooms, glowing river-pearl lantern post & moored reed skiff!
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2 + 0.2;
+        const piling = add(new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.18, 2.4, 8), this.beaverBranchMat));
+        piling.position.set(Math.cos(a) * 2.75, -0.82, Math.sin(a) * 2.75);
+      }
+      // Interwoven beaver-dam perimeter logs hugging the raft deck
+      for (let i = 0; i < 10; i++) {
+        const a = (i / 10) * Math.PI * 2;
+        const damLog = add(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 1.45, 7), this.beaverBranchMat));
+        damLog.rotation.z = Math.PI / 2;
+        damLog.rotation.y = -a + 0.25;
+        damLog.position.set(Math.cos(a) * 2.85, 0.16 + (i % 2) * 0.09, Math.sin(a) * 2.85);
+      }
+      // Surrounding giant floating water-lily pads & pink lotus flowers
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2 + 0.4;
+        const dist = 3.55 + (i % 2) * 0.45;
+        const padR = 0.62 + (i % 3) * 0.14;
+        const pad = add(new THREE.Mesh(new THREE.CylinderGeometry(padR, padR * 0.96, 0.06, 14), this.waterLilyMat));
+        pad.position.set(Math.cos(a) * dist, 0.02, Math.sin(a) * dist);
+        if (i % 2 === 0) {
+          const lotus = add(new THREE.Mesh(new THREE.DodecahedronGeometry(0.18, 0), this.lotusPinkMat));
+          lotus.scale.set(1.15, 0.72, 1.15);
+          lotus.position.set(Math.cos(a) * dist, 0.14, Math.sin(a) * dist);
+        }
+      }
+      // Curved river-pearl lantern post illuminating the waterway plaza
+      const lanternPost = add(new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.11, 3.15, 8), this.tealTrimMat));
+      lanternPost.position.set(2.25, 1.58, 1.35);
+      const arm = add(new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.08, 0.08), this.driftwoodMat));
+      arm.position.set(1.94, 2.96, 1.35);
+      const pearlOrb = add(new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), this.pearlGlowMat));
+      pearlOrb.position.set(1.66, 2.74, 1.35);
+      // Moored otter reed skiff tethered beside the plaza deck
+      const skiff = new THREE.Group();
+      skiff.position.set(-2.95, 0.08, 1.65);
+      skiff.rotation.y = 0.72;
+      const hull = add(new THREE.Mesh(new THREE.SphereGeometry(0.75, 12, 8, 0, Math.PI * 2, Math.PI * 0.52, Math.PI * 0.48), this.bambooMat));
+      hull.scale.set(1.45, 0.72, 0.54);
+      hull.position.y = 0.24;
+      skiff.add(hull);
+      const seat = add(new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.06, 0.68), this.tealTrimMat));
+      seat.position.set(0, 0.2, 0);
+      skiff.add(seat);
+      group.add(skiff);
     }
 
     // Toggleable festival decoration kit: 6 lantern posts, draped multi-colored bunting pennants,
@@ -1519,6 +1625,12 @@ export class SettlementRenderer {
       this.ochreCanvasMat,
       this.goldenThatchMat,
       this.graniteMat,
+      this.waterLilyMat,
+      this.lotusPinkMat,
+      this.coralMat,
+      this.pearlGlowMat,
+      this.bambooMat,
+      this.beaverBranchMat,
     ];
   }
 
@@ -1598,6 +1710,7 @@ export class SettlementRenderer {
     let fountainRipples: THREE.Object3D[] | undefined;
     let fountainSpray: THREE.Points | undefined;
     let swayPart: THREE.Object3D | undefined;
+    let floatGroup: THREE.Object3D | undefined;
     const chimneySmokes: THREE.Points[] = [];
 
     const tag = <T extends THREE.Object3D>(obj: T, parent: THREE.Object3D = finishedGroup): T => {
@@ -2371,6 +2484,341 @@ export class SettlementRenderer {
       flagPivot.userData.buildPhase = 'exterior';
       finishedGroup.add(flagPivot);
       swayPart = flagPivot;
+    } else if (b.type === 'beaver_lodge') {
+      // Beaver Timber Lodge — woven river-branch & driftwood dome rising from submerged crib pilings,
+      // mossy crown, water-entry tunnel, glowing porthole window & puffing river-stone chimney!
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        const piling = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, 2.1, 7), this.beaverBranchMat));
+        piling.position.set(Math.cos(a) * 1.48, -0.78, Math.sin(a) * 1.48);
+      }
+      // Submerged base raft ring
+      const baseCrib = tag(new THREE.Mesh(new THREE.CylinderGeometry(1.78, 1.96, 0.42, 16), this.beaverBranchMat));
+      baseCrib.position.y = 0.06;
+      // Cozy dome of packed river mud and interwoven logs
+      const dome = tag(
+        new THREE.Mesh(
+          new THREE.SphereGeometry(1.66, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.56),
+          this.beaverBranchMat,
+        ),
+      );
+      dome.scale.set(1.04, 1.08, 1.04);
+      dome.position.y = 0.12;
+      // Crisscrossed gnawed timber sticks jutting organically around the lodge shell
+      for (let i = 0; i < 14; i++) {
+        const a = (i / 14) * Math.PI * 2 + (i % 2) * 0.12;
+        const stick = tag(
+          new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.09, 1.55 + (i % 3) * 0.22, 6), i % 2 === 0 ? this.driftwoodMat : this.timberMat),
+        );
+        stick.position.set(Math.cos(a) * 1.24, 0.82 + (i % 2) * 0.18, Math.sin(a) * 1.24);
+        stick.rotation.z = Math.cos(a) * 0.54;
+        stick.rotation.x = -Math.sin(a) * 0.54;
+        stick.rotation.y = a * 0.4;
+      }
+      // Lush emerald mossy crown
+      const mossCrown = tag(
+        new THREE.Mesh(
+          new THREE.SphereGeometry(1.12, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.45),
+          this.mossRoofMat,
+        ),
+      );
+      mossCrown.scale.set(1.06, 0.72, 1.06);
+      mossCrown.position.y = 1.42;
+      // Water-level arched beaver entry porch
+      const entryArch = tag(new THREE.Mesh(new THREE.TorusGeometry(0.46, 0.13, 8, 14, Math.PI), this.driftwoodMat));
+      entryArch.position.set(0, 0.16, 1.54);
+      const entryTunnel = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.44, 0.5, 12), this.doorMat));
+      entryTunnel.rotation.x = Math.PI / 2;
+      entryTunnel.position.set(0, 0.22, 1.38);
+      // Warm glowing round porthole window
+      const portRing = tag(new THREE.Mesh(new THREE.TorusGeometry(0.28, 0.055, 8, 16), this.brassMat));
+      portRing.position.set(0.88, 1.06, 1.08);
+      portRing.rotation.y = 0.66;
+      const portGlass = tag(new THREE.Mesh(new THREE.CircleGeometry(0.24, 14), this.windowMat));
+      portGlass.position.set(0.89, 1.06, 1.09);
+      portGlass.rotation.y = 0.66;
+      // Stone chimney puffing cozy smoke
+      const lodgeChimney = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.26, 1.05, 8), this.stoneMat));
+      lodgeChimney.position.set(-0.56, 1.92, -0.42);
+      lodgeChimney.rotation.z = 0.08;
+      addChimneySmoke(-0.56, 2.56, -0.42);
+      // Floating gnawed log bundle tethered at side
+      for (let i = 0; i < 3; i++) {
+        const log = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.095, 1.18, 7), this.timberMat));
+        log.rotation.x = Math.PI / 2;
+        log.position.set(-1.95 - i * 0.17, 0.05, 0.35 + (i % 2) * 0.12);
+        log.userData.buildPhase = 'exterior';
+      }
+    } else if (b.type === 'otter_boathouse') {
+      // Otter Floating Boathouse — 4 moored river pilings cradling a gently bobbing curved boat hull,
+      // teal-trimmed cozy cabin, brass portholes, hanging river lantern & steering oar!
+      for (const [px, pz] of [[-1.55, -1.35], [1.55, -1.35], [-1.55, 1.35], [1.55, 1.35]]) {
+        const piling = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, 2.45, 8), this.driftwoodMat));
+        piling.position.set(px, 0.08, pz);
+        const ropeCoil = tag(new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.036, 6, 12), this.ropeMat));
+        ropeCoil.rotation.x = Math.PI / 2;
+        ropeCoil.position.set(px, 0.62, pz);
+        ropeCoil.userData.buildPhase = 'exterior';
+      }
+      const boatGroup = new THREE.Group();
+      boatGroup.userData.selectionTarget = { kind: 'building', id: b.id };
+      finishedGroup.add(boatGroup);
+      floatGroup = boatGroup;
+
+      // Buoyant curved hull + teal gunwale trim
+      const hull = tag(
+        new THREE.Mesh(
+          new THREE.SphereGeometry(1.52, 18, 10, 0, Math.PI * 2, Math.PI * 0.52, Math.PI * 0.48),
+          this.timberMat,
+        ),
+        boatGroup,
+      );
+      hull.scale.set(0.95, 0.62, 1.38);
+      hull.position.y = 0.42;
+      const deck = tag(new THREE.Mesh(new THREE.BoxGeometry(2.38, 0.14, 3.35), this.driftwoodMat), boatGroup);
+      deck.position.y = 0.4;
+      const gunwale = tag(new THREE.Mesh(new THREE.TorusGeometry(1.42, 0.085, 8, 20), this.tealTrimMat), boatGroup);
+      gunwale.rotation.x = Math.PI / 2;
+      gunwale.scale.set(0.92, 1.34, 1.0);
+      gunwale.position.y = 0.48;
+      // Cozy cabin walls + pitched roof
+      const cabin = tag(new THREE.Mesh(new THREE.BoxGeometry(1.86, 1.32, 2.18), this.warmPlasterMat), boatGroup);
+      cabin.position.set(0, 1.12, -0.1);
+      const cabinRoof = tag(new THREE.Mesh(this.gableRoofGeo, this.tealTrimMat), boatGroup);
+      cabinRoof.scale.set(0.72, 0.58, 0.88);
+      cabinRoof.position.set(0, 1.74, -0.1);
+      // Warm arched bow door + brass portholes on port & starboard
+      const door = tag(new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.92, 0.08), this.doorMat), boatGroup);
+      door.position.set(0, 0.94, 1.0);
+      for (const side of [-1, 1]) {
+        for (const pz of [-0.55, 0.35]) {
+          const rim = tag(new THREE.Mesh(new THREE.TorusGeometry(0.21, 0.04, 8, 14), this.brassMat), boatGroup);
+          rim.rotation.y = Math.PI / 2;
+          rim.position.set(side * 0.95, 1.2, pz);
+          const pane = tag(new THREE.Mesh(new THREE.CircleGeometry(0.18, 12), this.windowMat), boatGroup);
+          pane.rotation.y = side > 0 ? Math.PI / 2 : -Math.PI / 2;
+          pane.position.set(side * 0.96, 1.2, pz);
+        }
+      }
+      // Bow river-lantern & stern steering oar
+      const bowPost = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 1.15, 6), this.darkTimberMat), boatGroup);
+      bowPost.position.set(0.68, 0.96, 1.48);
+      const bowOrb = tag(new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 8), this.pearlGlowMat), boatGroup);
+      bowOrb.position.set(0.68, 1.56, 1.48);
+      const oar = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.045, 1.65, 6), this.bambooMat), boatGroup);
+      oar.position.set(0, 0.45, -1.78);
+      oar.rotation.x = -0.68;
+      // Banner pennant on cabin ridge
+      const flagPole = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 1.2, 6), this.darkTimberMat), boatGroup);
+      flagPole.position.set(0, 2.75, 0.85);
+      const pennant = tag(new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.34, 0.62), bannerMat), boatGroup);
+      pennant.position.set(0, 3.12, 0.56);
+    } else if (b.type === 'waterwheel_mill') {
+      // River Waterwheel Mill — cedar millhouse on river pilings with gabled mossy roof,
+      // timber flume, glowing loft windows & large animated spinning wooden paddle waterwheel!
+      for (const [px, pz] of [[-1.55, -1.35], [1.55, -1.35], [-1.55, 1.35], [1.55, 1.35], [0, -1.5], [0, 1.5]]) {
+        const piling = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.17, 2.4, 8), this.driftwoodMat));
+        piling.position.set(px, -0.78, pz);
+      }
+      const pierDeck = tag(new THREE.Mesh(new THREE.BoxGeometry(3.45, 0.22, 3.2), this.driftwoodMat));
+      pierDeck.position.y = 0.38;
+      // Lower millstone chamber + upper timber-framed loft
+      const lowerWall = tag(new THREE.Mesh(new THREE.BoxGeometry(2.55, 1.42, 2.45), this.stoneMat));
+      lowerWall.position.set(-0.22, 1.18, 0);
+      const upperWall = tag(new THREE.Mesh(new THREE.BoxGeometry(2.74, 1.28, 2.62), this.warmPlasterMat));
+      upperWall.position.set(-0.22, 2.5, 0);
+      const roof = tag(new THREE.Mesh(this.gableRoofGeo, this.mossRoofMat));
+      roof.scale.set(1.02, 0.92, 1.06);
+      roof.position.set(-0.22, 3.06, 0);
+      addMullionedWindow(-0.22, 2.48, 1.33, 0, 0.62, 0.62);
+      addMullionedWindow(-0.22, 2.48, -1.33, Math.PI, 0.62, 0.62);
+      const millDoor = tag(new THREE.Mesh(new THREE.BoxGeometry(0.72, 1.08, 0.1), this.doorMat));
+      millDoor.position.set(-0.22, 1.02, 1.24);
+      // Timber sluice flume channeling water onto the paddles
+      const flume = tag(new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.24, 2.3), this.darkTimberMat));
+      flume.position.set(1.48, 2.15, -0.58);
+      flume.rotation.x = 0.16;
+      const flumeWater = tag(new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.12, 2.25), this.fountainStreamMat));
+      flumeWater.position.set(1.48, 2.24, -0.58);
+      flumeWater.rotation.x = 0.16;
+      // Large animated spinning wooden paddle waterwheel dipping into the river!
+      const wheelPivot = new THREE.Group();
+      wheelPivot.position.set(1.48, 1.06, 0.08);
+      wheelPivot.userData.selectionTarget = { kind: 'building', id: b.id };
+      const axle = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.92, 10), this.darkTimberMat), wheelPivot);
+      axle.rotation.z = Math.PI / 2;
+      for (const rimX of [-0.24, 0.24]) {
+        const rim = tag(new THREE.Mesh(new THREE.TorusGeometry(1.16, 0.085, 8, 24), this.timberMat), wheelPivot);
+        rim.rotation.y = Math.PI / 2;
+        rim.position.x = rimX;
+      }
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        const spoke = tag(new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.24, 0.1), this.darkTimberMat), wheelPivot);
+        spoke.rotation.x = a;
+        const paddle = tag(new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.08, 0.34), this.driftwoodMat), wheelPivot);
+        paddle.position.set(0, Math.cos(a) * 1.18, Math.sin(a) * 1.18);
+        paddle.rotation.x = a;
+      }
+      finishedGroup.add(wheelPivot);
+      wheelMesh = wheelPivot;
+      // Faction banner & hanging lantern
+      const bannerPole = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 1.4, 6), this.darkTimberMat));
+      bannerPole.position.set(-0.22, 4.95, 1.15);
+      const millBanner = tag(new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.52, 0.85), bannerMat));
+      millBanner.position.set(-0.22, 5.3, 0.78);
+      addHangingLantern(0.65, 1.65, 1.38);
+    } else if (b.type === 'lily_market') {
+      // Lily-Pad Floating Market — buoyant bazaar atop 3 giant floating lily pads & bamboo pontoons,
+      // striped coral-and-cream canopy, pearl & kelp display crates, pink lotus blossoms & hanging lanterns!
+      const marketFloat = new THREE.Group();
+      marketFloat.userData.selectionTarget = { kind: 'building', id: b.id };
+      finishedGroup.add(marketFloat);
+      floatGroup = marketFloat;
+
+      // 3 overlapping giant floating lily pads
+      const padSpecs: [number, number, number][] = [
+        [0, 0, 1.82],
+        [-1.35, 0.95, 1.05],
+        [1.38, -0.82, 1.12],
+      ];
+      for (const [px, pz, pr] of padSpecs) {
+        const pad = tag(new THREE.Mesh(new THREE.CylinderGeometry(pr, pr * 0.96, 0.12, 18), this.waterLilyMat), marketFloat);
+        pad.position.set(px, 0.08, pz);
+      }
+      // Lashed bamboo pontoon platform
+      for (let i = -3; i <= 3; i++) {
+        const pole = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 2.75, 7), this.bambooMat), marketFloat);
+        pole.rotation.x = Math.PI / 2;
+        pole.position.set(i * 0.34, 0.18, 0);
+      }
+      // 4 bamboo canopy poles & vibrant coral-and-cream market awning
+      for (const [cx, cz] of [[-1.12, -0.95], [1.12, -0.95], [-1.12, 0.95], [1.12, 0.95]]) {
+        const post = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.068, 2.25, 7), this.bambooMat), marketFloat);
+        post.position.set(cx, 1.28, cz);
+      }
+      for (let s = 0; s < 5; s++) {
+        const strip = tag(
+          new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.08, 2.38), s % 2 === 0 ? this.coralMat : this.canvasSailMat),
+          marketFloat,
+        );
+        strip.position.set(-1.12 + s * 0.56, 2.38 - Math.abs(s - 2) * 0.04, 0);
+        strip.rotation.x = 0.08;
+      }
+      // Market counter stocked with glowing river pearls, lotus blooms & berry baskets
+      const counter = tag(new THREE.Mesh(new THREE.BoxGeometry(1.96, 0.72, 0.72), this.driftwoodMat), marketFloat);
+      counter.position.set(0, 0.56, -0.22);
+      for (let i = 0; i < 4; i++) {
+        const pearl = tag(new THREE.Mesh(new THREE.SphereGeometry(0.13, 10, 8), this.pearlGlowMat), marketFloat);
+        pearl.position.set(-0.62 + i * 0.42, 1.0, -0.22);
+      }
+      // Blooming lotus flowers perched on the side lily pads
+      for (const [lx, lz] of [[-1.42, 1.04], [1.44, -0.88]]) {
+        const lotus = tag(new THREE.Mesh(new THREE.DodecahedronGeometry(0.26, 0), this.lotusPinkMat), marketFloat);
+        lotus.scale.set(1.2, 0.74, 1.2);
+        lotus.position.set(lx, 0.28, lz);
+      }
+      // Hanging river lanterns on front canopy corners
+      for (const lx of [-1.12, 1.12]) {
+        const glow = tag(new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 8), this.windowMat), marketFloat);
+        glow.position.set(lx, 2.02, 0.98);
+      }
+    } else if (b.type === 'aquatic_sanctuary') {
+      // Aquatic Pearl Sanctuary — half-submerged carved river-stone rotunda on deep pilings,
+      // translucent glass-and-verdigris conservatory dome, levitating aqua crystal pearl & rotating rune ring!
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        const piling = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 2.3, 8), this.stoneMat));
+        piling.position.set(Math.cos(a) * 2.35, -0.78, Math.sin(a) * 2.35);
+      }
+      const rotundaBase = tag(new THREE.Mesh(new THREE.CylinderGeometry(2.55, 2.75, 0.55, 20), this.stoneMat));
+      rotundaBase.position.y = 0.2;
+      const poolRing = tag(new THREE.Mesh(new THREE.CylinderGeometry(1.95, 1.95, 0.14, 18), this.fountainWaterMat));
+      poolRing.position.y = 0.48;
+      // 6 carved stone columns with verdigris capitals supporting the vaulted glass dome
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        const col = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 2.25, 10), this.stoneMat));
+        col.position.set(Math.cos(a) * 2.15, 1.56, Math.sin(a) * 2.15);
+        const cap = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.2, 0.22, 10), this.verdigrisMat));
+        cap.position.set(Math.cos(a) * 2.15, 2.74, Math.sin(a) * 2.15);
+      }
+      const ringBeam = tag(new THREE.Mesh(new THREE.TorusGeometry(2.15, 0.16, 10, 24), this.verdigrisMat));
+      ringBeam.rotation.x = Math.PI / 2;
+      ringBeam.position.y = 2.84;
+      // Translucent ribbed glass dome & finial spire
+      const glassDome = tag(
+        new THREE.Mesh(
+          new THREE.SphereGeometry(2.08, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.5),
+          this.glassMat,
+        ),
+      );
+      glassDome.position.y = 2.86;
+      const finial = tag(new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.85, 8), this.verdigrisMat));
+      finial.position.y = 5.22;
+      // Levitating glowing river-pearl crystal & rotating water-rune ring inside the rotunda
+      const pearl = tag(new THREE.Mesh(new THREE.OctahedronGeometry(0.54, 1), this.pearlGlowMat));
+      pearl.position.y = 2.65;
+      crystalMesh = pearl;
+      const ringA = tag(new THREE.Mesh(new THREE.TorusGeometry(1.12, 0.045, 8, 28), this.brassMat));
+      ringA.position.y = 2.65;
+      runeRingA = ringA;
+      // Floating coral planters & lotus pads around the sanctuary perimeter
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2 + 0.35;
+        const pad = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.52, 0.08, 12), this.waterLilyMat));
+        pad.position.set(Math.cos(a) * 3.05, 0.06, Math.sin(a) * 3.05);
+        pad.userData.buildPhase = 'exterior';
+        const bloom = tag(new THREE.Mesh(new THREE.DodecahedronGeometry(0.2, 0), i % 2 === 0 ? this.lotusPinkMat : this.coralMat));
+        bloom.position.set(Math.cos(a) * 3.05, 0.22, Math.sin(a) * 3.05);
+        bloom.userData.buildPhase = 'exterior';
+      }
+    } else if (b.type === 'tide_shrine') {
+      // Tide Pearl Shrine — tiered river-stone & driftwood water altar on pilings,
+      // 4 coral-trimmed stone arches, levitating iridescent river pearl & counter-rotating rings!
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        const piling = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.18, 2.2, 8), this.driftwoodMat));
+        piling.position.set(Math.cos(a) * 1.72, -0.78, Math.sin(a) * 1.72);
+      }
+      const tier1 = tag(new THREE.Mesh(new THREE.CylinderGeometry(1.88, 2.08, 0.42, 16), this.stoneMat));
+      tier1.position.y = 0.18;
+      const tier2 = tag(new THREE.Mesh(new THREE.CylinderGeometry(1.36, 1.54, 0.36, 14), this.graniteMat));
+      tier2.position.y = 0.56;
+      const altarPedestal = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.56, 0.92, 10), this.stoneMat));
+      altarPedestal.position.y = 1.18;
+      // 4 coral-accented tide arches framing the floating pearl
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+        const pillar = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.18, 2.25, 8), this.stoneMat));
+        pillar.position.set(Math.cos(a) * 1.24, 1.78, Math.sin(a) * 1.24);
+        const coralTip = tag(new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 8), this.coralMat));
+        coralTip.position.set(Math.cos(a) * 1.24, 2.98, Math.sin(a) * 1.24);
+      }
+      const crownRing = tag(new THREE.Mesh(new THREE.TorusGeometry(1.24, 0.12, 8, 24), this.tealTrimMat));
+      crownRing.rotation.x = Math.PI / 2;
+      crownRing.position.y = 2.94;
+      // Levitating river pearl + counter-rotating glowing rings
+      const orb = tag(new THREE.Mesh(new THREE.SphereGeometry(0.46, 16, 14), this.pearlGlowMat));
+      orb.position.y = 2.65;
+      crystalMesh = orb;
+      const ringA = tag(new THREE.Mesh(new THREE.TorusGeometry(0.86, 0.036, 8, 26), this.brassMat));
+      ringA.position.y = 2.65;
+      runeRingA = ringA;
+      const ringB = tag(new THREE.Mesh(new THREE.TorusGeometry(1.06, 0.028, 8, 26), this.pearlGlowMat));
+      ringB.position.y = 2.65;
+      ringB.rotation.x = -Math.PI / 3;
+      runeRingB = ringB;
+      // 4 floating lotus lanterns around the water shrine
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2;
+        const pad = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.46, 0.07, 12), this.waterLilyMat));
+        pad.position.set(Math.cos(a) * 2.48, 0.06, Math.sin(a) * 2.48);
+        pad.userData.buildPhase = 'exterior';
+        const lantern = tag(new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 8), this.lotusPinkMat));
+        lantern.position.set(Math.cos(a) * 2.48, 0.22, Math.sin(a) * 2.48);
+        lantern.userData.buildPhase = 'exterior';
+      }
     } else {
       // Mystical Sylvan Shrine
       const dais1 = tag(new THREE.Mesh(new THREE.CylinderGeometry(2.05, 2.3, 0.28, 16), this.stoneMat));
@@ -2521,6 +2969,10 @@ export class SettlementRenderer {
       this.ovenFireMat,
       this.ochreCanvasMat,
       this.tealTrimMat,
+      this.waterLilyMat,
+      this.lotusPinkMat,
+      this.coralMat,
+      this.pearlGlowMat,
       bannerMat,
     ]);
 
@@ -2561,7 +3013,8 @@ export class SettlementRenderer {
     pushRange(exteriorObjs, 0.92, 0.985);
 
     // Build dedicated 5-stage construction site kit (clearing, leveling, foundation, timber/masonry frame, scaffolding)
-    const kit = this.buildConstructionKit(b, blueprint.footprintRadius, blueprint.frameStyle);
+    const isWaterwaySite = Boolean(blueprint.waterwayOnly) || adaptation === 'waterway_haven';
+    const kit = this.buildConstructionKit(b, blueprint.footprintRadius, blueprint.frameStyle, isWaterwaySite);
     group.add(kit.clearingGroup, kit.levelingPad, kit.levelingExtras, kit.foundationGroup, kit.framingGroup, kit.scaffoldingGroup);
 
     return {
@@ -2583,6 +3036,7 @@ export class SettlementRenderer {
       fountainRipples,
       fountainSpray,
       swayPart,
+      floatGroup,
       chimneySmokes: chimneySmokes.length > 0 ? chimneySmokes : undefined,
       lastAppliedProgress: -1,
       lastAppliedCompleted: false,
@@ -2602,6 +3056,7 @@ export class SettlementRenderer {
     b: BuildingInstance,
     footprintRadius: number,
     frameStyle: 'timber' | 'masonry',
+    isWaterwaySite = false,
   ): {
     clearingGroup: THREE.Group;
     levelingPad: THREE.Object3D;
@@ -2662,24 +3117,33 @@ export class SettlementRenderer {
       brush.position.set(-halfW * 0.52 + i * 0.48, 0.12, -halfD * 0.46 + (i % 2) * 0.28);
     }
 
-    // 2. Leveling Land (18-36%): graded earthen terrace pad + leveling pegs & soil mounds
-    //    Top rests at y = 0.10 so front stone steps (y = 0.23) and plinths never z-fight against it.
+    // 2. Leveling Land (18-36%): graded earthen terrace pad OR lashed waterway timber raft crib & pilings!
     const levelingPad = new THREE.Mesh(
       new THREE.CylinderGeometry(r * 1.12, r * 1.24, 0.24, 16),
-      this.earthPadMat,
+      isWaterwaySite ? this.driftwoodMat : this.earthPadMat,
     );
-    levelingPad.position.y = -0.02;
+    levelingPad.position.y = isWaterwaySite ? 0.02 : -0.02;
     levelingPad.receiveShadow = true;
     levelingPad.userData.selectionTarget = { kind: 'building', id: b.id };
 
     const levelingExtras = new THREE.Group();
     for (const [cx, cz] of corners) {
-      const peg = addKit(new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.52, 0.08), this.timberMat), levelingExtras);
-      peg.position.set(cx * 0.96, 0.26, cz * 0.96);
+      if (isWaterwaySite) {
+        const piling = addKit(
+          new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, 2.0, 8), this.beaverBranchMat),
+          levelingExtras,
+        );
+        piling.position.set(cx * 0.96, -0.58, cz * 0.96);
+      } else {
+        const peg = addKit(new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.52, 0.08), this.timberMat), levelingExtras);
+        peg.position.set(cx * 0.96, 0.26, cz * 0.96);
+      }
     }
-    const mound = addKit(new THREE.Mesh(new THREE.SphereGeometry(0.42, 10, 8), this.earthPadMat), levelingExtras);
-    mound.scale.set(1.4, 0.52, 1.15);
-    mound.position.set(halfW * 0.72, 0.18, halfD * 0.65);
+    if (!isWaterwaySite) {
+      const mound = addKit(new THREE.Mesh(new THREE.SphereGeometry(0.42, 10, 8), this.earthPadMat), levelingExtras);
+      mound.scale.set(1.4, 0.52, 1.15);
+      mound.position.set(halfW * 0.72, 0.18, halfD * 0.65);
+    }
 
     // 3. Foundation (36-56%): stone/brick plinth & footing + staged supply stack
     const foundationGroup = new THREE.Group();
@@ -3085,5 +3549,11 @@ export class SettlementRenderer {
     this.ochreCanvasMat.dispose();
     this.goldenThatchMat.dispose();
     this.graniteMat.dispose();
+    this.waterLilyMat.dispose();
+    this.lotusPinkMat.dispose();
+    this.coralMat.dispose();
+    this.pearlGlowMat.dispose();
+    this.bambooMat.dispose();
+    this.beaverBranchMat.dispose();
   }
 }

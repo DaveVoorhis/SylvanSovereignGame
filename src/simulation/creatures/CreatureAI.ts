@@ -511,6 +511,7 @@ export class CreatureAI {
     // 4. Trade caravan if merchant or trade-inclined and peaceful neighbor exists
     if (
       creature.isAdult() &&
+      !creature.def.strictlyAquatic &&
       (creature.role === 'merchant' || world.rng.chance(0.18 * creature.def.tradeAffinity)) &&
       world.settlements.length > 1
     ) {
@@ -536,9 +537,14 @@ export class CreatureAI {
       }
     }
 
-    // 5. Pray at a woodland shrine or study at an Owl Archive (feeds the Procedural God)
+    // 5. Pray at a woodland/tide shrine or study at an Owl Archive / Aquatic Sanctuary (feeds the Procedural God)
     const sacredSite = home.buildings.find(
-      (b) => b.completed && (b.type === 'shrine' || b.type === 'library'),
+      (b) =>
+        b.completed &&
+        (b.type === 'shrine' ||
+          b.type === 'library' ||
+          b.type === 'tide_shrine' ||
+          b.type === 'aquatic_sanctuary'),
     );
     if (
       sacredSite &&
@@ -558,7 +564,11 @@ export class CreatureAI {
       creature.thought =
         sacredSite.type === 'library'
           ? `Reading star-scrolls in ${home.name}'s archive`
-          : `Offering whispers to ${world.deity.name}`;
+          : sacredSite.type === 'aquatic_sanctuary'
+            ? `Contemplating glowing river pearls in ${home.name}'s sanctuary`
+            : sacredSite.type === 'tide_shrine'
+              ? `Sending ripple-prayers to ${world.deity.name}`
+              : `Offering whispers to ${world.deity.name}`;
       return;
     }
 
@@ -571,7 +581,10 @@ export class CreatureAI {
             b.type === 'market_stall' ||
             b.type === 'fountain_plaza' ||
             b.type === 'bakery' ||
-            b.type === 'guildhall'),
+            b.type === 'guildhall' ||
+            b.type === 'lily_market' ||
+            b.type === 'otter_boathouse' ||
+            b.type === 'aquatic_sanctuary'),
       );
       const hangout = hangouts.length > 0 ? world.rng.pick(hangouts) : null;
       creature.activity = 'socialising';
@@ -597,16 +610,24 @@ export class CreatureAI {
               ? 'Savoring fresh warm acorn loaves'
               : hangout?.type === 'guildhall'
                 ? 'Debating city blueprints at the guildhall'
-                : hangout
-                  ? 'Sharing tales over berry cider'
-                  : 'Chatting with neighbors by the hearth';
+                : hangout?.type === 'lily_market'
+                  ? 'Browsing river pearls at the Lily-Pad Market'
+                  : hangout?.type === 'otter_boathouse'
+                    ? 'Swapping river tales beside the boathouse'
+                    : hangout?.type === 'aquatic_sanctuary'
+                      ? 'Admiring shimmering lanterns in the Aquatic Sanctuary'
+                      : hangout
+                        ? 'Sharing tales over berry cider'
+                        : 'Chatting with neighbors by the hearth';
       }
       return;
     }
 
     // 7. Guard patrol or raid if at war
     if (creature.role === 'guard') {
-      const enemySettlement = world.diplomacy.findWarTarget(home.id, world.settlements);
+      const enemySettlement = !creature.def.strictlyAquatic
+        ? world.diplomacy.findWarTarget(home.id, world.settlements)
+        : undefined;
       if (enemySettlement && world.rng.chance(0.32)) {
         creature.targetX = enemySettlement.center.x + world.rng.range(-8, 8);
         creature.targetZ = enemySettlement.center.z + world.rng.range(-8, 8);
@@ -643,8 +664,29 @@ export class CreatureAI {
       desiredTypes = ['timber', 'stone', 'berries', 'acorns', 'herbs'];
     }
 
-    let node = world.terrain.findNearestResource(creature.position2D, desiredTypes, 1.2);
-    if (!node) {
+    // Strictly aquatic creatures (River Koi) forage river kelp, berries & sunken driftwood in swimmable water
+    if (creature.def.strictlyAquatic) {
+      for (let attempt = 0; attempt < 14; attempt++) {
+        const angle = world.rng.range(0, Math.PI * 2);
+        const radius = world.rng.range(3.5, Math.max(12, home.radius + 10));
+        const wx = home.center.x + Math.cos(angle) * radius;
+        const wz = home.center.z + Math.sin(angle) * radius;
+        if (world.terrain.isSwimmable(wx, wz)) {
+          creature.activity = 'foraging';
+          creature.targetResourceId = null;
+          creature.targetX = wx;
+          creature.targetZ = wz;
+          creature.actionTimer = 16;
+          creature.thought = `Foraging river kelp & driftwood for ${home.name}`;
+          return;
+        }
+      }
+    }
+
+    let node = creature.def.strictlyAquatic
+      ? undefined
+      : world.terrain.findNearestResource(creature.position2D, desiredTypes, 1.2);
+    if (!node && !creature.def.strictlyAquatic) {
       node = world.terrain.findNearestResource(
         creature.position2D,
         ['timber', 'stone', 'berries', 'acorns', 'herbs'],
@@ -662,11 +704,21 @@ export class CreatureAI {
       return;
     }
 
-    // Fallback wander
-    const angle = world.rng.range(0, Math.PI * 2);
-    const radius = world.rng.range(3, home.radius + 6);
-    creature.targetX = home.center.x + Math.cos(angle) * radius;
-    creature.targetZ = home.center.z + Math.sin(angle) * radius;
+    // Fallback wander (keep strictly aquatic creatures within swimmable waterways)
+    let wanderX = home.center.x;
+    let wanderZ = home.center.z;
+    const wanderTries = creature.def.strictlyAquatic ? 12 : 1;
+    for (let attempt = 0; attempt < wanderTries; attempt++) {
+      const angle = world.rng.range(0, Math.PI * 2);
+      const radius = world.rng.range(3, home.radius + 6);
+      const cx = home.center.x + Math.cos(angle) * radius;
+      const cz = home.center.z + Math.sin(angle) * radius;
+      wanderX = cx;
+      wanderZ = cz;
+      if (!creature.def.strictlyAquatic || world.terrain.isSwimmable(cx, cz)) break;
+    }
+    creature.targetX = wanderX;
+    creature.targetZ = wanderZ;
     creature.actionTimer = world.rng.range(5, 9);
     creature.thought =
       profile.thoughts.length > 0 && world.rng.chance(0.6)
@@ -675,6 +727,29 @@ export class CreatureAI {
   }
 
   private handleGathering(creature: Creature, world: WorldState, dt: number): void {
+    // Waterway foraging for strictly aquatic creatures (kelp, riverberries, sunken driftwood)
+    if (creature.targetResourceId === null && creature.def.strictlyAquatic) {
+      if (creature.actionTimer <= 0) {
+        creature.activity = 'idle';
+        return;
+      }
+      const dist = Math.hypot(creature.targetX - creature.x, creature.targetZ - creature.z);
+      if (dist < 2.6) {
+        const home = world.getSettlement(creature.settlementId);
+        const needed = home ? world.settlementManager.getMostNeededResource(home) : null;
+        const yieldType: ResourceType =
+          needed && (needed === 'herbs' || needed === 'berries' || needed === 'timber' || needed === 'stone')
+            ? needed
+            : world.rng.pick(['herbs', 'berries', 'timber'] as const);
+        const rate = 1.9 * (0.75 + creature.def.buildSkill * 0.45) * dt;
+        creature.inventory[yieldType] += rate;
+        if (creature.getTotalInventory() >= 5.0) {
+          creature.activity = 'idle';
+        }
+      }
+      return;
+    }
+
     const node = world.terrain.getResourceNode(creature.targetResourceId);
     if (!node || node.amount < 0.5 || creature.actionTimer <= 0) {
       creature.activity = 'idle';
@@ -1393,9 +1468,7 @@ export class CreatureAI {
   private ensureReachableTarget(creature: Creature, world: WorldState): void {
     this.pushTargetOutsideObstacles(creature, world);
     const isTargetOk = (tx: number, tz: number): boolean =>
-      creature.def.aerial
-        ? !world.terrain.isNaturalBoundBlocked(tx, tz)
-        : world.terrain.isWalkable(tx, tz, creature.def.amphibious);
+      world.terrain.canCreatureTraverse(tx, tz, creature.def);
     if (isTargetOk(creature.targetX, creature.targetZ)) {
       return;
     }
@@ -1494,18 +1567,20 @@ export class CreatureAI {
         const cx = creature.x + dx * dist;
         const cz = creature.z + dz * dist;
         if (Math.hypot(cx, cz) > world.terrain.playableRadius - 1.5) continue;
-        const stepOk = keepEmigrating
-          ? world.terrain.canEmigrantTraverse(cx, cz)
-          : world.terrain.isWalkable(cx, cz, creature.def.amphibious);
-        if (creature.def.aerial ? world.terrain.isNaturalBoundBlocked(cx, cz) : !stepOk) continue;
+        const stepOk =
+          keepEmigrating && !creature.def.strictlyAquatic
+            ? world.terrain.canEmigrantTraverse(cx, cz)
+            : world.terrain.canCreatureTraverse(cx, cz, creature.def);
+        if (!stepOk) continue;
 
-        // Verify midpoint is also walkable so the escape vector doesn't cross water
+        // Verify midpoint is also traversable so the escape vector doesn't cross hazards
         const midX = creature.x + dx * (dist * 0.5);
         const midZ = creature.z + dz * (dist * 0.5);
-        const midOk = keepEmigrating
-          ? world.terrain.canEmigrantTraverse(midX, midZ)
-          : world.terrain.isWalkable(midX, midZ, creature.def.amphibious);
-        if (creature.def.aerial ? world.terrain.isNaturalBoundBlocked(midX, midZ) : !midOk) continue;
+        const midOk =
+          keepEmigrating && !creature.def.strictlyAquatic
+            ? world.terrain.canEmigrantTraverse(midX, midZ)
+            : world.terrain.canCreatureTraverse(midX, midZ, creature.def);
+        if (!midOk) continue;
 
         const sep = world.obstacles.resolveCollisions(cx, cz, creatureR, 0, ang);
         if (sep.collided) continue;
@@ -1536,6 +1611,17 @@ export class CreatureAI {
   private updateCreatureElevation(creature: Creature, world: WorldState): void {
     const groundY = world.terrain.getHeightAt(creature.x, creature.z);
     const bridgeY = world.terrain.getBridgeDeckY(creature.x, creature.z);
+    if (creature.def.strictlyAquatic) {
+      const waterDepth = Math.max(0.28, world.terrain.waterLevel - groundY);
+      const targetSubmersion = Math.min(0.38, Math.max(0.24, waterDepth * 0.52));
+      const bob = Math.sin(creature.animPhase * 0.7) * 0.03;
+      creature.y = Math.max(groundY + 0.1, world.terrain.waterLevel - targetSubmersion + bob);
+      return;
+    }
+    if (creature.def.aquatic && groundY < world.terrain.waterLevel - 0.02 && bridgeY === null) {
+      creature.y = Math.max(groundY, world.terrain.waterLevel - 0.44);
+      return;
+    }
     const isRegionalFestivalTraveler =
       creature.activity === 'celebrating' &&
       !creature.isDancingAtCelebration &&
@@ -1615,7 +1701,6 @@ export class CreatureAI {
         creature.celebrationHostSettlementId !== creature.settlementId;
       const canFordWater = isEmigrating || isRegionalFestivalTraveler;
       const terrain = world.terrain;
-      const amphibious = creature.def.amphibious;
       const isFordingWater =
         canFordWater &&
         !creature.def.aerial &&
@@ -1647,7 +1732,7 @@ export class CreatureAI {
 
       // Smart waterway bridge guidance: route grounded travelers onto nearby completed bridges
       // when a stream blocks their direct path, and keep them aligned down the arched deck.
-      if (!creature.def.aerial && world.bridges.length > 0 && dist > 2.2) {
+      if (!creature.def.aerial && !creature.def.aquatic && world.bridges.length > 0 && dist > 2.2) {
         let guidedX: number | null = null;
         let guidedZ: number | null = null;
 
@@ -1736,9 +1821,10 @@ export class CreatureAI {
       if (!pathBlocked && !creature.def.aerial) {
         const terrainProbeX = creature.x + baseDirX * Math.min(lookahead, 1.25);
         const terrainProbeZ = creature.z + baseDirZ * Math.min(lookahead, 1.25);
-        const probeOk = canFordWater
-          ? terrain.canEmigrantTraverse(terrainProbeX, terrainProbeZ)
-          : terrain.isWalkable(terrainProbeX, terrainProbeZ, amphibious);
+        const probeOk =
+          canFordWater && !creature.def.strictlyAquatic
+            ? terrain.canEmigrantTraverse(terrainProbeX, terrainProbeZ)
+            : terrain.canCreatureTraverse(terrainProbeX, terrainProbeZ, creature.def);
         if (!probeOk) {
           pathBlocked = true;
         }
@@ -1875,17 +1961,19 @@ export class CreatureAI {
 
           // Avoid steering into unwalkable water or cliffs
           if (!creature.def.aerial) {
-            const nearOk = canFordWater
-              ? terrain.canEmigrantTraverse(nearProbeX, nearProbeZ)
-              : terrain.isWalkable(nearProbeX, nearProbeZ, amphibious);
+            const nearOk =
+              canFordWater && !creature.def.strictlyAquatic
+                ? terrain.canEmigrantTraverse(nearProbeX, nearProbeZ)
+                : terrain.canCreatureTraverse(nearProbeX, nearProbeZ, creature.def);
             if (!nearOk) {
               hazard += 7.0;
             }
             const midProbeX = creature.x + cx * midProbeStep;
             const midProbeZ = creature.z + cz * midProbeStep;
-            const midOk = canFordWater
-              ? terrain.canEmigrantTraverse(midProbeX, midProbeZ)
-              : terrain.isWalkable(midProbeX, midProbeZ, amphibious);
+            const midOk =
+              canFordWater && !creature.def.strictlyAquatic
+                ? terrain.canEmigrantTraverse(midProbeX, midProbeZ)
+                : terrain.canCreatureTraverse(midProbeX, midProbeZ, creature.def);
             if (!midOk) {
               hazard += 2.6;
             }
@@ -1998,12 +2086,11 @@ export class CreatureAI {
       nx = sep.x;
       nz = sep.z;
 
-      const isAerial = creature.def.aerial;
-      const primaryOk = isAerial
-        ? !terrain.isNaturalBoundBlocked(nx, nz)
-        : canFordWater
-          ? terrain.canEmigrantTraverse(nx, nz)
-          : terrain.isWalkable(nx, nz, amphibious);
+      const canStep = (px: number, pz: number): boolean =>
+        canFordWater && !creature.def.aerial && !creature.def.strictlyAquatic
+          ? terrain.canEmigrantTraverse(px, pz)
+          : terrain.canCreatureTraverse(px, pz, creature.def);
+      const primaryOk = canStep(nx, nz);
       if (primaryOk) {
         creature.x = nx;
         creature.z = nz;
@@ -2015,11 +2102,7 @@ export class CreatureAI {
           const ang = baseDirAng + FALLBACK_DETOUR_ANGLES[fi];
           const detourX = creature.x + Math.cos(ang) * step;
           const detourZ = creature.z + Math.sin(ang) * step;
-          const detourOk = isAerial
-            ? !terrain.isNaturalBoundBlocked(detourX, detourZ)
-            : canFordWater
-              ? terrain.canEmigrantTraverse(detourX, detourZ)
-              : terrain.isWalkable(detourX, detourZ, amphibious);
+          const detourOk = canStep(detourX, detourZ);
           if (!detourOk) continue;
           const altSep = world.obstacles.resolveCollisions(
             detourX,
@@ -2028,11 +2111,7 @@ export class CreatureAI {
             altitude,
             creature.heading,
           );
-          const altOk = isAerial
-            ? !terrain.isNaturalBoundBlocked(altSep.x, altSep.z)
-            : canFordWater
-              ? terrain.canEmigrantTraverse(altSep.x, altSep.z)
-              : terrain.isWalkable(altSep.x, altSep.z, amphibious);
+          const altOk = canStep(altSep.x, altSep.z);
           if (altOk) {
             creature.x = altSep.x;
             creature.z = altSep.z;
@@ -2172,11 +2251,7 @@ export class CreatureAI {
         alt,
         c.heading,
       );
-      if (
-        c.def.aerial
-          ? world.terrain.isNaturalBoundBlocked(sep.x, sep.z)
-          : !world.terrain.isWalkable(sep.x, sep.z, c.def.amphibious)
-      ) {
+      if (!world.terrain.canCreatureTraverse(sep.x, sep.z, c.def)) {
         this.dispApplied = false;
         this.dispX = c.x;
         this.dispZ = c.z;
