@@ -2615,59 +2615,63 @@ export class SettlementRenderer {
       pennant.position.set(0, 3.12, 0.56);
     } else if (b.type === 'waterwheel_mill') {
       // River Waterwheel Mill — cedar millhouse on river pilings with gabled mossy roof,
-      // timber flume, glowing loft windows & large animated spinning wooden paddle waterwheel!
-      for (const [px, pz] of [[-1.55, -1.35], [1.55, -1.35], [-1.55, 1.35], [1.55, 1.35], [0, -1.5], [0, 1.5]]) {
+      // glowing loft windows & undershot paddle waterwheel driven directly by the river current!
+      for (const [px, pz] of [[-1.62, -1.35], [1.02, -1.35], [-1.62, 1.35], [1.02, 1.35], [-0.34, -1.5], [-0.34, 1.5]]) {
         const piling = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.17, 2.4, 8), this.driftwoodMat));
         piling.position.set(px, -0.78, pz);
       }
-      const pierDeck = tag(new THREE.Mesh(new THREE.BoxGeometry(3.45, 0.22, 3.2), this.driftwoodMat));
-      pierDeck.position.y = 0.38;
+      const pierDeck = tag(new THREE.Mesh(new THREE.BoxGeometry(2.96, 0.22, 3.2), this.driftwoodMat));
+      pierDeck.position.set(-0.34, 0.38, 0);
       // Lower millstone chamber + upper timber-framed loft
       const lowerWall = tag(new THREE.Mesh(new THREE.BoxGeometry(2.55, 1.42, 2.45), this.stoneMat));
-      lowerWall.position.set(-0.22, 1.18, 0);
-      const upperWall = tag(new THREE.Mesh(new THREE.BoxGeometry(2.74, 1.28, 2.62), this.warmPlasterMat));
-      upperWall.position.set(-0.22, 2.5, 0);
+      lowerWall.position.set(-0.28, 1.18, 0);
+      const upperWall = tag(new THREE.Mesh(new THREE.BoxGeometry(2.72, 1.28, 2.62), this.warmPlasterMat));
+      upperWall.position.set(-0.28, 2.5, 0);
       const roof = tag(new THREE.Mesh(this.gableRoofGeo, this.mossRoofMat));
       roof.scale.set(1.02, 0.92, 1.06);
-      roof.position.set(-0.22, 3.06, 0);
-      addMullionedWindow(-0.22, 2.48, 1.33, 0, 0.62, 0.62);
-      addMullionedWindow(-0.22, 2.48, -1.33, Math.PI, 0.62, 0.62);
+      roof.position.set(-0.28, 3.06, 0);
+      addMullionedWindow(-0.28, 2.48, 1.33, 0, 0.62, 0.62);
+      addMullionedWindow(-0.28, 2.48, -1.33, Math.PI, 0.62, 0.62);
       const millDoor = tag(new THREE.Mesh(new THREE.BoxGeometry(0.72, 1.08, 0.1), this.doorMat));
-      millDoor.position.set(-0.22, 1.02, 1.24);
-      // Timber sluice flume channeling water onto the paddles
-      const flume = tag(new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.24, 2.3), this.darkTimberMat));
-      flume.position.set(1.48, 2.15, -0.58);
-      flume.rotation.x = 0.16;
-      const flumeWater = tag(new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.12, 2.25), this.fountainStreamMat));
-      flumeWater.position.set(1.48, 2.24, -0.58);
-      flumeWater.rotation.x = 0.16;
-      // Large animated spinning wooden paddle waterwheel dipping into the river!
+      millDoor.position.set(-0.28, 1.02, 1.24);
+      // Outer river-piling trestle & pillow block supporting the outboard end of the wheel axle
+      for (const tz of [-0.46, 0.46]) {
+        const trestlePiling = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, 2.45, 8), this.driftwoodMat));
+        trestlePiling.position.set(2.04, -0.35, tz);
+      }
+      const trestleBeam = tag(new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.18, 1.18), this.darkTimberMat));
+      trestleBeam.position.set(2.04, 0.88, 0);
+      const bearingBlock = tag(new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.24, 0.3), this.darkTimberMat));
+      bearingBlock.position.set(2.04, 0.98, 0);
+      // Large animated undershot wooden paddle waterwheel dipping into the river current
       const wheelPivot = new THREE.Group();
-      wheelPivot.position.set(1.48, 1.06, 0.08);
+      wheelPivot.name = 'waterwheel_rotor';
+      wheelPivot.position.set(1.56, 0.96, 0);
       wheelPivot.userData.selectionTarget = { kind: 'building', id: b.id };
-      const axle = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.92, 10), this.darkTimberMat), wheelPivot);
+      const axle = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 1.16, 10), this.darkTimberMat), wheelPivot);
+      axle.position.x = -0.04;
       axle.rotation.z = Math.PI / 2;
-      for (const rimX of [-0.24, 0.24]) {
-        const rim = tag(new THREE.Mesh(new THREE.TorusGeometry(1.16, 0.085, 8, 24), this.timberMat), wheelPivot);
+      for (const rimX of [-0.23, 0.23]) {
+        const rim = tag(new THREE.Mesh(new THREE.TorusGeometry(1.06, 0.075, 8, 24), this.timberMat), wheelPivot);
         rim.rotation.y = Math.PI / 2;
         rim.position.x = rimX;
       }
-      for (let i = 0; i < 8; i++) {
-        const a = (i / 8) * Math.PI * 2;
-        const spoke = tag(new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.24, 0.1), this.darkTimberMat), wheelPivot);
+      for (let i = 0; i < 10; i++) {
+        const a = (i / 10) * Math.PI * 2;
+        const spoke = tag(new THREE.Mesh(new THREE.BoxGeometry(0.09, 2.12, 0.09), this.darkTimberMat), wheelPivot);
         spoke.rotation.x = a;
-        const paddle = tag(new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.08, 0.34), this.driftwoodMat), wheelPivot);
-        paddle.position.set(0, Math.cos(a) * 1.18, Math.sin(a) * 1.18);
+        const paddle = tag(new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.32, 0.08), this.driftwoodMat), wheelPivot);
+        paddle.position.set(0, Math.cos(a) * 1.14, Math.sin(a) * 1.14);
         paddle.rotation.x = a;
       }
       finishedGroup.add(wheelPivot);
       wheelMesh = wheelPivot;
       // Faction banner & hanging lantern
       const bannerPole = tag(new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 1.4, 6), this.darkTimberMat));
-      bannerPole.position.set(-0.22, 4.95, 1.15);
+      bannerPole.position.set(-0.28, 4.95, 1.15);
       const millBanner = tag(new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.52, 0.85), bannerMat));
-      millBanner.position.set(-0.22, 5.3, 0.78);
-      addHangingLantern(0.65, 1.65, 1.38);
+      millBanner.position.set(-0.28, 5.3, 0.78);
+      addHangingLantern(0.62, 1.65, 1.38);
     } else if (b.type === 'lily_market') {
       // Lily-Pad Floating Market — buoyant bazaar atop 3 giant floating lily pads & bamboo pontoons,
       // striped coral-and-cream canopy, pearl & kelp display crates, pink lotus blossoms & hanging lanterns!

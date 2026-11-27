@@ -1445,6 +1445,28 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     expect(finiteMeshes).toBeGreaterThan(80);
     expect(pointLights).toBe(6);
 
+    // Verify waterwheel_mill has an unobstructed undershot river-current wheel with no floating sluice
+    const millBuilding = ws.buildings.find((b) => b.type === 'waterwheel_mill')!;
+    const millGroup = settlementRenderer.rootGroup.children.find(
+      (c) => c.userData.selectionTarget?.id === millBuilding.id,
+    );
+    expect(millGroup).toBeDefined();
+    const rotor = millGroup!.getObjectByName('waterwheel_rotor');
+    expect(rotor).toBeDefined();
+    expect(rotor!.rotation.x).toBeGreaterThan(0.2);
+    millGroup!.updateMatrixWorld(true);
+    const rotorBox = new THREE.Box3().setFromObject(rotor!);
+    // Bottom paddles dip cleanly below the water surface to catch the stream current
+    expect(rotorBox.min.y).toBeLessThan(world.terrain.waterLevel - 0.15);
+    // No floating transparent sluice water chute above/through the wheel
+    let transparentMillMeshes = 0;
+    millGroup!.traverse((obj) => {
+      if (obj instanceof THREE.Mesh && obj.visible && (obj.material as THREE.Material).transparent) {
+        transparentMillMeshes++;
+      }
+    });
+    expect(transparentMillMeshes).toBe(0);
+
     // Verify rendered koi fish sit submerged inside the water (center below waterLevel, not floating on top)
     scene.updateMatrixWorld(true);
     const fishIds = new Set(world.creatures.filter((c) => c.species === 'fish').map((c) => c.id));
