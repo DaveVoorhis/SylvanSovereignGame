@@ -275,6 +275,24 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
 
     // 2. Natural Beer-Lambert optical water absorption (realistic river tannins & deep marine slate)
     float lightLevel = mix(0.20, 1.0, uDaylight);
+
+    // Underwater camera looking UP at the rippling underside of the water surface (Snell's window)
+    if (!gl_FrontFacing) {
+      vec3 Nu = normalize(vec3(waveD.x * rippleStrength * 1.15, -1.0, waveD.y * rippleStrength * 1.15));
+      float cosTheta = max(dot(Nu, V), 0.001);
+      float snellWindow = smoothstep(0.46, 0.80, cosTheta);
+      vec3 underDeep = mix(vec3(0.035, 0.165, 0.185), vec3(0.045, 0.145, 0.210), uWinter) * lightLevel;
+      vec3 underSky = mix(uSkyHorizonColor, uSkyTopColor, 0.45) * mix(0.48, 0.92, uDaylight);
+      float sunTrans = pow(max(dot(-V, L), 0.0), 14.0) * smoothstep(-0.05, 0.25, L.y) * uDaylight;
+      float underCaust = causticsPattern(vWorldPos.xz + Nu.xz * 0.6, adv0, adv1, flowBlend, uTime);
+      vec3 underCol = mix(underDeep, underSky, snellWindow * 0.62);
+      underCol += uSunColor * (sunTrans * 0.85 + underCaust * 0.16 * uDaylight * snellWindow);
+      float underAlpha = clamp(mix(0.76, 0.34, snellWindow), 0.22, 0.84) * shoreFade;
+      gl_FragColor = vec4(underCol, underAlpha);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+      return;
+    }
     vec3 shallowCol = mix(vec3(0.23, 0.26, 0.17), vec3(0.21, 0.27, 0.30), uWinter);
     vec3 midCol = mix(vec3(0.062, 0.165, 0.155), vec3(0.072, 0.150, 0.195), uWinter);
     vec3 deepCol = mix(vec3(0.018, 0.066, 0.095), vec3(0.024, 0.062, 0.108), uWinter);
@@ -511,6 +529,7 @@ export function createRealisticWaterSurface(
     uniforms,
     transparent: true,
     depthWrite: false,
+    side: THREE.DoubleSide,
   });
 
   const mesh = new THREE.Mesh(geo, mat);

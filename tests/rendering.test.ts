@@ -1474,6 +1474,13 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     }
     expect(checkedFish).toBe(fishIds.size);
 
+    // Water surface supports DoubleSide underwater underside viewing (Snell's window) for Koi Eye View
+    const waterSurf = createRealisticWaterSurface(world.terrain, world.config.worldSize);
+    const waterMat = waterSurf.mesh.material as THREE.ShaderMaterial;
+    expect(waterMat.side).toBe(THREE.DoubleSide);
+    expect(waterMat.fragmentShader).toContain("!gl_FrontFacing");
+    waterSurf.dispose();
+
     creatureRenderer.dispose();
     settlementRenderer.dispose();
     textures.dispose();

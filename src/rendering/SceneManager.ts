@@ -353,7 +353,8 @@ export class SceneManager {
       const isPov = this.cameraController.isInCreaturePov();
       const focusDistance = this.cameraController.getFocusDistance();
       // Adapt camera near plane with zoom distance so zoomed-out overviews get ~25x better depth precision
-      const targetNear = isPov ? 0.22 : THREE.MathUtils.clamp(focusDistance * 0.012, 0.22, 6.0);
+      const isUnderwaterPov = isPov && this.camera.position.y < this.world.terrain.waterLevel - 0.01;
+      const targetNear = isUnderwaterPov ? 0.12 : isPov ? 0.22 : THREE.MathUtils.clamp(focusDistance * 0.012, 0.22, 6.0);
       if (Math.abs(this.camera.near - targetNear) > 0.02) {
         this.camera.near = targetNear;
         this.camera.updateProjectionMatrix();

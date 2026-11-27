@@ -408,20 +408,33 @@ export class GameEngine {
     const c: Creature | undefined = this.world.getCreature(creatureId);
     if (!c) return null;
 
-    const eyeHeight = Math.max(0.38, c.getSizeScale() * 1.04);
+    let eyeHeight: number;
+    if (c.def.strictlyAquatic) {
+      // River Koi eyes sit inside the water column — keep Eye View cleanly submerged below waterLevel
+      const waterLevel = this.world.terrain.waterLevel;
+      const groundY = this.world.terrain.getHeightAt(c.x, c.z);
+      const desiredEyeY = Math.min(waterLevel - 0.16, c.y + 0.04 * c.getSizeScale());
+      const safeEyeY = Math.max(groundY + 0.12, desiredEyeY);
+      eyeHeight = safeEyeY - c.y;
+    } else {
+      eyeHeight = Math.max(0.38, c.getSizeScale() * 1.04);
+    }
+
     let bobOffset = 0;
     if (c.activity !== 'resting') {
       if (c.def.locomotion === 'hop') {
         bobOffset = Math.abs(Math.sin(c.animPhase)) * 0.2;
       } else if (c.def.locomotion === 'fly') {
         bobOffset = Math.sin(c.animPhase * 1.2) * 0.08;
+      } else if (c.def.locomotion === 'swim') {
+        bobOffset = Math.sin(c.animPhase * 1.2) * 0.025;
       } else if (c.def.locomotion === 'slither') {
         bobOffset = Math.sin(c.animPhase * 1.4) * 0.03;
       } else {
         bobOffset = Math.abs(Math.sin(c.animPhase)) * 0.07;
       }
     } else {
-      bobOffset = -0.14;
+      bobOffset = c.def.strictlyAquatic ? -0.02 : -0.14;
     }
 
     return {

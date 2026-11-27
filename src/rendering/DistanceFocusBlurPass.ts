@@ -226,11 +226,12 @@ const FRAGMENT_SHADER = /* glsl */ `
       vec3 worldPos = (uCameraWorldMatrix * vec4(viewPos, 1.0)).xyz;
       vec3 camPos = uCameraWorldMatrix[3].xyz;
       vec3 rayDir = normalize(worldPos - camPos);
+      float underwaterCam = smoothstep(0.0, 0.05, uWaterLevel - camPos.y);
 
       float heightAboveWater = max(0.0, worldPos.y - (uWaterLevel + 0.5));
       float valleyHeightFactor = exp(-heightAboveWater * 0.085);
       float valleyDistFactor = 1.0 - exp(-max(0.0, centerDist - 18.0) * (0.0022 + uMistStrength * 0.0055));
-      float valleyMist = clamp(valleyHeightFactor * valleyDistFactor * uMistStrength, 0.0, 0.68);
+      float valleyMist = clamp(valleyHeightFactor * valleyDistFactor * uMistStrength, 0.0, 0.68) * (1.0 - underwaterCam);
 
       vec3 sunDir = normalize(uSunDirection);
       float sunDot = max(dot(rayDir, sunDir), 0.0);
@@ -240,16 +241,32 @@ const FRAGMENT_SHADER = /* glsl */ `
       color = mix(color, mistColor, valleyMist);
 
       // Subtle aerial sun haze across mid-to-far woodland ridges looking toward the sun
-      float aerialFactor = smoothstep(55.0, 420.0, radialDist);
+      float aerialFactor = smoothstep(55.0, 420.0, radialDist) * (1.0 - underwaterCam);
       color += uSunColor * pow(sunDot, 10.0) * aerialFactor * uDaylight * (0.045 + uFogDensity * 8.0);
 
       // Flat planar oceanic horizon dissolve (view-Z matches FogExp2 and stays level across the FOV)
       // plus a far inscribed perimeter safety fade; converges to exact uHorizonColor at full mist.
       float camHorizonMist = smoothstep(uHorizonFadeStart, uHorizonFadeEnd, centerDist);
       float worldEdgeMist = smoothstep(uWorldHorizonStart, uWorldHorizonEnd, length(worldPos.xz));
-      float horizonMist = clamp(max(camHorizonMist, worldEdgeMist), 0.0, 1.0);
+      float horizonMist = clamp(max(camHorizonMist, worldEdgeMist), 0.0, 1.0) * (1.0 - underwaterCam);
       vec3 horizonTint = mix(mistColor, uHorizonColor, smoothstep(0.20, 0.90, horizonMist));
       color = mix(color, horizonTint, horizonMist);
+
+      // 3. Underwater optical absorption & sunlit teal river haze when Eye View is submerged (e.g. River Koi)
+      if (underwaterCam > 0.001) {
+        vec3 uwFogCol = mix(vec3(0.024, 0.095, 0.115), vec3(0.068, 0.285, 0.275), uDaylight);
+        vec3 uwSunGlow = uSunColor * pow(sunDot, 5.0) * uDaylight * 0.14;
+        float uwDistFog = 1.0 - exp(-centerDist * 0.088);
+        color *= mix(vec3(1.0), vec3(0.76, 0.96, 0.98), underwaterCam * 0.52);
+        color = mix(color, uwFogCol + uwSunGlow, clamp(uwDistFog * underwaterCam * 0.92, 0.0, 0.94));
+      }
+    } else {
+      vec3 camPosSky = uCameraWorldMatrix[3].xyz;
+      float underwaterSky = smoothstep(0.0, 0.05, uWaterLevel - camPosSky.y);
+      if (underwaterSky > 0.001) {
+        vec3 uwSkyTint = mix(vec3(0.04, 0.14, 0.16), vec3(0.10, 0.34, 0.34), uDaylight);
+        color = mix(color, mix(color * vec3(0.76, 0.96, 0.98), uwSkyTint, 0.28), underwaterSky);
+      }
     }
 
     // Gentle natural optical lens vignette (very restrained, never heavy cartoon border)
