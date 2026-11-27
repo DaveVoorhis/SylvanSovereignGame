@@ -137,16 +137,16 @@ export type DeityAspect =
   | 'The Hearth-Keeper';
 
 export type DivineEventType =
-  | 'bountiful_bloom'
-  | 'sunlit_blessing'
-  | 'healing_dew'
-  | 'silver_rain'
-  | 'thunder_judgment'
-  | 'thorn_blight'
-  | 'spirit_lanterns'
-  | 'wanderers_omen'
-  | 'ancient_whisper'
-  | 'frost_veil';
+  | 'great_deluge'
+  | 'scorching_drought'
+  | 'habitat_clearing'
+  | 'ashen_miasma'
+  | 'polar_snap'
+  | 'sanctuary_rewilding'
+  | 'migration_corridor'
+  | 'sunlit_blessing';
+
+export type DivineImpactPolarity = 'disruptive' | 'restorative';
 
 export type PrayerIntent = 'prosperity' | 'peace' | 'drama' | 'mystery';
 
@@ -180,6 +180,35 @@ export interface ActiveCelebration {
   readonly duration: number;
   /** Target fraction of invited population attending (local ~0.85, regional ~0.55, national 1.0). */
   readonly attendanceRatio: number;
+}
+
+export interface ActiveDivineInfluence {
+  readonly id: number;
+  readonly type: DivineEventType;
+  readonly label: string;
+  readonly icon: string;
+  readonly polarity: DivineImpactPolarity;
+  readonly position: Vec2;
+  readonly radius: number;
+  readonly targetSettlementId: string | null;
+  readonly startedAt: number;
+  readonly duration: number;
+  readonly severity: number;
+  casualties: number;
+  buildingsAffected: number;
+  treesAffected: number;
+  adaptationsTriggered: number;
+  migrationTriggered: boolean;
+  readonly summary: string;
+}
+
+export interface HabitatScar {
+  readonly id: number;
+  readonly x: number;
+  readonly z: number;
+  readonly radius: number;
+  remainingSec: number;
+  readonly maxDurationSec: number;
 }
 
 export interface ChronicleEntry {

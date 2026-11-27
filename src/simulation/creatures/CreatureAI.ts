@@ -203,19 +203,28 @@ export class CreatureAI {
       return;
     }
 
-    creature.hunger = Math.min(100, creature.hunger + dt * 0.52);
+    const hungerRate = 0.52 * (1 + world.climateHeat * 0.55 + world.climateFreeze * 0.32);
+    creature.hunger = Math.min(100, creature.hunger + dt * hungerRate);
+    const energyDrain =
+      creature.activity === 'resting'
+        ? -4.8
+        : 0.42 * (1 + world.climateHeat * 0.4 + world.climateFreeze * 0.45);
     creature.energy = Math.max(
       0,
-      creature.energy - dt * (creature.activity === 'resting' ? -4.8 : 0.42),
+      creature.energy - dt * energyDrain,
     );
     creature.attackCooldown = Math.max(0, creature.attackCooldown - dt);
     creature.actionTimer = Math.max(0, creature.actionTimer - dt);
 
-    // Subtle weather & mood influence
-    if (world.weather === 'storm' && creature.activity !== 'resting') {
+    // Weather & active ecological influence mood response
+    if ((world.weather === 'storm' || world.miasmaIntensity > 0.25) && creature.activity !== 'resting') {
       creature.mood = Math.max(10, creature.mood - dt * 0.8);
-    } else if (world.weather === 'sunbeams' || world.weather === 'blossom') {
-      creature.mood = Math.min(100, creature.mood + dt * 0.5);
+    } else if (
+      world.weather === 'sunbeams' ||
+      world.weather === 'blossom' ||
+      world.rewildingBoost > 0.25
+    ) {
+      creature.mood = Math.min(100, creature.mood + dt * (0.5 + world.rewildingBoost * 0.6));
     }
 
     // Eat carried berries/acorns if hungry
@@ -843,7 +852,8 @@ export class CreatureAI {
       }
       const profile = home.getAdaptationProfile();
       const styleMult = profile.buildSpeedBonus[bp.frameStyle];
-      const work = dt * (11.0 + creature.def.buildSkill * 11.0) * styleMult;
+      const stewardshipBoost = 1 + world.rewildingBoost * 0.42;
+      const work = dt * (11.0 + creature.def.buildSkill * 11.0) * styleMult * stewardshipBoost;
       if (bld.disassembling) {
         const repName = bld.replacementType
           ? BUILDING_CATALOG[bld.replacementType].displayName

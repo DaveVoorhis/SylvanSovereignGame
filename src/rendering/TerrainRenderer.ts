@@ -15,6 +15,7 @@ interface TerrainShaderUniforms {
   uCloudCoverage: { value: number };
   uDaylight: { value: number };
   uWinter: { value: number };
+  uDroughtHeat: { value: number };
   uRockMap: { value: THREE.Texture | null };
   uHasRockMap: { value: number };
 }
@@ -41,7 +42,7 @@ function enhanceTerrainMaterial(
   mat: THREE.MeshStandardMaterial,
   uniforms: TerrainShaderUniforms,
 ): void {
-  mat.customProgramCacheKey = () => 'forest-realistic-terrain-v3';
+  mat.customProgramCacheKey = () => 'forest-realistic-terrain-v4';
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uWaterLevel = uniforms.uWaterLevel;
     shader.uniforms.uRainWetness = uniforms.uRainWetness;
@@ -49,6 +50,7 @@ function enhanceTerrainMaterial(
     shader.uniforms.uCloudCoverage = uniforms.uCloudCoverage;
     shader.uniforms.uDaylight = uniforms.uDaylight;
     shader.uniforms.uWinter = uniforms.uWinter;
+    shader.uniforms.uDroughtHeat = uniforms.uDroughtHeat;
     shader.uniforms.uRockMap = uniforms.uRockMap;
     shader.uniforms.uHasRockMap = uniforms.uHasRockMap;
 
@@ -77,6 +79,7 @@ function enhanceTerrainMaterial(
         uniform float uCloudCoverage;
         uniform float uDaylight;
         uniform float uWinter;
+        uniform float uDroughtHeat;
         uniform sampler2D uRockMap;
         uniform float uHasRockMap;
         varying vec3 vTerrainWorldPos;
@@ -147,7 +150,18 @@ function enhanceTerrainMaterial(
         float aboveWater = vTerrainWorldPos.y - uWaterLevel;
         float shoreWet = (1.0 - smoothstep(-0.05, 0.48, aboveWater)) * smoothstep(-1.4, -0.1, aboveWater);
         float totalWet = clamp(max(shoreWet, uRainWetness * (1.0 - uWinter * 0.85) * 0.72), 0.0, 1.0);
-        diffuseColor.rgb *= mix(1.0, 0.64, totalWet);`,
+        diffuseColor.rgb *= mix(1.0, 0.64, totalWet);
+
+        // 3b. Severe drought parches verdant turf toward dry ochre (away from wet riverbanks)
+        if (uDroughtHeat > 0.01) {
+          float dryMask = smoothstep(0.15, 1.6, aboveWater) * (1.0 - totalWet) * (1.0 - uWinter);
+          vec3 parched = vec3(
+            diffuseColor.r * 1.16 + 0.05,
+            diffuseColor.g * 0.88 + 0.02,
+            diffuseColor.b * 0.68
+          );
+          diffuseColor.rgb = mix(diffuseColor.rgb, parched, clamp(uDroughtHeat, 0.0, 1.0) * dryMask * 0.62);
+        }`,
       )
       .replace(
         '#include <roughnessmap_fragment>',
@@ -237,6 +251,7 @@ export class TerrainRenderer {
       uCloudCoverage: { value: 0.38 },
       uDaylight: { value: 1.0 },
       uWinter: { value: world.season === 'winter' ? 1.0 : 0.0 },
+      uDroughtHeat: { value: 0.0 },
       uRockMap: { value: textures.rock?.map ?? null },
       uHasRockMap: { value: textures.rock?.map ? 1.0 : 0.0 },
     };
@@ -278,13 +293,15 @@ export class TerrainRenderer {
   }
 
   update(dt: number, sky?: SkyLightingState): void {
+    this.terrainUniforms.uWaterLevel.value = this.world.getEffectiveWaterLevel();
     if (sky) {
       this.waterSurface.update(dt, sky);
       this.terrainUniforms.uRainWetness.value = sky.rainWetness ?? 0.0;
       this.terrainUniforms.uCloudTime.value = sky.cloudTime ?? 0.0;
       this.terrainUniforms.uCloudCoverage.value = sky.cloudCoverage ?? 0.38;
       this.terrainUniforms.uDaylight.value = sky.daylight;
-      this.terrainUniforms.uWinter.value = sky.isWinter ? 1.0 : 0.0;
+      this.terrainUniforms.uWinter.value = Math.max(sky.isWinter ? 1.0 : 0.0, sky.climateFreeze ?? 0.0);
+      this.terrainUniforms.uDroughtHeat.value = sky.climateHeat ?? 0.0;
     }
 
     if (this.lastSeason !== this.world.season) {

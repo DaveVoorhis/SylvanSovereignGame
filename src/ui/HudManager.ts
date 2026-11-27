@@ -67,7 +67,11 @@ export class HudManager {
     this.root = root;
     root.innerHTML = '';
 
-    this.deityPanel = new DeityPanel(callbacks.onWhisper, () => this.setDeityPanelOpen(false));
+    this.deityPanel = new DeityPanel(
+      callbacks.onWhisper,
+      () => this.setDeityPanelOpen(false),
+      callbacks.onFocusPosition,
+    );
     this.chroniclePanel = new ChroniclePanel(callbacks.onFocusPosition, () =>
       this.setChroniclePanelOpen(false),
     );
@@ -145,6 +149,7 @@ export class HudManager {
       onNewWorld: callbacks.onNewWorld,
       onChangeQuality: callbacks.onChangeQuality,
       onFocusSettlement: callbacks.onFocusSettlement,
+      onFocusPosition: callbacks.onFocusPosition,
       onCloseInspector: callbacks.onClearSelection,
     });
 
@@ -197,6 +202,10 @@ export class HudManager {
 
   setCinematicActive(active: boolean): void {
     this.topBar.setCinematicActive(active);
+  }
+
+  setQualityPreset(preset: QualityPreset): void {
+    this.topBar.setQualityPreset(preset);
   }
 
   setDeityPanelOpen(open: boolean): void {

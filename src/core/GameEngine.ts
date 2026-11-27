@@ -3,6 +3,7 @@ import { EventBus } from './EventBus';
 import {
   buildSaveRecord,
   DEFAULT_AUTOSAVE_SLOT_ID,
+  isQualityPreset,
   makeManualSlotId,
   SaveStore,
   type SaveGameRecord,
@@ -19,6 +20,26 @@ import { HudManager } from '@ui/HudManager';
 import { nextPaintFrame, type SplashScreen } from '@ui/SplashScreen';
 
 const AUTOSAVE_INTERVAL_SEC = 25;
+const QUALITY_STORAGE_KEY = 'sylvan-sovereign:qualityPreset';
+
+function readStoredQualityPreset(): QualityPreset | null {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return null;
+    const raw = window.localStorage.getItem(QUALITY_STORAGE_KEY);
+    return isQualityPreset(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredQualityPreset(preset: QualityPreset): void {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    window.localStorage.setItem(QUALITY_STORAGE_KEY, preset);
+  } catch {
+    // Ignore storage quota / private browsing errors
+  }
+}
 
 /**
  * Reads an explicit `?seed=<int>` URL query parameter if provided.
@@ -103,12 +124,17 @@ export class GameEngine {
       await nextPaintFrame();
     }
 
+    const initialQuality: QualityPreset = isQualityPreset(loadedAutosave?.view?.qualityPreset)
+      ? loadedAutosave.view.qualityPreset
+      : readStoredQualityPreset() ?? 'high';
+
     const engine = new GameEngine(canvas, hudRoot, {
       bus,
       world,
       saveStore,
       deferSceneBuild: true,
       splash: splash ?? null,
+      initialQuality,
     });
     await engine.sceneManager.buildWorldSceneAsync(
       world,
@@ -133,13 +159,15 @@ export class GameEngine {
       saveStore?: SaveStore;
       deferSceneBuild?: boolean;
       splash?: SplashScreen | null;
+      initialQuality?: QualityPreset;
     },
   ) {
     this.bus = init?.bus ?? new EventBus();
     this.splash = init?.splash ?? null;
     this.saveStore = init?.saveStore ?? new SaveStore();
     this.world = init?.world ?? new WorldState(this.bus, { seed: resolveInitialSeed(), initialWaterwaySettlements: 1 });
-    this.sceneManager = new SceneManager(canvas, this.world, 'high', init?.deferSceneBuild ?? false);
+    const initialQuality = init?.initialQuality ?? 'high';
+    this.sceneManager = new SceneManager(canvas, this.world, initialQuality, init?.deferSceneBuild ?? false);
 
     this.hud = new HudManager(hudRoot, {
       onSetSpeed: (speed) => {
@@ -247,6 +275,7 @@ export class GameEngine {
       onExportSaveRecord: () => this.buildCurrentSaveRecord(DEFAULT_AUTOSAVE_SLOT_ID, 'Exported Realm'),
       onImportSaveRecord: (record) => this.loadSaveRecordAsync(record),
     });
+    this.hud.setQualityPreset(initialQuality);
 
     this.bus.on('selection:changed', (target) => {
       // If already in Creature Eye View and the user clicks another creature, jump right into its eyes!
@@ -605,10 +634,10 @@ export class GameEngine {
         true,
       );
       this.autosaveAccumSec = 0;
-      void this.persistAutosaveQuietly();
       this.bus.emit('world:reset', { seed });
       this.refreshHudNow();
       this.lastFrameMs = performance.now();
+      await this.persistAutosaveQuietly(true);
       await this.splash?.dismiss(220);
     } finally {
       this.isRebuilding = false;
@@ -626,12 +655,16 @@ export class GameEngine {
       selection: this.selection ? { ...this.selection } : null,
       deityPanelOpen: this.hud.isDeityPanelOpen(),
       chroniclePanelOpen: this.hud.isChroniclePanelOpen(),
+      qualityPreset: this.sceneManager.getQuality(),
     };
   }
 
   private applyViewState(view: SaveViewState): void {
     this.simSpeed = view.simSpeed;
     this.hud.setActiveSpeed(view.simSpeed);
+    if (isQualityPreset(view.qualityPreset)) {
+      this.hud.setQualityPreset(view.qualityPreset);
+    }
     this.sceneManager.cameraController.setWorldViewState({
       position: view.cameraPosition,
       target: view.cameraTarget,
@@ -675,8 +708,10 @@ export class GameEngine {
     return record.meta;
   }
 
-  private async persistAutosaveQuietly(): Promise<void> {
-    if (this.isRebuilding || this.autosaveInFlight || !this.saveStore.isAvailable()) return;
+  private async persistAutosaveQuietly(allowDuringRebuild = false): Promise<void> {
+    if ((!allowDuringRebuild && this.isRebuilding) || this.autosaveInFlight || !this.saveStore.isAvailable()) {
+      return;
+    }
     this.autosaveInFlight = true;
     try {
       await this.saveSlot(DEFAULT_AUTOSAVE_SLOT_ID, 'Autosave');
@@ -709,11 +744,19 @@ export class GameEngine {
       this.sceneManager.cameraController.follow(null);
 
       this.world = WorldState.fromSnapshot(this.bus, record.world);
+      const savedQuality = isQualityPreset(record.view?.qualityPreset)
+        ? record.view.qualityPreset
+        : undefined;
       await this.sceneManager.rebuildWorldSceneAsync(
         this.world,
         (pct, label) => this.splash?.setProgress(pct, label),
         true,
+        savedQuality,
       );
+      if (savedQuality) {
+        this.hud.setQualityPreset(savedQuality);
+        writeStoredQualityPreset(savedQuality);
+      }
       if (record.view) {
         this.applyViewState(record.view);
       }
@@ -721,8 +764,8 @@ export class GameEngine {
       this.bus.emit('world:reset', { seed: this.world.config.seed });
       this.refreshHudNow();
       this.lastFrameMs = performance.now();
+      await this.persistAutosaveQuietly(true);
       await this.splash?.dismiss(220);
-      void this.persistAutosaveQuietly();
       return true;
     } finally {
       this.isRebuilding = false;
@@ -732,6 +775,7 @@ export class GameEngine {
   private async changeQualityAsync(preset: QualityPreset): Promise<void> {
     if (this.isRebuilding || preset === this.sceneManager.getQuality()) return;
     this.isRebuilding = true;
+    writeStoredQualityPreset(preset);
     try {
       this.splash?.show('Refining woodland craft & morning light…');
       this.splash?.setProgress(16, 'Recalibrating shadows, textures & optical lens…');
@@ -740,6 +784,8 @@ export class GameEngine {
       await this.sceneManager.setQualityAsync(preset, (pct, label) =>
         this.splash?.setProgress(pct, label),
       );
+      this.hud.setQualityPreset(preset);
+      await this.persistAutosaveQuietly(true);
       this.lastFrameMs = performance.now();
       await this.splash?.dismiss(200);
     } finally {

@@ -14,6 +14,10 @@ export interface SkyLightingState {
   readonly cloudTime?: number;
   readonly cloudCoverage?: number;
   readonly rainWetness?: number;
+  readonly floodSurge?: number;
+  readonly climateHeat?: number;
+  readonly climateFreeze?: number;
+  readonly miasmaIntensity?: number;
 }
 
 const WATER_VERTEX_SHADER = /* glsl */ `
@@ -22,6 +26,7 @@ const WATER_VERTEX_SHADER = /* glsl */ `
 
   uniform float uTime;
   uniform float uWindStrength;
+  uniform float uFloodOffset;
 
   varying vec3 vWorldPos;
   varying float vDepth;
@@ -29,21 +34,24 @@ const WATER_VERTEX_SHADER = /* glsl */ `
   varying float vViewDist;
 
   void main() {
-    vDepth = aDepth;
+    float effDepth = aDepth + uFloodOffset;
+    vDepth = effDepth;
     vFlow = aFlow;
 
     vec3 pos = position;
+    pos.y += uFloodOffset;
     // Gentle physical surface swell attenuated smoothly to 0 along the shoreline
-    float shoreMask = smoothstep(0.0, 0.55, aDepth);
+    float shoreMask = smoothstep(0.0, 0.55, effDepth);
     vec4 wp0 = modelMatrix * vec4(pos, 1.0);
     float d1 = dot(wp0.xz, vec2(0.83, 0.55));
     float d2 = dot(wp0.xz, vec2(-0.42, 0.91));
     float d3 = dot(wp0.xz, vec2(0.29, -0.96));
     float w1 = sin(d1 * 0.34 + uTime * 1.25) * 0.014;
     float w2 = cos(d2 * 0.67 + uTime * 1.72) * 0.008;
-    float w3 = sin(d3 * 0.14 + uTime * 0.78) * 0.026 * smoothstep(0.6, 2.6, aDepth);
+    float w3 = sin(d3 * 0.14 + uTime * 0.78) * 0.026 * smoothstep(0.6, 2.6, effDepth);
     float farCalm = 1.0 - smoothstep(900.0, 2600.0, length(wp0.xz));
-    pos.y += (w1 + w2 + w3) * shoreMask * farCalm * (0.7 + uWindStrength * 0.65);
+    float floodChop = 1.0 + clamp(uFloodOffset, 0.0, 1.4) * 0.45;
+    pos.y += (w1 + w2 + w3) * shoreMask * farCalm * (0.7 + uWindStrength * 0.65) * floodChop;
 
     vec4 worldPos = modelMatrix * vec4(pos, 1.0);
     vWorldPos = worldPos.xyz;
@@ -475,7 +483,8 @@ export function createRealisticWaterSurface(
   };
 
   // Emit only quads near or under waterLevel (huge vertex savings with zero visual loss)
-  const shoreMargin = 0.75;
+  // Extra margin allows dynamic flood surges to visibly submerge low riverbanks and shores.
+  const shoreMargin = 2.1;
   for (let iz = 0; iz < segments; iz++) {
     for (let ix = 0; ix < segments; ix++) {
       const h00 = heights[iz * cols + ix];
@@ -521,6 +530,7 @@ export function createRealisticWaterSurface(
     uMaxExtent: { value: half },
     uCloudTime: { value: 0 },
     uCloudCoverage: { value: 0.42 },
+    uFloodOffset: { value: 0.0 },
   };
 
   const mat = new THREE.ShaderMaterial({
@@ -551,6 +561,7 @@ export function createRealisticWaterSurface(
       uniforms.uWinter.value = sky.isWinter ? 1.0 : 0.0;
       uniforms.uCloudTime.value = sky.cloudTime ?? uniforms.uTime.value;
       uniforms.uCloudCoverage.value = sky.cloudCoverage ?? 0.42;
+      uniforms.uFloodOffset.value = sky.floodSurge ?? 0.0;
     },
     dispose(): void {
       geo.dispose();

@@ -3,6 +3,7 @@ import { EventBus } from '@core/EventBus';
 import {
   buildSaveRecord,
   DEFAULT_AUTOSAVE_SLOT_ID,
+  isQualityPreset,
   isValidSaveRecord,
   makeManualSlotId,
   SaveStore,
@@ -121,6 +122,12 @@ describe('WorldState persistence & IndexedDB SaveStore', () => {
     creatures[0].wealth = 147;
     const sampleNode = world.terrain.resourceNodes[0];
     sampleNode.amount = Math.max(0, sampleNode.maxAmount - 4.25);
+    // Trigger rare Deity ecological influences to verify active epochs, scars, and adaptations persist
+    world.deity.triggerInfluence('great_deluge', world, home);
+    world.deity.triggerInfluence('habitat_clearing', world, neighbor);
+    for (let i = 0; i < 15; i++) {
+      world.step(0.1);
+    }
 
     const record = buildSaveRecord({
       slotId: DEFAULT_AUTOSAVE_SLOT_ID,
@@ -135,6 +142,7 @@ describe('WorldState persistence & IndexedDB SaveStore', () => {
         selection: { kind: 'settlement', id: home.id },
         deityPanelOpen: false,
         chroniclePanelOpen: true,
+        qualityPreset: 'ultra',
       },
     });
 
@@ -142,6 +150,11 @@ describe('WorldState persistence & IndexedDB SaveStore', () => {
     const cloned = JSON.parse(JSON.stringify(record)) as unknown;
     expect(isValidSaveRecord(cloned)).toBe(true);
     const parsed = cloned as SaveGameRecord;
+    expect(parsed.view?.qualityPreset).toBe('ultra');
+    expect(isQualityPreset(parsed.view?.qualityPreset)).toBe(true);
+    expect(isQualityPreset('balanced')).toBe(true);
+    expect(isQualityPreset('high')).toBe(true);
+    expect(isQualityPreset('invalid')).toBe(false);
 
     const restored = WorldState.fromSnapshot(new EventBus(), parsed.world);
 
@@ -167,6 +180,13 @@ describe('WorldState persistence & IndexedDB SaveStore', () => {
 
     expect(restored.deity.name).toBe(world.deity.name);
     expect(restored.deity.energy).toBeCloseTo(world.deity.energy, 6);
+    expect(restored.activeInfluences.length).toBe(world.activeInfluences.length);
+    expect(restored.activeInfluences.length).toBeGreaterThanOrEqual(2);
+    expect(restored.habitatScars.length).toBe(world.habitatScars.length);
+    expect(restored.habitatScars.length).toBeGreaterThanOrEqual(1);
+    expect(restored.floodSurge).toBeCloseTo(world.floodSurge, 6);
+    expect(restored.settlements[0].environmentalResilience).toBeCloseTo(home.environmentalResilience, 6);
+    expect(restored.settlements[0].adaptationFocus).toEqual(home.adaptationFocus);
     expect(restored.chronicle.entries.length).toBe(world.chronicle.entries.length);
     expect(restored.diplomacy.getScore(home.id, neighbor.id)).toBeCloseTo(
       world.diplomacy.getScore(home.id, neighbor.id),

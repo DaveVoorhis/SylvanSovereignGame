@@ -45,6 +45,8 @@ interface ClearableTreeGroup {
   readonly trunks: THREE.InstancedMesh;
   readonly crowns: THREE.InstancedMesh;
   readonly cleared: Uint8Array;
+  readonly savedTrunks: Map<number, THREE.Matrix4>;
+  readonly savedCrowns: Map<number, THREE.Matrix4>;
 }
 
 function makeNormalOrBumpProps(
@@ -398,6 +400,8 @@ export class FloraRenderer {
   private readonly foliageUniforms: FoliageUniforms;
   private lastSeason: Season | null = null;
   private lastStructureRevision = -1;
+  private lastClimateTintKey = '';
+  private readonly tmpClimateTint = new THREE.Color();
 
   constructor(
     scene: THREE.Scene,
@@ -634,6 +638,8 @@ export class FloraRenderer {
         trunks,
         crowns,
         cleared: new Uint8Array(oaks.length),
+        savedTrunks: new Map(),
+        savedCrowns: new Map(),
       });
 
       if (lanternPositions.length > 0) {
@@ -701,6 +707,8 @@ export class FloraRenderer {
         trunks,
         crowns,
         cleared: new Uint8Array(birches.length),
+        savedTrunks: new Map(),
+        savedCrowns: new Map(),
       });
     }
 
@@ -1242,8 +1250,13 @@ export class FloraRenderer {
   }
 
   update(dt = 0, sky?: SkyLightingState): void {
-    if (this.lastSeason !== this.world.season) {
-      this.updateSeasonPalette(this.world.season);
+    const heat = this.world.climateHeat;
+    const freeze = this.world.climateFreeze;
+    const miasma = this.world.miasmaIntensity;
+    const tintKey = `${this.world.season}:${Math.round(heat * 20)}:${Math.round(freeze * 20)}:${Math.round(miasma * 20)}`;
+    if (this.lastSeason !== this.world.season || tintKey !== this.lastClimateTintKey) {
+      this.lastClimateTintKey = tintKey;
+      this.updateSeasonPalette(this.world.season, heat, freeze, miasma);
     }
 
     if (this.world.structureRevision !== this.lastStructureRevision) {
@@ -1263,7 +1276,7 @@ export class FloraRenderer {
     }
 
     const t = this.world.elapsedSeconds;
-    this.lilyGroup.position.y = Math.sin(t * 1.45) * 0.018;
+    this.lilyGroup.position.y = this.world.floodSurge + Math.sin(t * 1.45) * 0.018;
 
     // Lanterns only glow warmly at dusk/night, never glowing neon bulbs in noon sunlight
     const sunY = Math.sin((this.world.timeOfDay - 0.25) * Math.PI * 2);
@@ -1309,18 +1322,36 @@ export class FloraRenderer {
       for (let i = 0; i < bridges.length; i++) {
         if (isPointNearBridge(bridges[i], tree.x, tree.z, 1.8)) return true;
       }
+      if (this.world.isPointInHabitatScar(tree.x, tree.z)) return true;
       return false;
     };
 
     for (const group of this.clearableTreeGroups) {
       let dirty = false;
       for (let i = 0; i < group.spots.length; i++) {
-        if (group.cleared[i]) continue;
-        if (isTreeBlocked(group.spots[i])) {
+        const blocked = isTreeBlocked(group.spots[i]);
+        if (blocked && !group.cleared[i]) {
           group.cleared[i] = 1;
+          if (!group.savedTrunks.has(i)) {
+            const tm = new THREE.Matrix4();
+            const cm = new THREE.Matrix4();
+            group.trunks.getMatrixAt(i, tm);
+            group.crowns.getMatrixAt(i, cm);
+            group.savedTrunks.set(i, tm);
+            group.savedCrowns.set(i, cm);
+          }
           group.trunks.setMatrixAt(i, zeroMatrix);
           group.crowns.setMatrixAt(i, zeroMatrix);
           dirty = true;
+        } else if (!blocked && group.cleared[i]) {
+          const tm = group.savedTrunks.get(i);
+          const cm = group.savedCrowns.get(i);
+          if (tm && cm) {
+            group.cleared[i] = 0;
+            group.trunks.setMatrixAt(i, tm);
+            group.crowns.setMatrixAt(i, cm);
+            dirty = true;
+          }
         }
       }
 
@@ -1334,15 +1365,17 @@ export class FloraRenderer {
       for (let i = 0; i < this.proceduralPines.spots.length; i++) {
         if (isTreeBlocked(this.proceduralPines.spots[i])) {
           this.proceduralPines.clearTree(i);
+        } else {
+          this.proceduralPines.restoreTree(i);
         }
       }
       this.proceduralPines.flushCleared();
     }
   }
 
-  private updateSeasonPalette(season: Season): void {
+  private updateSeasonPalette(season: Season, heat = 0, freeze = 0, miasma = 0): void {
     this.lastSeason = season;
-    this.wildflowerGroup.visible = season !== 'winter';
+    this.wildflowerGroup.visible = season !== 'winter' && freeze < 0.55;
 
     // Calibrated naturalistic chlorophyll & seasonal pigments (photographic, non-neon)
     if (season === 'spring') {
@@ -1381,6 +1414,39 @@ export class FloraRenderer {
       this.grassMat.color.setHex(0xc2ccd2);
       this.fernMat.color.setHex(0x8b9ea6);
       this.bushMat.color.setHex(0x98a8b2);
+    }
+
+    // Modulate living canopy pigments under ecological extremes (drought parching, polar frost, ashen pall)
+    const foliageMats = [
+      this.oakFoliageMat,
+      this.pineFoliageMat,
+      this.birchFoliageMat,
+      this.distantPineMat,
+      this.distantBroadleafMat,
+      this.grassMat,
+      this.fernMat,
+      this.bushMat,
+    ];
+    if (heat > 0.03) {
+      this.tmpClimateTint.setHex(0xa88244);
+      const amt = Math.min(0.62, heat * 0.62);
+      for (const mat of foliageMats) {
+        mat.color.lerp(this.tmpClimateTint, amt);
+      }
+    }
+    if (freeze > 0.03) {
+      this.tmpClimateTint.setHex(0xb4c4d0);
+      const amt = Math.min(0.75, freeze * 0.72);
+      for (const mat of foliageMats) {
+        mat.color.lerp(this.tmpClimateTint, amt);
+      }
+    }
+    if (miasma > 0.03) {
+      this.tmpClimateTint.setHex(0x6e6a5b);
+      const amt = Math.min(0.55, miasma * 0.52);
+      for (const mat of foliageMats) {
+        mat.color.lerp(this.tmpClimateTint, amt);
+      }
     }
   }
 

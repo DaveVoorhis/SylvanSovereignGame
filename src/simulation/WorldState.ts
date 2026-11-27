@@ -2,11 +2,14 @@ import { DEFAULT_WORLD_CONFIG, type WorldConfig } from '@core/Config';
 import type { EventBus } from '@core/EventBus';
 import { SeededRandom } from '@core/SeededRandom';
 import type {
+  ActiveDivineInfluence,
   CombatSparkVisual,
   CreatureRole,
   DivineEffectVisual,
+  HabitatScar,
   Season,
   SpeciesId,
+  Vec2,
   Vec3,
   WeatherType,
 } from '@core/Types';
@@ -51,6 +54,14 @@ export interface WorldSnapshot {
   readonly creatures: readonly CreatureSnapshot[];
   readonly activeDivineEffects: readonly DivineEffectVisual[];
   readonly activeCombatSparks: readonly CombatSparkVisual[];
+  readonly activeInfluences?: readonly ActiveDivineInfluence[];
+  readonly habitatScars?: readonly HabitatScar[];
+  readonly floodSurge?: number;
+  readonly climateHeat?: number;
+  readonly climateFreeze?: number;
+  readonly miasmaIntensity?: number;
+  readonly rewildingBoost?: number;
+  readonly scarSeq?: number;
   readonly deity: DeitySnapshot;
   readonly chronicle: ChronicleSnapshot;
   readonly diplomacy: DiplomacySnapshot;
@@ -93,6 +104,15 @@ export class WorldState {
   readonly creatures: Creature[] = [];
   readonly activeDivineEffects: DivineEffectVisual[] = [];
   readonly activeCombatSparks: CombatSparkVisual[] = [];
+  /** Sustained dramatic ecological upheavals & restorations triggered by the Deity. */
+  readonly activeInfluences: ActiveDivineInfluence[] = [];
+  /** Visible cleared forest scars left by habitat destruction until rewilding or slow regrowth heals them. */
+  readonly habitatScars: HabitatScar[] = [];
+  floodSurge = 0;
+  climateHeat = 0;
+  climateFreeze = 0;
+  miasmaIntensity = 0;
+  rewildingBoost = 0;
 
   elapsedSeconds = 0;
   day = 1;
@@ -106,6 +126,7 @@ export class WorldState {
   private creatureSeq = 1;
   private litterSeq = 1;
   private sparkSeq = 1;
+  private scarSeq = 1;
   private routeRefreshTimer = 0;
   private readonly settlementIndex = new Map<string, number>();
   private cachedSettlementLen = -1;
@@ -133,7 +154,7 @@ export class WorldState {
 
     if (!options?.skipInitialPopulation) {
       this.settlementManager.createInitialSettlements(this);
-      this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision);
+      this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision, this.habitatScars);
       this.diplomacy.initialize(this.settlements, this);
 
       this.chronicle.record(
@@ -161,7 +182,7 @@ export class WorldState {
       reproductionCooldown?: number;
     } = {},
   ): Creature {
-    this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision);
+    this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision, this.habitatScars);
     const def = SPECIES_CATALOG[species];
     const isNewborn = options.ageDays !== undefined && options.ageDays < 0.75;
     const sizeScale = def.bodyScale * (isNewborn ? 0.46 : 1.0);
@@ -482,6 +503,78 @@ export class WorldState {
     this.weatherTimer = Math.max(10, durationSec);
   }
 
+  /** Current effective water surface elevation including any active floodwater surge. */
+  getEffectiveWaterLevel(): number {
+    return this.terrain.waterLevel + this.floodSurge;
+  }
+
+  /** Carves a persistent habitat clearing scar into the woodland canopy & obstacle map. */
+  addHabitatScar(x: number, z: number, radius: number, durationSec: number): HabitatScar {
+    const scar: HabitatScar = {
+      id: this.scarSeq++,
+      x,
+      z,
+      radius,
+      remainingSec: durationSec,
+      maxDurationSec: durationSec,
+    };
+    this.habitatScars.push(scar);
+    this.structureRevision++;
+    return scar;
+  }
+
+  /** Heals habitat scars within range of a rewilding bloom, allowing felled trees to visibly regrow. */
+  healHabitatScars(center: Vec2, radius: number): number {
+    let healed = 0;
+    const rSq = radius * radius;
+    for (let i = this.habitatScars.length - 1; i >= 0; i--) {
+      const sc = this.habitatScars[i];
+      const dx = sc.x - center.x;
+      const dz = sc.z - center.z;
+      if (dx * dx + dz * dz <= rSq) {
+        this.habitatScars.splice(i, 1);
+        healed++;
+      }
+    }
+    if (healed > 0) {
+      this.structureRevision++;
+    }
+    return healed;
+  }
+
+  isPointInHabitatScar(x: number, z: number): boolean {
+    for (let i = 0; i < this.habitatScars.length; i++) {
+      const sc = this.habitatScars[i];
+      const dx = x - sc.x;
+      const dz = z - sc.z;
+      if (dx * dx + dz * dz < sc.radius * sc.radius) return true;
+    }
+    return false;
+  }
+
+  /** Records a solemn environmental casualty caused by climate upheaval, flood, clearing, or blight. */
+  recordEnvironmentalLoss(
+    creature: Creature,
+    title: string,
+    detail: string,
+    influence?: ActiveDivineInfluence,
+  ): void {
+    if (!creature.alive) return;
+    creature.alive = false;
+    creature.health = 0;
+    if (creature.mateId) {
+      const mate = this.getCreature(creature.mateId);
+      if (mate && mate.mateId === creature.id) {
+        mate.mateId = null;
+      }
+      creature.mateId = null;
+    }
+    if (influence) {
+      influence.casualties++;
+    }
+    this.chronicle.record(this.day, this.season, 'nature', title, detail, creature.position2D);
+  }
+
   emitDivineEffect(effect: DivineEffectVisual): void {
     this.activeDivineEffects.push(effect);
     this.bus.emit('divine:effect', effect);
@@ -531,7 +624,7 @@ export class WorldState {
       this.rollSeasonalWeather();
     }
 
-    // Regenerate ecological nodes
+    // Regenerate ecological nodes (strongly shaped by active climate upheavals & rewilding)
     const seasonGrowth =
       this.season === 'spring'
         ? 1.35
@@ -540,12 +633,45 @@ export class WorldState {
           : this.season === 'autumn'
             ? 0.9
             : 0.45;
-    this.terrain.tickResources(dt, seasonGrowth * (0.7 + this.deity.traits.verdancy * 0.6));
+    const climateGrowthMult =
+      (1 - this.climateHeat * 0.82) *
+      (1 - this.climateFreeze * 0.72) *
+      (1 - this.miasmaIntensity * 0.55) *
+      (1 + this.rewildingBoost * 1.45);
+    this.terrain.tickResources(
+      dt,
+      Math.max(0.06, seasonGrowth * (0.7 + this.deity.traits.verdancy * 0.6) * climateGrowthMult),
+    );
+
+    // Slowly regrow cleared habitat scars over long periods of time
+    if (this.habitatScars.length > 0) {
+      let scarExpired = false;
+      const healSpeed = 1 + this.rewildingBoost * 3.5;
+      for (let i = this.habitatScars.length - 1; i >= 0; i--) {
+        const sc = this.habitatScars[i];
+        sc.remainingSec -= dt * healSpeed;
+        if (sc.remainingSec <= 0) {
+          this.habitatScars.splice(i, 1);
+          scarExpired = true;
+          this.chronicle.record(
+            this.day,
+            this.season,
+            'nature',
+            'Young Canopy Reclaims Clearing',
+            'Years of patient regrowth have finally cloaked an old forest clearing in young saplings.',
+            { x: sc.x, z: sc.z },
+          );
+        }
+      }
+      if (scarExpired) {
+        this.structureRevision++;
+      }
+    }
 
     // Step subsystems
     this.deity.tick(this, dt);
     this.settlementManager.tick(this, dt);
-    this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision);
+    this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision, this.habitatScars);
     this.diplomacy.tick(this, dt);
     this.festivals.tick(this, dt);
 
@@ -649,6 +775,17 @@ export class WorldState {
         ...sp,
         position: { x: sp.position.x, y: sp.position.y, z: sp.position.z },
       })),
+      activeInfluences: this.activeInfluences.map((inf) => ({
+        ...inf,
+        position: { x: inf.position.x, z: inf.position.z },
+      })),
+      habitatScars: this.habitatScars.map((sc) => ({ ...sc })),
+      floodSurge: this.floodSurge,
+      climateHeat: this.climateHeat,
+      climateFreeze: this.climateFreeze,
+      miasmaIntensity: this.miasmaIntensity,
+      rewildingBoost: this.rewildingBoost,
+      scarSeq: this.scarSeq,
       deity: this.deity.exportSnapshot(),
       chronicle: this.chronicle.exportSnapshot(),
       diplomacy: this.diplomacy.exportSnapshot(),
@@ -688,6 +825,22 @@ export class WorldState {
     for (const sp of snapshot.activeCombatSparks) {
       world.activeCombatSparks.push({ ...sp, position: { ...sp.position } });
     }
+    if (snapshot.activeInfluences) {
+      for (const inf of snapshot.activeInfluences) {
+        world.activeInfluences.push({ ...inf, position: { ...inf.position } });
+      }
+    }
+    if (snapshot.habitatScars) {
+      for (const sc of snapshot.habitatScars) {
+        world.habitatScars.push({ ...sc });
+      }
+    }
+    world.floodSurge = snapshot.floodSurge ?? 0;
+    world.climateHeat = snapshot.climateHeat ?? 0;
+    world.climateFreeze = snapshot.climateFreeze ?? 0;
+    world.miasmaIntensity = snapshot.miasmaIntensity ?? 0;
+    world.rewildingBoost = snapshot.rewildingBoost ?? 0;
+    world.scarSeq = snapshot.scarSeq ?? 1;
 
     world.deity.importSnapshot(snapshot.deity);
     world.chronicle.importSnapshot(snapshot.chronicle);
@@ -703,7 +856,7 @@ export class WorldState {
     }
 
     world.structureRevision++;
-    world.obstacles.sync(world.terrain, world.settlements, world.bridges, world.structureRevision);
+    world.obstacles.sync(world.terrain, world.settlements, world.bridges, world.structureRevision, world.habitatScars);
     world.economy.rebuildRouteSummary(world);
     return world;
   }

@@ -1524,4 +1524,98 @@ describe('Forest Procedural God Game — Headless Simulation', () => {
       expect(fish.y).toBeGreaterThan(world.terrain.getHeightAt(fish.x, fish.z));
     }
   });
+
+  it('keeps autonomous Deity influences rare by default and models dramatic ecological disruptions, adaptations, and restorative stewardship', () => {
+    // Autonomous interventions should be genuinely rare (~1.5+ minutes apart at 1x speed)
+    expect(DEFAULT_WORLD_CONFIG.deityDecisionIntervalSec).toBeGreaterThanOrEqual(80);
+
+    const world = new WorldState(new EventBus(), {
+      seed: 20260815,
+      initialSettlements: 2,
+      initialWaterwaySettlements: 0,
+      initialCreaturesPerSettlement: 12,
+      deityDecisionIntervalSec: 999,
+      diplomacyIntervalSec: 999,
+    });
+
+    const village = world.settlements[0];
+    // Give village extra completed buildings so we can verify building damage & survival floors
+    const extraTypes = ['granary', 'workshop', 'market_stall', 'bakery'] as const;
+    for (let i = 0; i < extraTypes.length; i++) {
+      const ang = (i / extraTypes.length) * Math.PI * 2;
+      const bx = village.center.x + Math.cos(ang) * 14;
+      const bz = village.center.z + Math.sin(ang) * 14;
+      village.buildings.push({
+        id: `test_eco_bldg_${i}`,
+        settlementId: village.id,
+        type: extraTypes[i],
+        position: { x: bx, z: bz },
+        groundY: world.terrain.getHeightAt(bx, bz),
+        rotation: 0,
+        progress: 100,
+        completed: true,
+      });
+    }
+    village.stockpile.berries = 90;
+
+    // 1. Great Deluge: raises floodwaters, batters structures/stores, teaches adaptation, preserves minimum survivors
+    const flood = world.deity.triggerInfluence('great_deluge', world, village);
+    expect(flood).not.toBeNull();
+    expect(flood!.polarity).toBe('disruptive');
+    expect(world.activeInfluences.length).toBe(1);
+
+    for (let i = 0; i < 150; i++) {
+      world.step(0.1);
+    }
+    expect(world.floodSurge).toBeGreaterThan(0.75);
+    expect(world.getEffectiveWaterLevel()).toBeGreaterThan(world.terrain.waterLevel + 0.75);
+    expect(village.environmentalResilience).toBeGreaterThan(0);
+    expect(Object.keys(village.adaptationFocus).length).toBeGreaterThan(0);
+    expect(world.getSettlementPopulation(village.id)).toBeGreaterThanOrEqual(3);
+    expect(village.getCompletedCount()).toBeGreaterThanOrEqual(2);
+
+    // 2. Habitat Clearing: carves a persistent scar that clears tree obstacles; Sanctuary Rewilding heals it back
+    const targetTree = world.terrain.trees.find(
+      (t) => Math.hypot(t.x - village.center.x, t.z - village.center.z) > 26,
+    )!;
+    expect(targetTree).toBeDefined();
+    const clearing = world.deity.triggerInfluence('habitat_clearing', world, village);
+    expect(clearing).not.toBeNull();
+    expect(world.habitatScars.length).toBeGreaterThanOrEqual(1);
+    const scar = world.habitatScars[0];
+    expect(world.isPointInHabitatScar(scar.x, scar.z)).toBe(true);
+    const revBeforeHeal = world.structureRevision;
+
+    const rewild = world.deity.triggerInfluence('sanctuary_rewilding', world, village);
+    expect(rewild).not.toBeNull();
+    expect(rewild!.polarity).toBe('restorative');
+    expect(world.habitatScars.length).toBe(0);
+    expect(world.structureRevision).toBeGreaterThan(revBeforeHeal);
+    for (let i = 0; i < 120; i++) {
+      world.step(0.1);
+    }
+    expect(world.rewildingBoost).toBeGreaterThan(0.5);
+
+    // 3. Climate extremes (Heatwave, Ashen Miasma, Polar Snap) drive distinct world anomalies
+    world.deity.triggerInfluence('scorching_drought', world, village);
+    for (let i = 0; i < 140; i++) world.step(0.1);
+    expect(world.climateHeat).toBeGreaterThan(0.6);
+
+    world.deity.triggerInfluence('ashen_miasma', world, village);
+    for (let i = 0; i < 140; i++) world.step(0.1);
+    expect(world.miasmaIntensity).toBeGreaterThan(0.6);
+
+    world.deity.triggerInfluence('polar_snap', world, village);
+    for (let i = 0; i < 140; i++) world.step(0.1);
+    expect(world.climateFreeze).toBeGreaterThan(0.6);
+    expect(world.weather).toBe('snow');
+
+    // 4. Migration Corridor reintroduces paired kin and boosts diplomacy
+    const popBeforeCorridor = world.creatures.filter((c) => c.alive).length;
+    const corridor = world.deity.triggerInfluence('migration_corridor', world, village);
+    expect(corridor).not.toBeNull();
+    expect(corridor!.polarity).toBe('restorative');
+    const popAfterCorridor = world.creatures.filter((c) => c.alive).length;
+    expect(popAfterCorridor).toBeGreaterThanOrEqual(popBeforeCorridor + 2);
+  });
 });

@@ -71,6 +71,7 @@ export interface ProceduralPineForestResult {
   readonly disposables: THREE.BufferGeometry[];
   readonly spots: readonly TreeSpot[];
   readonly clearTree: (index: number) => void;
+  readonly restoreTree: (index: number) => void;
   readonly flushCleared: () => void;
   readonly totalBoughInstances: number;
 }
@@ -1146,6 +1147,8 @@ export function buildProceduralPineForest(
   // Support instant settlement/bridge tree clearing for individual procedural pines
   const zeroMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
   const cleared = new Uint8Array(count);
+  const savedTrunkPositions = new Map<number, Float32Array>();
+  const savedBoughMatrices = new Map<number, Array<{ meshIndex: number; start: number; data: Float32Array }>>();
   let trunksDirty = false;
   const frondsDirty = [false, false, false];
 
@@ -1157,8 +1160,12 @@ export function buildProceduralPineForest(
     if (tr && tr.count > 0) {
       const posAttr = trunksGeo.attributes.position as THREE.BufferAttribute;
       const arr = posAttr.array as Float32Array;
+      const startIdx = tr.start * 3;
       const end = (tr.start + tr.count) * 3;
-      for (let p = tr.start * 3; p < end; p += 3) {
+      if (!savedTrunkPositions.has(index)) {
+        savedTrunkPositions.set(index, arr.slice(startIdx, end));
+      }
+      for (let p = startIdx; p < end; p += 3) {
         arr[p] = 0;
         arr[p + 1] = -999;
         arr[p + 2] = 0;
@@ -1168,12 +1175,49 @@ export function buildProceduralPineForest(
 
     const ranges = boughRangesPerTree[index];
     if (ranges) {
+      const savedList: Array<{ meshIndex: number; start: number; data: Float32Array }> | null =
+        savedBoughMatrices.has(index) ? null : [];
       for (const r of ranges) {
         const mesh = frondMeshes[r.meshIndex];
+        if (savedList) {
+          const matArr = mesh.instanceMatrix.array as Float32Array;
+          savedList.push({
+            meshIndex: r.meshIndex,
+            start: r.start,
+            data: matArr.slice(r.start * 16, (r.start + r.count) * 16),
+          });
+        }
         for (let k = r.start; k < r.start + r.count; k++) {
           mesh.setMatrixAt(k, zeroMatrix);
         }
         frondsDirty[r.meshIndex] = true;
+      }
+      if (savedList) {
+        savedBoughMatrices.set(index, savedList);
+      }
+    }
+  };
+
+  const restoreTree = (index: number): void => {
+    if (index < 0 || index >= count || !cleared[index]) return;
+    cleared[index] = 0;
+
+    const tr = trunkRanges[index];
+    const savedTrunk = savedTrunkPositions.get(index);
+    if (tr && savedTrunk) {
+      const posAttr = trunksGeo.attributes.position as THREE.BufferAttribute;
+      const arr = posAttr.array as Float32Array;
+      arr.set(savedTrunk, tr.start * 3);
+      trunksDirty = true;
+    }
+
+    const savedBoughs = savedBoughMatrices.get(index);
+    if (savedBoughs) {
+      for (const entry of savedBoughs) {
+        const mesh = frondMeshes[entry.meshIndex];
+        const matArr = mesh.instanceMatrix.array as Float32Array;
+        matArr.set(entry.data, entry.start * 16);
+        frondsDirty[entry.meshIndex] = true;
       }
     }
   };
@@ -1197,6 +1241,7 @@ export function buildProceduralPineForest(
     disposables,
     spots,
     clearTree,
+    restoreTree,
     flushCleared,
     totalBoughInstances,
   };

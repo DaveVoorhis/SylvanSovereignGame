@@ -49,6 +49,8 @@ export interface SettlementSnapshot {
   readonly tradeVolume: number;
   readonly nextPlannedBuilding: BuildingType | null;
   readonly lastBuiltType: BuildingType | null;
+  readonly adaptationFocus?: Partial<Record<BuildingType, number>>;
+  readonly environmentalResilience?: number;
 }
 
 /** Derives the realistic multi-stage construction phase from a building's progress and state. */
@@ -98,6 +100,8 @@ export class Settlement {
   readonly foundingSpecies: SpeciesId[];
   readonly stockpile: ResourceBundle = createEmptyResources();
   readonly buildings: BuildingInstance[] = [];
+  /** Learned building-priority shifts gained by adapting to ecological upheavals (floods, droughts, miasma, etc.). */
+  readonly adaptationFocus: Partial<Record<BuildingType, number>> = {};
 
   tier: SettlementTier = 'hamlet';
   radius = 9.5;
@@ -105,6 +109,8 @@ export class Settlement {
   prosperity = 20;
   devotionTotal = 10;
   tradeVolume = 0;
+  /** Accumulated hard-won ecological resilience (0..1) from surviving past environmental pressures. */
+  environmentalResilience = 0;
   nextPlannedBuilding: BuildingType | null = null;
   lastBuiltType: BuildingType | null = null;
 
@@ -156,6 +162,20 @@ export class Settlement {
 
   getAdaptationProfile(): VillageAdaptationProfile {
     return VILLAGE_ADAPTATION_CATALOG[this.adaptation];
+  }
+
+  /** Shifts architectural priorities and hardens village resilience in response to an ecological upheaval. */
+  recordEnvironmentalAdaptation(
+    bonuses: Partial<Record<BuildingType, number>>,
+    resilienceGain = 0.14,
+  ): void {
+    this.environmentalResilience = Math.min(0.65, this.environmentalResilience + resilienceGain);
+    for (const [k, delta] of Object.entries(bonuses)) {
+      const bType = k as BuildingType;
+      if (delta) {
+        this.adaptationFocus[bType] = Math.min(48, (this.adaptationFocus[bType] ?? 0) + delta);
+      }
+    }
   }
 
   getHousingCapacity(): number {
@@ -261,6 +281,8 @@ export class Settlement {
       tradeVolume: this.tradeVolume,
       nextPlannedBuilding: this.nextPlannedBuilding,
       lastBuiltType: this.lastBuiltType,
+      adaptationFocus: { ...this.adaptationFocus },
+      environmentalResilience: this.environmentalResilience,
     };
   }
 
@@ -291,6 +313,10 @@ export class Settlement {
     settlement.tradeVolume = snapshot.tradeVolume;
     settlement.nextPlannedBuilding = snapshot.nextPlannedBuilding;
     settlement.lastBuiltType = snapshot.lastBuiltType;
+    if (snapshot.adaptationFocus) {
+      Object.assign(settlement.adaptationFocus, snapshot.adaptationFocus);
+    }
+    settlement.environmentalResilience = snapshot.environmentalResilience ?? 0;
     return settlement;
   }
 }

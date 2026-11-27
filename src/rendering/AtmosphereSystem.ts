@@ -1004,6 +1004,10 @@ export class AtmosphereSystem {
   private currentCloudTime = 0;
   private currentCloudCoverage = 0.38;
   private currentRainWetness = 0.0;
+  private currentFloodSurge = 0.0;
+  private currentClimateHeat = 0.0;
+  private currentClimateFreeze = 0.0;
+  private currentMiasma = 0.0;
   private readonly shadowMapSize: number;
   private currentShadowExtent = 120;
   private lastAppliedShadowExtent = 120;
@@ -1018,6 +1022,13 @@ export class AtmosphereSystem {
   private readonly tmpMoonTint = new THREE.Color(0x6486b8);
   private readonly tmpSunTint = new THREE.Color();
   private readonly tmpSunTintGold = new THREE.Color(0xf79954);
+  private readonly tmpHeatTop = new THREE.Color(0x9b5a2e);
+  private readonly tmpHeatHoriz = new THREE.Color(0xe6b478);
+  private readonly tmpHeatSun = new THREE.Color(0xffc97a);
+  private readonly tmpMiasmaTop = new THREE.Color(0x52524c);
+  private readonly tmpMiasmaHoriz = new THREE.Color(0x9b9682);
+  private readonly tmpFreezeTop = new THREE.Color(0x4b6c8c);
+  private readonly tmpFreezeHoriz = new THREE.Color(0xd2e1ee);
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -1305,14 +1316,19 @@ export class AtmosphereSystem {
     this.sunLight.position.set(shadowFocusX, 0, shadowFocusZ).addScaledVector(lightDir, 280);
     this.lightDirState.copy(lightDir);
     this.currentDaylight = daylight;
-    this.currentIsWinter = world.season === 'winter';
+    this.currentFloodSurge = world.floodSurge;
+    this.currentClimateHeat = world.climateHeat;
+    this.currentClimateFreeze = world.climateFreeze;
+    this.currentMiasma = world.miasmaIntensity;
+    this.currentIsWinter = world.season === 'winter' || world.climateFreeze > 0.45;
 
-    const targetWind =
+    const baseWind =
       world.weather === 'storm'
         ? 1.0
         : world.weather === 'rain' || world.weather === 'blossom'
           ? 0.58
           : 0.24;
+    const targetWind = Math.min(1.35, baseWind + world.floodSurge * 0.32 + world.climateFreeze * 0.24);
     this.currentWindStrength += (targetWind - this.currentWindStrength) * Math.min(1, dt * 2.0);
     this.currentCloudTime += dt * (0.65 + this.currentWindStrength * 1.15);
 
@@ -1330,7 +1346,15 @@ export class AtmosphereSystem {
                 : 0.36;
     this.currentCloudCoverage += (targetCoverage - this.currentCloudCoverage) * Math.min(1, dt * 0.45);
 
-    const targetWetness = world.weather === 'storm' ? 1.0 : world.weather === 'rain' ? 0.85 : 0.0;
+    const rawWetness =
+      world.weather === 'storm'
+        ? 1.0
+        : world.weather === 'rain'
+          ? 0.85
+          : world.floodSurge > 0.08
+            ? Math.min(0.85, world.floodSurge * 0.72)
+            : 0.0;
+    const targetWetness = rawWetness * (1 - world.climateHeat * 0.85);
     const wetRate = targetWetness > this.currentRainWetness ? 0.16 : 0.04;
     this.currentRainWetness += (targetWetness - this.currentRainWetness) * Math.min(1, dt * wetRate);
 
@@ -1377,12 +1401,36 @@ export class AtmosphereSystem {
       .lerp(this.tmpSunGold, goldenHour * 0.82);
     this.skyUniforms.uStarIntensity.value = THREE.MathUtils.clamp(1 - daylight * 1.65, 0, 1);
 
+    // Ecological sky & sun modulation during sustained Deity climate epochs
+    if (world.climateHeat > 0.02) {
+      const hAmt = Math.min(1, world.climateHeat);
+      this.skyUniforms.uTopColor.value.lerp(this.tmpHeatTop, hAmt * 0.42 * daylight);
+      this.skyUniforms.uHorizonColor.value.lerp(this.tmpHeatHoriz, hAmt * 0.62 * Math.max(0.25, daylight));
+      this.skyUniforms.uSunColor.value.lerp(this.tmpHeatSun, hAmt * 0.55);
+    }
+    if (world.climateFreeze > 0.02) {
+      const fAmt = Math.min(1, world.climateFreeze);
+      this.skyUniforms.uTopColor.value.lerp(this.tmpFreezeTop, fAmt * 0.48 * daylight);
+      this.skyUniforms.uHorizonColor.value.lerp(this.tmpFreezeHoriz, fAmt * 0.52 * Math.max(0.25, daylight));
+    }
+    if (world.miasmaIntensity > 0.02) {
+      const mAmt = Math.min(1, world.miasmaIntensity);
+      this.skyUniforms.uTopColor.value.lerp(this.tmpMiasmaTop, mAmt * 0.65);
+      this.skyUniforms.uHorizonColor.value.lerp(this.tmpMiasmaHoriz, mAmt * 0.72);
+    }
+
     // Directional light intensity & color (crisp sunlit vs cool shaded contrast)
-    const stormDim = world.weather === 'storm' ? 0.45 : world.weather === 'rain' ? 0.66 : 1.0;
+    const stormDim =
+      (world.weather === 'storm' ? 0.45 : world.weather === 'rain' ? 0.66 : 1.0) *
+      (1 - world.miasmaIntensity * 0.34);
     const moonTint = this.tmpMoonTint;
     const sunTint = this.tmpSunTint.setHex(0xfff1d6).lerp(this.tmpSunTintGold, goldenHour * 0.78);
+    if (world.climateHeat > 0.05) {
+      sunTint.lerp(this.tmpHeatSun, Math.min(1, world.climateHeat) * 0.48);
+    }
     this.sunLight.color.copy(moonTint).lerp(sunTint, daylight);
-    this.sunLight.intensity = (0.38 + daylight * 3.15) * stormDim;
+    const heatGlare = 1 + world.climateHeat * 0.24;
+    this.sunLight.intensity = (0.38 + daylight * 3.15) * stormDim * heatGlare;
 
     this.hemiLight.intensity = (0.22 + daylight * 0.62) * (0.68 + stormDim * 0.32);
     this.hemiLight.color.copy(this.skyUniforms.uHorizonColor.value);
@@ -1400,10 +1448,11 @@ export class AtmosphereSystem {
           : world.weather === 'rain'
             ? 0.0024
             : 0.00058;
+    const ecologicalFogBoost = world.miasmaIntensity * 0.0034 + world.climateHeat * 0.0008 + world.climateFreeze * 0.0006;
     // Relax atmospheric haze smoothly when zoomed high out to the country-map Overview
     const camY = camera ? camera.position.y : 30;
     const altitudeClear = 1 - THREE.MathUtils.smoothstep(camY, 120, 620) * 0.74;
-    const targetFog = baseFog * altitudeClear;
+    const targetFog = (baseFog + ecologicalFogBoost) * altitudeClear;
     this.fog.density += (targetFog - this.fog.density) * Math.min(1, dt * 1.8);
 
     // Periodically refresh PMREM environment map for accurate sky/cloud/ground reflections
@@ -1545,7 +1594,13 @@ export class AtmosphereSystem {
     let windX = 0.6;
     let targetOpacity = 0.22;
 
-    if (world.weather === 'rain' || world.weather === 'storm') {
+    if (world.miasmaIntensity > 0.35 && world.weather !== 'storm' && world.weather !== 'snow') {
+      fallSpeed = 0.75;
+      windX = 1.9;
+      this.weatherMat.color.setHex(0x9a9484);
+      this.weatherMat.size = 0.38;
+      targetOpacity = 0.45 + world.miasmaIntensity * 0.32;
+    } else if (world.weather === 'rain' || world.weather === 'storm') {
       fallSpeed = world.weather === 'storm' ? 28 : 18;
       windX = world.weather === 'storm' ? 7 : 2.5;
       this.weatherMat.color.setHex(0xb8cad8);
@@ -1628,6 +1683,10 @@ export class AtmosphereSystem {
       cloudTime: this.currentCloudTime,
       cloudCoverage: this.currentCloudCoverage,
       rainWetness: this.currentRainWetness,
+      floodSurge: this.currentFloodSurge,
+      climateHeat: this.currentClimateHeat,
+      climateFreeze: this.currentClimateFreeze,
+      miasmaIntensity: this.currentMiasma,
     };
   }
 

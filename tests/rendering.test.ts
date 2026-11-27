@@ -1566,4 +1566,65 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     critters.dispose();
     expect(scene.children.includes(critters.rootGroup)).toBe(false);
   });
+
+  it('supports reversible pine clearing/restoration for habitat scars and dynamic flood surge water elevation', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 778899,
+      initialSettlements: 1,
+      initialWaterwaySettlements: 0,
+      initialCreaturesPerSettlement: 4,
+    });
+
+    // 1. Procedural pine forest supports reversible clearTree -> restoreTree when habitat scars heal
+    const pines = world.terrain.trees.filter((t) => t.kind === 'pine').slice(0, 8);
+    expect(pines.length).toBeGreaterThanOrEqual(3);
+    const barkMat = new THREE.MeshStandardMaterial();
+    const foliageMat = new THREE.MeshStandardMaterial();
+    const depthMat = new THREE.MeshDepthMaterial();
+    const forest = buildProceduralPineForest(
+      pines,
+      (x, z, y) => world.terrain.getBiomeAtKnownHeight(x, z, y ?? world.terrain.getHeightAt(x, z)),
+      (x, z) => world.terrain.getCoastSignedDistance(x, z),
+      barkMat,
+      foliageMat,
+      depthMat,
+    );
+
+    const trunkPos = forest.trunksMesh.geometry.attributes.position as THREE.BufferAttribute;
+    const originalTrunkY0 = trunkPos.getY(0);
+    expect(originalTrunkY0).toBeGreaterThan(-50);
+
+    forest.clearTree(0);
+    forest.flushCleared();
+    expect(trunkPos.getY(0)).toBe(-999);
+
+    forest.restoreTree(0);
+    forest.flushCleared();
+    expect(trunkPos.getY(0)).toBeCloseTo(originalTrunkY0, 5);
+
+    for (const d of forest.disposables) d.dispose();
+    barkMat.dispose();
+    foliageMat.dispose();
+    depthMat.dispose();
+
+    // 2. Realistic water shader exposes dynamic uFloodOffset synchronized with sky.floodSurge
+    const water = createRealisticWaterSurface(world.terrain, world.config.worldSize, 64, 1.0);
+    const mat = water.mesh.material as THREE.ShaderMaterial;
+    expect(mat.vertexShader).toContain('uFloodOffset');
+    expect(mat.uniforms.uFloodOffset.value).toBe(0);
+    water.update(0.1, {
+      sunDirection: new THREE.Vector3(0.4, 0.7, 0.5).normalize(),
+      sunColor: new THREE.Color(0xfff1cf),
+      skyTopColor: new THREE.Color(0x2a619e),
+      skyHorizonColor: new THREE.Color(0xc8dece),
+      fogColor: new THREE.Color(0xc8dece),
+      fogDensity: 0.0006,
+      daylight: 0.9,
+      windStrength: 0.5,
+      isWinter: false,
+      floodSurge: 0.95,
+    });
+    expect(mat.uniforms.uFloodOffset.value).toBeCloseTo(0.95, 5);
+    water.dispose();
+  });
 });

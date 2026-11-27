@@ -982,6 +982,111 @@ export class SettlementManager {
   }
 
   /**
+   * Dispatches an adaptive/refugee pioneer expedition when an environmental upheaval
+   * (flooding, habitat clearing, drought, or miasma) forces survivors to seek new ground.
+   */
+  triggerAdaptationMigration(
+    settlement: Settlement,
+    world: WorldState,
+    reason: string,
+    preferHighland = false,
+  ): boolean {
+    if (world.settlements.length + this.activeEmigrations.size >= world.config.maxSettlements) {
+      return false;
+    }
+    if (!this.emigrationRng) {
+      this.emigrationRng = new SeededRandom(world.config.seed ^ 0x454d4947);
+    }
+    const rng = this.emigrationRng;
+
+    const eligible = world.creatures.filter(
+      (c) =>
+        c.alive &&
+        c.lifeStage === 'adult' &&
+        !c.def.strictlyAquatic &&
+        c.settlementId === settlement.id &&
+        c.activity !== 'fighting' &&
+        c.activity !== 'nesting' &&
+        c.activity !== 'emigrating',
+    );
+    // Always keep at least 4 adults behind to maintain and rebuild the home settlement
+    if (eligible.length < 6) return false;
+
+    const occupied: Vec2[] = world.settlements.map((s) => s.center);
+    for (const active of this.activeEmigrations.values()) {
+      occupied.push({ x: active.targetX, z: active.targetZ });
+    }
+    const existingAdaptations = [
+      ...world.settlements.map((s) => s.adaptation),
+      ...Array.from(this.activeEmigrations.values()).map((p) =>
+        world.terrain.getSiteAdaptation(p.targetX, p.targetZ),
+      ),
+    ];
+
+    // Pick a fresh site (if fleeing floods, try up to 3 candidates to favor higher elevation)
+    let site: Vec2 | null = null;
+    let bestElev = -Infinity;
+    const tries = preferHighland ? 3 : 1;
+    for (let t = 0; t < tries; t++) {
+      const cand = world.terrain.findNewSettlementSite(occupied, rng, existingAdaptations, settlement.center);
+      if (!cand) continue;
+      const elev = world.terrain.getHeightAt(cand.x, cand.z);
+      if (!site || elev > bestElev) {
+        site = cand;
+        bestElev = elev;
+      }
+    }
+    if (!site) return false;
+
+    const pioneers = eligible.slice(0, 3);
+    const destBiome = world.terrain.getBiomeAt(site.x, site.z);
+    const destAdaptation = world.terrain.getSiteAdaptation(site.x, site.z);
+    const destProfile = VILLAGE_ADAPTATION_CATALOG[destAdaptation];
+
+    const partyId = `emig_${this.emigrationSeq++}`;
+    const partySpecies = Array.from(
+      new Set([...pioneers.map((p) => p.species), ...destProfile.adaptedSpecies]),
+    ).slice(0, 4);
+
+    const trekDist = Math.hypot(site.x - settlement.center.x, site.z - settlement.center.z);
+    const party: EmigrationParty = {
+      id: partyId,
+      sourceSettlementId: settlement.id,
+      targetX: site.x,
+      targetZ: site.z,
+      waypoints: [],
+      waypointIndex: 0,
+      species: partySpecies,
+    };
+    this.activeEmigrations.set(partyId, party);
+
+    const trekTimeout = Math.max(150, trekDist / 1.2 + 80);
+    for (const pioneer of pioneers) {
+      pioneer.activity = 'emigrating';
+      pioneer.emigrationPartyId = partyId;
+      pioneer.emigrationTargetX = site.x;
+      pioneer.emigrationTargetZ = site.z;
+      pioneer.targetBuildingId = null;
+      pioneer.targetBridgeId = null;
+      pioneer.targetResourceId = null;
+      pioneer.targetX = site.x + rng.range(-1.5, 1.5);
+      pioneer.targetZ = site.z + rng.range(-1.5, 1.5);
+      pioneer.actionTimer = trekTimeout;
+      pioneer.thought = `Migrating toward ${getBiomeDisplayName(destBiome)} (${reason})`;
+    }
+
+    world.chronicle.record(
+      world.day,
+      world.season,
+      'settlement',
+      'Adaptive Migration Underway',
+      `${pioneers.map((p) => p.name).join(', ')} departed ${settlement.name}, ${reason}, trekking ${Math.round(trekDist)}m toward the ${getBiomeDisplayName(destBiome)}.`,
+      settlement.center,
+    );
+    return true;
+  }
+
+  /**
    * Lets settlements autonomously decide to span nearby waterways with curved timber
    * or mossy stone bridges whenever materials and riverbank crossings allow.
    */
@@ -1092,6 +1197,8 @@ export class SettlementManager {
 
       // Strong regional adaptation preference shapes each village's distinct silhouette
       score += profile.favoredBuildings[type] ?? 0;
+      // Learned architectural adaptation gained from enduring ecological upheavals
+      score += settlement.adaptationFocus[type] ?? 0;
 
       // Strong diversity bonus for building types not yet represented in this city!
       if (count === 0) {

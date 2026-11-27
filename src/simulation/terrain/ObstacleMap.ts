@@ -1,4 +1,4 @@
-import type { BuildingType } from '@core/Types';
+import type { BuildingType, HabitatScar } from '@core/Types';
 import { BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
 import type { Settlement } from '@simulation/settlements/Settlement';
 import { isPointNearBridge, type BridgeInstance } from './Bridge';
@@ -59,7 +59,7 @@ function cellKey(cx: number, cz: number): number {
 
 /**
  * Headless uniform spatial-hash obstacle map covering all solid world features:
- * buildings, tree trunks (excluding cleared settlement/building trees), mossy boulders,
+ * buildings, tree trunks (excluding cleared settlement/building/scarred trees), mossy boulders,
  * plump berry bushes, settlement hearth firepits, and town benches.
  */
 export class ObstacleMap {
@@ -74,17 +74,18 @@ export class ObstacleMap {
   private queryStamp = 0;
   private _version = 0;
 
-  /** Monotonic version incremented whenever settlements or buildings change and the grid rebuilds. */
+  /** Monotonic version incremented whenever settlements, buildings, or habitat scars change and the grid rebuilds. */
   get version(): number {
     return this._version;
   }
 
-  /** Rebuilds the spatial grid whenever settlements, buildings, or bridges change. */
+  /** Rebuilds the spatial grid whenever settlements, buildings, bridges, or cleared habitat scars change. */
   sync(
     terrain: TerrainMap,
     settlements: readonly Settlement[],
     bridges: readonly BridgeInstance[] = [],
     structureRevision = 0,
+    habitatScars: readonly HabitatScar[] = [],
   ): void {
     let totalBuildings = 0;
     for (const s of settlements) {
@@ -173,7 +174,17 @@ export class ObstacleMap {
       return false;
     };
 
-    // 3. Standing forest trees (skip trees cleared from settlement clearings, building footprints & bridges)
+    const overlapsScar = (x: number, z: number): boolean => {
+      for (let i = 0; i < habitatScars.length; i++) {
+        const sc = habitatScars[i];
+        const dx = x - sc.x;
+        const dz = z - sc.z;
+        if (dx * dx + dz * dz < sc.radius * sc.radius) return true;
+      }
+      return false;
+    };
+
+    // 3. Standing forest trees (skip trees cleared from settlement clearings, building footprints, bridges & habitat scars)
     const clearingRadSq = INITIAL_CLEARING_TREE_RADIUS * INITIAL_CLEARING_TREE_RADIUS;
     const settleMaxDistSq = new Float64Array(settlements.length);
     for (let sIdx = 0; sIdx < settlements.length; sIdx++) {
@@ -190,6 +201,7 @@ export class ObstacleMap {
     }
 
     for (const tree of terrain.trees) {
+      if (overlapsScar(tree.x, tree.z)) continue;
       let cleared = false;
       for (let sIdx = 0; sIdx < settlements.length; sIdx++) {
         const s = settlements[sIdx];

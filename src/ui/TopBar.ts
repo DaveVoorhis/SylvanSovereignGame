@@ -1,5 +1,6 @@
 import type { QualityPreset } from '@core/Config';
-import type { Season, SelectionTarget, WeatherType } from '@core/Types';
+import type { Season, SelectionTarget, Vec2, WeatherType } from '@core/Types';
+import { DIVINE_EVENT_CATALOG } from '@simulation/deity/DivineEvents';
 import { getBiomeDisplayName } from '@simulation/settlements/VillageAdaptation';
 import type { WorldState } from '@simulation/WorldState';
 import { bindDialogPill, type DialogPillHandle } from './DialogPillController';
@@ -25,6 +26,7 @@ export interface TopBarCallbacks {
   onNewWorld: () => void;
   onChangeQuality: (preset: QualityPreset) => void;
   onFocusSettlement: (settlementId: string) => void;
+  onFocusPosition: (pos: Vec2) => void;
   onCloseInspector: () => void;
 }
 
@@ -101,6 +103,10 @@ export class TopBar {
   // Band 2: reconciled settlement pills + dedicated right-anchored event slot
   private readonly settlementsBar: HTMLElement;
   private readonly settlementPills = new Map<string, SettlementPillNodes>();
+  private readonly deityEventBadgeEl: HTMLButtonElement;
+  private readonly deityEventIconEl: HTMLElement;
+  private readonly deityEventTextEl: HTMLElement;
+  private activeInfluencePos: Vec2 | null = null;
   private readonly eventBadgeEl: HTMLButtonElement;
   private readonly eventIconEl: HTMLElement;
   private readonly eventTextEl: HTMLElement;
@@ -306,6 +312,7 @@ export class TopBar {
     this.qualitySelect = document.createElement('select');
     this.qualitySelect.className = 'hud-select';
     this.qualitySelect.title = '3D Graphics Quality';
+    this.qualitySelect.setAttribute('autocomplete', 'off');
     for (const preset of ['balanced', 'high', 'ultra'] as QualityPreset[]) {
       const opt = document.createElement('option');
       opt.value = preset;
@@ -350,6 +357,21 @@ export class TopBar {
 
     const eventSlot = document.createElement('div');
     eventSlot.className = 'topbar-event-slot';
+
+    this.deityEventBadgeEl = document.createElement('button');
+    this.deityEventBadgeEl.type = 'button';
+    this.deityEventBadgeEl.className = 'deity-event-pill is-hidden';
+    this.deityEventBadgeEl.disabled = true;
+    this.deityEventIconEl = document.createElement('span');
+    this.deityEventIconEl.className = 'cel-slot-icon';
+    this.deityEventTextEl = document.createElement('span');
+    this.deityEventTextEl.className = 'cel-slot-text';
+    this.deityEventBadgeEl.append(this.deityEventIconEl, this.deityEventTextEl);
+    this.deityEventBadgeEl.addEventListener('click', () => {
+      if (this.activeInfluencePos) {
+        this.callbacks.onFocusPosition(this.activeInfluencePos);
+      }
+    });
 
     this.eventBadgeEl = document.createElement('button');
     this.eventBadgeEl.type = 'button';
@@ -404,7 +426,7 @@ export class TopBar {
     });
 
     panelGroup.append(this.deityBtn, this.chronicleBtn);
-    eventSlot.append(this.eventBadgeEl, panelGroup);
+    eventSlot.append(this.deityEventBadgeEl, this.eventBadgeEl, panelGroup);
 
     subRow.append(this.settlementsBar, eventSlot);
     this.element.append(mainRow, subRow);
@@ -422,6 +444,12 @@ export class TopBar {
 
   setCinematicActive(active: boolean): void {
     this.cinematicBtn.classList.toggle('active', active);
+  }
+
+  setQualityPreset(preset: QualityPreset): void {
+    if (this.qualitySelect.value !== preset) {
+      this.qualitySelect.value = preset;
+    }
   }
 
   /** Synchronizes every dialog-opening pill's active, ARIA, and tooltip state. */
@@ -496,6 +524,25 @@ export class TopBar {
     this.updateSlot(this.buildingsSlot, totalBuildings);
     this.updateSlot(this.tradeSlot, caravans);
     this.updateSlot(this.pioneersSlot, pioneerCount);
+
+    // 3b. Active Deity Ecological Influence Pill (only visible during rare active epochs)
+    const activeInf = world.activeInfluences[0] ?? null;
+    this.deityEventBadgeEl.classList.remove('polarity-disruptive', 'polarity-restorative', 'is-hidden');
+    if (activeInf) {
+      this.activeInfluencePos = { ...activeInf.position };
+      this.deityEventBadgeEl.disabled = false;
+      this.deityEventBadgeEl.classList.add(`polarity-${activeInf.polarity}`);
+      const rem = Math.max(0, Math.ceil(activeInf.startedAt + activeInf.duration - world.elapsedSeconds));
+      const meta = DIVINE_EVENT_CATALOG[activeInf.type];
+      this.setTextIfChanged(this.deityEventIconEl, activeInf.icon);
+      this.setTextIfChanged(this.deityEventTextEl, `${activeInf.label} (${rem}s)`);
+      this.deityEventBadgeEl.title = `${meta.ecologicalReflection} — Click to fly to epicenter`;
+    } else {
+      this.activeInfluencePos = null;
+      this.deityEventBadgeEl.disabled = true;
+      this.deityEventBadgeEl.classList.add('is-hidden');
+      this.deityEventBadgeEl.title = '';
+    }
 
     // 4. Right-anchored Celebration Event Slot (never nudges Band 1 or settlement pills)
     const nationalHoliday = world.festivals.getNationalHoliday();

@@ -73,7 +73,7 @@ export const DEFAULT_WORLD_CONFIG: WorldConfig = {
   undergrowthCount: 3200,
   rockCount: 950,
   grassBladeCount: 36000,
-  deityDecisionIntervalSec: 16,
+  deityDecisionIntervalSec: 95,
   tradeIntervalSec: 12,
   diplomacyIntervalSec: 18,
 };

@@ -1,3 +1,4 @@
+import type { QualityPreset } from './Config';
 import type { Season, SelectionTarget, Vec3 } from './Types';
 import type { WorldSnapshot, WorldState } from '@simulation/WorldState';
 
@@ -8,6 +9,10 @@ const DB_NAME = 'sylvan-sovereign-db';
 const DB_VERSION = 1;
 const STORE_NAME = 'saves';
 
+export function isQualityPreset(value: unknown): value is QualityPreset {
+  return value === 'balanced' || value === 'high' || value === 'ultra';
+}
+
 export interface SaveViewState {
   readonly simSpeed: number;
   readonly cameraPosition: Vec3;
@@ -17,6 +22,7 @@ export interface SaveViewState {
   readonly selection: SelectionTarget;
   readonly deityPanelOpen: boolean;
   readonly chroniclePanelOpen: boolean;
+  readonly qualityPreset?: QualityPreset;
 }
 
 export interface SaveSlotMeta {

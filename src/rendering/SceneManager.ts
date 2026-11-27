@@ -226,9 +226,16 @@ export class SceneManager {
     newWorld: WorldState,
     onProgress?: LoadProgressCallback,
     immediateFocus = false,
+    nextQuality?: QualityPreset,
   ): Promise<void> {
     this.povCreatureId = null;
     this.disposeWorldScene(true);
+    if (nextQuality && nextQuality !== this.quality) {
+      this.quality = nextQuality;
+      const q = QUALITY_PRESETS[nextQuality];
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.pixelRatioCap));
+      this.setupPostProcessing();
+    }
     this.world = newWorld;
     await this.buildWorldSceneAsync(newWorld, onProgress, immediateFocus);
   }
@@ -353,7 +360,8 @@ export class SceneManager {
       const isPov = this.cameraController.isInCreaturePov();
       const focusDistance = this.cameraController.getFocusDistance();
       // Adapt camera near plane with zoom distance so zoomed-out overviews get ~25x better depth precision
-      const isUnderwaterPov = isPov && this.camera.position.y < this.world.terrain.waterLevel - 0.01;
+      const effectiveWaterLevel = this.world.getEffectiveWaterLevel();
+      const isUnderwaterPov = isPov && this.camera.position.y < effectiveWaterLevel - 0.01;
       const targetNear = isUnderwaterPov ? 0.12 : isPov ? 0.22 : THREE.MathUtils.clamp(focusDistance * 0.012, 0.22, 6.0);
       if (Math.abs(this.camera.near - targetNear) > 0.02) {
         this.camera.near = targetNear;
@@ -385,7 +393,7 @@ export class SceneManager {
       p.sunDirection = sky.sunDirection;
       p.sunColor = sky.sunColor;
       p.daylight = sky.daylight;
-      p.waterLevel = this.world.terrain.waterLevel;
+      p.waterLevel = effectiveWaterLevel;
       p.fogDensity = sky.fogDensity;
       p.aoStrength = this.quality === 'balanced' ? 0.65 : 0.88;
       p.mistStrength = mistStrength * (1 - overviewFactor * 0.65);
@@ -432,7 +440,7 @@ export class SceneManager {
     this.unsubscribes.push(
       world.bus.on('divine:effect', (fx) => {
         const gy = world.terrain.getHeightAt(fx.position.x, fx.position.z);
-        this.atmosphere.spawnDivineVisual(fx, Math.max(gy, world.terrain.waterLevel));
+        this.atmosphere.spawnDivineVisual(fx, Math.max(gy, world.getEffectiveWaterLevel()));
       }),
       world.bus.on('combat:spark', (sp) => {
         this.creatureRenderer.spawnCombatSpark(sp);
