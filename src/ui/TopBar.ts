@@ -24,6 +24,7 @@ export interface TopBarCallbacks {
   onSetSaveModalOpen: (open: boolean) => void;
   onToggleFullscreen: () => void;
   onToggleZenMode: () => void;
+  onToggleMute: () => boolean;
   onResetOverview: () => void;
   onNewWorld: () => void;
   onChangeQuality: (preset: QualityPreset) => void;
@@ -93,6 +94,7 @@ export class TopBar {
   private readonly chronicleBtn: HTMLButtonElement;
   private readonly fullscreenBtn: HTMLButtonElement;
   private readonly zenBtn: HTMLButtonElement;
+  private readonly soundBtn: HTMLButtonElement;
   private readonly saveBtn: HTMLButtonElement;
   private readonly qualitySelect: HTMLSelectElement;
 
@@ -315,12 +317,24 @@ export class TopBar {
     this.zenBtn.title = 'Enter full-screen Zen Mode — hide all UI (Z)';
     this.zenBtn.addEventListener('click', () => this.callbacks.onToggleZenMode());
 
+    this.soundBtn = document.createElement('button');
+    this.soundBtn.type = 'button';
+    this.soundBtn.className = 'hud-btn sound-btn';
+    this.soundBtn.textContent = '🔊 Sound';
+    this.soundBtn.title = 'Mute sound (M)';
+    this.soundBtn.setAttribute('aria-pressed', 'false');
+    this.soundBtn.addEventListener('click', () => {
+      const muted = this.callbacks.onToggleMute();
+      this.setMuted(muted);
+    });
+
     viewGroup.append(
       this.povToggleBtn,
       overviewBtn,
       this.cinematicBtn,
       this.fullscreenBtn,
       this.zenBtn,
+      this.soundBtn,
     );
 
     const worldGroup = document.createElement('div');
@@ -465,6 +479,13 @@ export class TopBar {
 
   setZenActive(active: boolean): void {
     this.zenBtn.classList.toggle('active', active);
+  }
+
+  setMuted(muted: boolean): void {
+    this.soundBtn.textContent = muted ? '🔇 Muted' : '🔊 Sound';
+    this.soundBtn.classList.toggle('is-muted', muted);
+    this.soundBtn.setAttribute('aria-pressed', String(muted));
+    this.soundBtn.title = muted ? 'Unmute sound (M)' : 'Mute sound (M)';
   }
 
   setCinematicActive(active: boolean): void {

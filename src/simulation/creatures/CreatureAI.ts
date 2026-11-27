@@ -1071,6 +1071,13 @@ export class CreatureAI {
           bld.completed = true;
           creature.mood = Math.min(100, creature.mood + 14);
           creature.wealth += 4;
+          world.emitCreatureInteraction({
+            kind: 'build',
+            species: creature.species,
+            position: { x: bld.position.x, y: creature.y, z: bld.position.z },
+            lifeStage: creature.lifeStage,
+            intensity: 1.0,
+          });
           world.settlementManager.onBuildingCompleted(home, bld, creature, world);
           creature.activity = 'idle';
           creature.targetBuildingId = null;
@@ -1201,6 +1208,14 @@ export class CreatureAI {
                   ? `Cooperating joyfully with ${nearby.name}`
                   : `Laughing with ${nearby.name}`;
             }
+            world.emitCreatureInteraction({
+              kind: 'greet',
+              species: creature.species,
+              partnerSpecies: nearby.species,
+              position: { x: creature.x, y: creature.y, z: creature.z },
+              lifeStage: creature.lifeStage,
+              intensity: 0.8,
+            });
             // Same-species unbonded adults who grow fond of one another can pair off naturally!
             if (
               sameFaction &&
@@ -1232,6 +1247,14 @@ export class CreatureAI {
               moralAlign < -0.25
                 ? `Feuding with ${nearby.name} over scarce woodland stores`
                 : `Arguing with ${nearby.name} over acorns`;
+            world.emitCreatureInteraction({
+              kind: 'argue',
+              species: creature.species,
+              partnerSpecies: nearby.species,
+              position: { x: creature.x, y: creature.y, z: creature.z },
+              lifeStage: creature.lifeStage,
+              intensity: 0.85,
+            });
             if (score <= -45 && score + drop > -45) {
               world.chronicle.record(
                 world.day,
@@ -1286,6 +1309,14 @@ export class CreatureAI {
       creature.targetX = parent.x + Math.cos(angle) * dist;
       creature.targetZ = parent.z + Math.sin(angle) * dist;
       creature.thought = `Following closely behind ${parent.name}`;
+      world.emitCreatureInteraction({
+        kind: 'play',
+        species: creature.species,
+        partnerSpecies: parent.species,
+        position: { x: creature.x, y: creature.y, z: creature.z },
+        lifeStage: creature.lifeStage,
+        intensity: 0.72,
+      });
       return;
     }
 
@@ -1297,6 +1328,14 @@ export class CreatureAI {
       creature.targetX = sibling.x + Math.cos(angle) * dist;
       creature.targetZ = sibling.z + Math.sin(angle) * dist;
       creature.thought = `Tumbling & playing with littermate ${sibling.name.split(' ')[0]}`;
+      world.emitCreatureInteraction({
+        kind: 'play',
+        species: creature.species,
+        partnerSpecies: sibling.species,
+        position: { x: creature.x, y: creature.y, z: creature.z },
+        lifeStage: creature.lifeStage,
+        intensity: 0.78,
+      });
       return;
     }
 
@@ -1591,12 +1630,26 @@ export class CreatureAI {
         creature.targetCreatureId = null;
         creature.thought = 'Severely wounded — routed from the battlefield!';
         creature.actionTimer = 9;
+        world.emitCreatureInteraction({
+          kind: 'alarm',
+          species: creature.species,
+          position: { x: creature.x, y: creature.y, z: creature.z },
+          lifeStage: creature.lifeStage,
+          intensity: 0.9,
+        });
         return;
       }
     } else if (creature.health < creature.maxHealth * 0.25) {
       creature.activity = 'fleeing';
       creature.thought = 'Retreating to mend wounds!';
       creature.actionTimer = 5;
+      world.emitCreatureInteraction({
+        kind: 'alarm',
+        species: creature.species,
+        position: { x: creature.x, y: creature.y, z: creature.z },
+        lifeStage: creature.lifeStage,
+        intensity: 0.85,
+      });
       return;
     }
 
@@ -1677,6 +1730,14 @@ export class CreatureAI {
 
       creature.adjustRelationship(target.id, -18);
       target.adjustRelationship(creature.id, -18);
+      world.emitCreatureInteraction({
+        kind: 'combat_call',
+        species: creature.species,
+        partnerSpecies: target.species,
+        position: { x: creature.x, y: creature.y, z: creature.z },
+        lifeStage: creature.lifeStage,
+        intensity: war ? 0.95 : 0.8,
+      });
 
       if (war) {
         war.totalStrikes++;
@@ -1928,6 +1989,14 @@ export class CreatureAI {
             ? `Dancing and laughing with ${mingledWith.name} at ${cel.name}!`
             : `Reveling at ${cel.name}!`;
         }
+        world.emitCreatureInteraction({
+          kind: 'celebrate',
+          species: creature.species,
+          partnerSpecies: mingledWith?.species,
+          position: { x: creature.x, y: creature.y, z: creature.z },
+          lifeStage: creature.lifeStage,
+          intensity: cel.scope === 'national' ? 0.9 : 0.78,
+        });
       }
     } else if (
       creature.actionTimer <= 0 ||

@@ -19,7 +19,8 @@
       "@core/*": ["src/core/*"],
       "@simulation/*": ["src/simulation/*"],
       "@rendering/*": ["src/rendering/*"],
-      "@ui/*": ["src/ui/*"]
+      "@ui/*": ["src/ui/*"],
+      "@audio/*": ["src/audio/*"]
     }
   },
   "include": ["src", "tests"]

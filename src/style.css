@@ -396,6 +396,26 @@ body,
   white-space: nowrap;
 }
 
+.hud-btn.sound-btn {
+  min-width: 82px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.hud-btn.sound-btn.is-muted {
+  background: rgba(224, 106, 96, 0.2);
+  border-color: rgba(224, 106, 96, 0.52);
+  color: #ffd9d4;
+}
+
+.hud-btn.sound-btn.is-muted:hover {
+  background: rgba(224, 106, 96, 0.3);
+  border-color: var(--accent-crimson);
+  color: #ffffff;
+}
+
 /* Band 2: stable settlement row + right-anchored event slot */
 .topbar-subrow {
   display: grid;

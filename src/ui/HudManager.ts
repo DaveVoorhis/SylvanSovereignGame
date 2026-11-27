@@ -19,6 +19,7 @@ export interface HudCallbacks {
   onToggleCreatureView: () => void;
   onToggleFullscreen: () => void;
   onToggleZenMode: () => void;
+  onToggleMute: () => boolean;
   onEnterCreaturePov: (creatureId: string) => void;
   onExitCreaturePov: () => void;
   onPrevCreature: () => void;
@@ -154,6 +155,7 @@ export class HudManager {
       onSetSaveModalOpen: (open) => this.setSaveModalOpen(open),
       onToggleFullscreen: callbacks.onToggleFullscreen,
       onToggleZenMode: callbacks.onToggleZenMode,
+      onToggleMute: callbacks.onToggleMute,
       onResetOverview: callbacks.onResetOverview,
       onNewWorld: () => this.openNewWorldConfirm(callbacks.onNewWorld),
       onChangeQuality: callbacks.onChangeQuality,
@@ -165,7 +167,7 @@ export class HudManager {
     this.footerHint = document.createElement('div');
     this.footerHint.className = 'hud-controls-hint';
     this.footerHint.textContent =
-      'Drag to orbit · Scroll to zoom · WASD to pan · Click to inspect · C Census · V Creature View · F Fullscreen · Z Zen Mode';
+      'Drag to orbit · Scroll to zoom · WASD to pan · Click to inspect · C Census · V Creature View · F Fullscreen · Z Zen Mode · M Mute';
 
     this.zenToast = document.createElement('div');
     this.zenToast.className = 'zen-exit-toast';
@@ -220,6 +222,10 @@ export class HudManager {
 
   setFullscreenActive(active: boolean): void {
     this.topBar.setFullscreenActive(active);
+  }
+
+  setMuted(muted: boolean): void {
+    this.topBar.setMuted(muted);
   }
 
   setDeityPanelOpen(open: boolean): void {

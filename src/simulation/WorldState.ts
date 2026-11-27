@@ -5,9 +5,12 @@ import type {
   ActiveDivineInfluence,
   CombatEffectKind,
   CombatSparkVisual,
+  CreatureInteractionEvent,
+  CreatureInteractionKind,
   CreatureRole,
   DivineEffectVisual,
   HabitatScar,
+  LifeStage,
   Season,
   SpeciesId,
   Vec2,
@@ -334,6 +337,14 @@ export class WorldState {
       `${a.name} and ${b.name} (${a.def.pluralName}) paired off${place}.`,
       a.position2D,
     );
+    this.emitCreatureInteraction({
+      kind: 'court',
+      species: a.species,
+      partnerSpecies: b.species,
+      position: { x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5, z: (a.z + b.z) * 0.5 },
+      lifeStage: a.lifeStage,
+      intensity: 1.0,
+    });
     return true;
   }
 
@@ -420,6 +431,14 @@ export class WorldState {
       `${parentA.name} and ${parentB.name} welcomed a litter of ${litter.length} ${youngLabel} (${names}) in ${settlement.name}!`,
       nestSpot,
     );
+    this.emitCreatureInteraction({
+      kind: 'birth',
+      species: parentA.species,
+      partnerSpecies: parentB.species,
+      position: { x: nestSpot.x, y: (parentA.y + parentB.y) * 0.5, z: nestSpot.z },
+      lifeStage: 'young',
+      intensity: 1.0,
+    });
     return litter;
   }
 
@@ -583,6 +602,20 @@ export class WorldState {
   emitDivineEffect(effect: DivineEffectVisual): void {
     this.activeDivineEffects.push(effect);
     this.bus.emit('divine:effect', effect);
+  }
+
+  /** Emits a lightweight semantic creature interaction event for audio/visual listeners (zero-cost when unsubscribed). */
+  emitCreatureInteraction(event: {
+    kind: CreatureInteractionKind;
+    species: SpeciesId;
+    partnerSpecies?: SpeciesId;
+    position: Vec3;
+    lifeStage: LifeStage;
+    intensity?: number;
+  }): void {
+    if (!this.bus.hasListeners('creature:interaction')) return;
+    const payload: CreatureInteractionEvent = event;
+    this.bus.emit('creature:interaction', payload);
   }
 
   emitCombatSpark(

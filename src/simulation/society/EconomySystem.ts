@@ -116,6 +116,13 @@ export class EconomySystem {
     origin.recalculateTierAndRadius();
     dest.recalculateTierAndRadius();
     world.diplomacy.adjustRelation(origin, dest, 5.5, world, 'merchant caravan');
+    world.emitCreatureInteraction({
+      kind: 'trade',
+      species: merchant.species,
+      position: { x: merchant.x, y: merchant.y, z: merchant.z },
+      lifeStage: merchant.lifeStage,
+      intensity: 0.85,
+    });
 
     if (world.rng.chance(0.42)) {
       world.chronicle.record(

@@ -1,6 +1,7 @@
 import type {
   ChronicleEntry,
   CombatSparkVisual,
+  CreatureInteractionEvent,
   DivineEffectVisual,
   SelectionTarget,
 } from './Types';
@@ -9,6 +10,7 @@ export interface EngineEventMap {
   'chronicle:added': ChronicleEntry;
   'divine:effect': DivineEffectVisual;
   'combat:spark': CombatSparkVisual;
+  'creature:interaction': CreatureInteractionEvent;
   'selection:changed': SelectionTarget;
   'world:reset': { seed: number };
 }
@@ -31,6 +33,11 @@ export class EventBus {
     return () => {
       bucket?.delete(listener as Listener<unknown>);
     };
+  }
+
+  hasListeners<K extends keyof EngineEventMap>(event: K): boolean {
+    const bucket = this.listeners.get(event);
+    return Boolean(bucket && bucket.size > 0);
   }
 
   emit<K extends keyof EngineEventMap>(event: K, payload: EngineEventMap[K]): void {

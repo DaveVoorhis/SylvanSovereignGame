@@ -10,6 +10,7 @@ export default defineConfig({
       '@simulation': resolve(__dirname, 'src/simulation'),
       '@rendering': resolve(__dirname, 'src/rendering'),
       '@ui': resolve(__dirname, 'src/ui'),
+      '@audio': resolve(__dirname, 'src/audio'),
     },
   },
   server: {

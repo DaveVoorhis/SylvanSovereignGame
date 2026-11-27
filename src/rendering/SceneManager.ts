@@ -5,7 +5,7 @@ import { Pass } from 'three/examples/jsm/postprocessing/Pass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { QUALITY_PRESETS, type QualityPreset } from '@core/Config';
-import type { SelectionTarget } from '@core/Types';
+import type { AudioListenerFrame, SelectionTarget } from '@core/Types';
 import type { WorldState } from '@simulation/WorldState';
 import { nextPaintFrame, type LoadProgressCallback } from '@ui/SplashScreen';
 import { AmbientCritterRenderer } from './AmbientCritterRenderer';
@@ -119,6 +119,8 @@ export class SceneManager {
   private povCreatureId: string | null = null;
   private pointerDownPos = new THREE.Vector2();
   private readonly focusTargetScratch = new THREE.Vector3();
+  private readonly audioFocusScratch = new THREE.Vector3();
+  private readonly audioRightScratch = new THREE.Vector3(1, 0, 0);
   private readonly raycaster = new THREE.Raycaster();
   private readonly unsubscribes: (() => void)[] = [];
 
@@ -208,6 +210,34 @@ export class SceneManager {
 
   setPovCreatureId(creatureId: string | null): void {
     this.povCreatureId = creatureId;
+  }
+
+  /** Returns the current 3D camera & focal listening frame for spatialized Web Audio. */
+  getAudioListenerFrame(): AudioListenerFrame {
+    this.camera.updateMatrixWorld();
+    this.audioRightScratch.setFromMatrixColumn(this.camera.matrixWorld, 0).normalize();
+    const focus = this.cameraController.getFocusTarget(this.audioFocusScratch);
+    const isPov = this.cameraController.isInCreaturePov();
+    return {
+      cameraPos: {
+        x: this.camera.position.x,
+        y: this.camera.position.y,
+        z: this.camera.position.z,
+      },
+      focusPos: {
+        x: focus.x,
+        y: focus.y,
+        z: focus.z,
+      },
+      right: {
+        x: this.audioRightScratch.x,
+        y: this.audioRightScratch.y,
+        z: this.audioRightScratch.z,
+      },
+      focusDistance: this.cameraController.getFocusDistance(),
+      isPov,
+      isUnderwater: isPov && this.povUnderwaterNear,
+    };
   }
 
   /** Synchronizes renderer, camera aspect, and post-processing targets with current viewport dimensions. */

@@ -294,6 +294,37 @@ export interface CombatSparkVisual {
   readonly impactDir?: Vec2;
 }
 
+export type CreatureInteractionKind =
+  | 'greet'
+  | 'argue'
+  | 'court'
+  | 'play'
+  | 'birth'
+  | 'celebrate'
+  | 'trade'
+  | 'build'
+  | 'pray'
+  | 'alarm'
+  | 'combat_call';
+
+export interface CreatureInteractionEvent {
+  readonly kind: CreatureInteractionKind;
+  readonly species: SpeciesId;
+  readonly partnerSpecies?: SpeciesId;
+  readonly position: Vec3;
+  readonly lifeStage: LifeStage;
+  readonly intensity?: number;
+}
+
+export interface AudioListenerFrame {
+  readonly cameraPos: Vec3;
+  readonly focusPos: Vec3;
+  readonly right: Vec3;
+  readonly focusDistance: number;
+  readonly isPov: boolean;
+  readonly isUnderwater: boolean;
+}
+
 export interface TradeRouteVisual {
   readonly fromSettlementId: string;
   readonly toSettlementId: string;

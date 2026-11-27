@@ -548,6 +548,8 @@ describe('RealmOverviewLogic', () => {
     try {
       let fullscreenClicks = 0;
       let zenClicks = 0;
+      let isMuted = false;
+      let muteClicks = 0;
       const topBar = new TopBar({
         onSetSpeed: () => {},
         onToggleCinematic: () => false,
@@ -568,6 +570,11 @@ describe('RealmOverviewLogic', () => {
         },
         onToggleZenMode: () => {
           zenClicks++;
+        },
+        onToggleMute: () => {
+          muteClicks++;
+          isMuted = !isMuted;
+          return isMuted;
         },
         onResetOverview: () => {},
         onNewWorld: () => {},
@@ -605,6 +612,29 @@ describe('RealmOverviewLogic', () => {
       expect(fsBtn.classList.contains('active')).toBe(false);
       expect(fsBtn.attrs.get('aria-pressed')).toBe('false');
       expect(fsBtn.title).toContain('Enter full-screen');
+
+      // Mute button sits in the main top bar and toggles sound on/off cleanly
+      const soundBtn = viewGroup.children.find((n) => n.className.includes('sound-btn'));
+      expect(soundBtn).toBeDefined();
+      expect(soundBtn!.textContent).toContain('Sound');
+      expect(soundBtn!.attrs.get('aria-pressed')).toBe('false');
+      expect(soundBtn!.classList.contains('is-muted')).toBe(false);
+
+      soundBtn!.click();
+      expect(muteClicks).toBe(1);
+      expect(isMuted).toBe(true);
+      expect(soundBtn!.textContent).toContain('Muted');
+      expect(soundBtn!.attrs.get('aria-pressed')).toBe('true');
+      expect(soundBtn!.classList.contains('is-muted')).toBe(true);
+      expect(soundBtn!.title).toContain('Unmute sound');
+
+      soundBtn!.click();
+      expect(muteClicks).toBe(2);
+      expect(isMuted).toBe(false);
+      expect(soundBtn!.textContent).toContain('Sound');
+      expect(soundBtn!.attrs.get('aria-pressed')).toBe('false');
+      expect(soundBtn!.classList.contains('is-muted')).toBe(false);
+      expect(soundBtn!.title).toContain('Mute sound');
 
       topBar.dispose();
     } finally {

@@ -1,5 +1,6 @@
 import type { QualityPreset } from './Config';
 import { EventBus } from './EventBus';
+import { AudioEngine } from '@audio/AudioEngine';
 import {
   buildSaveRecord,
   DEFAULT_AUTOSAVE_SLOT_ID,
@@ -69,6 +70,7 @@ export class GameEngine {
   readonly bus: EventBus;
   private world: WorldState;
   private readonly sceneManager: SceneManager;
+  private readonly audio: AudioEngine;
   private readonly hud: HudManager;
   private readonly splash: SplashScreen | null;
   private readonly saveStore: SaveStore;
@@ -170,6 +172,7 @@ export class GameEngine {
     this.world = init?.world ?? new WorldState(this.bus, { seed: resolveInitialSeed(), initialWaterwaySettlements: 1 });
     const initialQuality = init?.initialQuality ?? 'high';
     this.sceneManager = new SceneManager(canvas, this.world, initialQuality, init?.deferSceneBuild ?? false);
+    this.audio = new AudioEngine(this.bus);
 
     this.hud = new HudManager(hudRoot, {
       onSetSpeed: (speed) => {
@@ -193,6 +196,7 @@ export class GameEngine {
       onToggleZenMode: () => {
         this.toggleZenMode();
       },
+      onToggleMute: () => this.toggleMuted(),
       onEnterCreaturePov: (creatureId) => {
         this.enterCreaturePov(creatureId);
       },
@@ -306,6 +310,7 @@ export class GameEngine {
     });
     this.hud.setQualityPreset(initialQuality);
     this.hud.setFullscreenActive(this.isDocumentFullscreen());
+    this.hud.setMuted(this.audio.isMuted());
 
     this.bus.on('selection:changed', (target) => {
       // If already in Creature Eye View and the user clicks another creature, jump right into its eyes!
@@ -343,6 +348,9 @@ export class GameEngine {
       } else if (e.code === 'KeyF' && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         this.toggleFullscreen();
+      } else if (e.code === 'KeyM' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        this.toggleMuted();
       } else if (e.code === 'KeyC' && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         if (!this.zenMode) {
@@ -387,7 +395,9 @@ export class GameEngine {
     document.addEventListener('webkitfullscreenchange', this.onFullscreenChangeBound);
 
     this.onVisibilityChangeBound = () => {
-      if (document.visibilityState === 'hidden') {
+      const hidden = document.visibilityState === 'hidden';
+      this.audio.setPageHidden(hidden);
+      if (hidden) {
         void this.persistAutosaveQuietly();
       }
     };
@@ -406,6 +416,21 @@ export class GameEngine {
 
   isFullscreen(): boolean {
     return this.isDocumentFullscreen();
+  }
+
+  isMuted(): boolean {
+    return this.audio.isMuted();
+  }
+
+  toggleMuted(): boolean {
+    const muted = this.audio.toggleMuted();
+    this.hud.setMuted(muted);
+    return muted;
+  }
+
+  setMuted(muted: boolean): void {
+    this.audio.setMuted(muted);
+    this.hud.setMuted(muted);
   }
 
   toggleFullscreen(): void {
@@ -704,6 +729,12 @@ export class GameEngine {
 
       if (!this.isRebuilding) {
         this.sceneManager.renderFrame(realDt);
+        this.audio.update(
+          realDt,
+          this.world,
+          this.sceneManager.getAudioListenerFrame(),
+          this.simSpeed,
+        );
         this.hud.update(
           realDt,
           this.world,
@@ -934,6 +965,7 @@ export class GameEngine {
       cancelAnimationFrame(this.rafId);
       this.rafId = null;
     }
+    this.audio.dispose();
     this.sceneManager.dispose();
     this.bus.clear();
   }
