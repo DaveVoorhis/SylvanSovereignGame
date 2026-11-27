@@ -251,8 +251,9 @@ interface RenderedWarBanner {
   readonly group: THREE.Group;
   readonly flagA: THREE.Object3D;
   readonly flagB: THREE.Object3D;
-  readonly ring: THREE.Mesh;
-  readonly ringMat: THREE.MeshBasicMaterial;
+  readonly mireMat: THREE.MeshPhysicalMaterial;
+  readonly mudMat: THREE.MeshStandardMaterial;
+  readonly wreckageGroup: THREE.Group;
   readonly ownedMaterials: THREE.Material[];
   readonly ownedGeometries: THREE.BufferGeometry[];
 }
@@ -891,9 +892,12 @@ export class SettlementRenderer {
       marker.flagA.rotation.y = Math.sin(t * speed) * flutter;
       marker.flagB.rotation.y = Math.sin(t * speed + 1.9) * flutter;
       const engaged = war.phase === 'engaged';
-      marker.ringMat.opacity = engaged
-        ? 0.24 + 0.14 * Math.sin(t * 4.2)
-        : 0.12 + 0.04 * Math.sin(t * 2.0);
+      const casualties = war.casualtiesA + war.casualtiesB;
+      const carnageFrac = Math.min(1, (engaged ? 0.32 : 0.0) + casualties * 0.16);
+      // Churned dark earth & widening blood-soaked mire deepen grimly as casualties mount
+      marker.mudMat.opacity = engaged ? Math.min(0.84, 0.56 + casualties * 0.05) : 0.34;
+      marker.mireMat.opacity = carnageFrac * 0.72;
+      marker.wreckageGroup.visible = engaged || casualties > 0;
     }
 
     for (const [warId, marker] of this.warBanners.entries()) {
@@ -917,11 +921,14 @@ export class SettlementRenderer {
     const poleGeo = new THREE.CylinderGeometry(0.06, 0.085, 4.2, 8);
     const crossGeo = new THREE.CylinderGeometry(0.036, 0.036, 1.35, 6);
     const finialGeo = new THREE.ConeGeometry(0.11, 0.36, 6);
+    // Tattered, ragged war pennant with jagged notched tail
     const flagShape = new THREE.Shape();
     flagShape.moveTo(0, 0);
-    flagShape.lineTo(1.55, 0.14);
-    flagShape.lineTo(1.22, 0.44);
-    flagShape.lineTo(1.55, 0.74);
+    flagShape.lineTo(1.48, 0.08);
+    flagShape.lineTo(1.06, 0.25);
+    flagShape.lineTo(1.52, 0.42);
+    flagShape.lineTo(1.12, 0.62);
+    flagShape.lineTo(1.44, 0.78);
     flagShape.lineTo(0, 0.88);
     flagShape.closePath();
     const flagGeo = new THREE.ShapeGeometry(flagShape);
@@ -932,12 +939,14 @@ export class SettlementRenderer {
       yaw: number,
       bannerColor: number,
       name: string,
+      lean: number,
     ): THREE.Object3D => {
       const stand = new THREE.Group();
       stand.name = name;
       const y = this.world.terrain.getHeightAt(pos.x, pos.z);
       stand.position.set(pos.x, y, pos.z);
       stand.rotation.y = yaw;
+      stand.rotation.z = lean;
 
       const pole = new THREE.Mesh(poleGeo, this.darkTimberMat);
       pole.position.y = 2.05;
@@ -949,15 +958,17 @@ export class SettlementRenderer {
       cross.position.set(0.42, 3.85, 0);
       stand.add(cross);
 
-      const finial = new THREE.Mesh(finialGeo, this.brassMat);
+      const finial = new THREE.Mesh(finialGeo, this.darkTimberMat);
       finial.position.y = 4.32;
       stand.add(finial);
 
+      // Grimy, soot-darkened war standard rather than bright festive cloth
+      const grimCloth = new THREE.Color(bannerColor).lerp(new THREE.Color(0x1f1412), 0.36);
       const flagMat = new THREE.MeshStandardMaterial({
-        color: bannerColor,
-        emissive: bannerColor,
-        emissiveIntensity: 0.18,
-        roughness: 0.68,
+        color: grimCloth,
+        emissive: grimCloth,
+        emissiveIntensity: 0.03,
+        roughness: 0.88,
         side: THREE.DoubleSide,
       });
       ownedMaterials.push(flagMat);
@@ -972,26 +983,119 @@ export class SettlementRenderer {
     };
 
     const axisYaw = Math.atan2(war.frontB.x - war.frontA.x, war.frontB.z - war.frontA.z);
-    const flagA = buildStandard(war.frontA, axisYaw, colorA, 'war_standard_a');
-    const flagB = buildStandard(war.frontB, axisYaw + Math.PI, colorB, 'war_standard_b');
+    const flagA = buildStandard(war.frontA, axisYaw, colorA, 'war_standard_a', 0.055);
+    const flagB = buildStandard(war.frontB, axisYaw + Math.PI, colorB, 'war_standard_b', -0.065);
 
-    const ringGeo = new THREE.RingGeometry(5.6, 6.25, 36);
-    ringGeo.rotateX(-Math.PI / 2);
-    ownedGeometries.push(ringGeo);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: 0xd94b38,
+    // Irregular churned mud & trampled blood-soaked killing ground (replaces clean arcade ring)
+    const buildIrregularPatch = (baseRadius: number, phase: number): THREE.BufferGeometry => {
+      const sh = new THREE.Shape();
+      const segs = 40;
+      for (let i = 0; i < segs; i++) {
+        const a = (i / segs) * Math.PI * 2;
+        const r =
+          baseRadius *
+          (0.84 +
+            0.14 * Math.sin(a * 3 + phase) +
+            0.09 * Math.cos(a * 5 - phase * 1.4) +
+            0.06 * Math.sin(a * 8 + phase * 0.7));
+        const px = Math.cos(a) * r;
+        const py = Math.sin(a) * r;
+        if (i === 0) sh.moveTo(px, py);
+        else sh.lineTo(px, py);
+      }
+      sh.closePath();
+      const geo = new THREE.ShapeGeometry(sh, 1);
+      geo.rotateX(-Math.PI / 2);
+      geo.computeVertexNormals();
+      return geo;
+    };
+
+    const bfX = war.battlefield.x;
+    const bfZ = war.battlefield.z;
+    const bfY = this.world.terrain.getHeightAt(bfX, bfZ);
+    const eps = 1.2;
+    const hL = this.world.terrain.getHeightAt(bfX - eps, bfZ);
+    const hR = this.world.terrain.getHeightAt(bfX + eps, bfZ);
+    const hD = this.world.terrain.getHeightAt(bfX, bfZ - eps);
+    const hU = this.world.terrain.getHeightAt(bfX, bfZ + eps);
+    const bfNormal = new THREE.Vector3(hL - hR, 2 * eps, hD - hU).normalize();
+    const bfQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), bfNormal);
+
+    const mudGeo = buildIrregularPatch(6.2, 0.7);
+    const mireGeo = buildIrregularPatch(4.1, 2.3);
+    ownedGeometries.push(mudGeo, mireGeo);
+
+    const mudMat = new THREE.MeshStandardMaterial({
+      color: 0x261a14,
+      roughness: 0.96,
+      metalness: 0.0,
       transparent: true,
-      opacity: 0.16,
-      side: THREE.DoubleSide,
+      opacity: 0.34,
       depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
     });
-    ownedMaterials.push(ringMat);
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    const bfY = this.world.terrain.getHeightAt(war.battlefield.x, war.battlefield.z);
-    ring.position.set(war.battlefield.x, bfY + 0.12, war.battlefield.z);
-    group.add(ring);
+    const mireMat = new THREE.MeshPhysicalMaterial({
+      color: 0x450508,
+      roughness: 0.24,
+      metalness: 0.0,
+      clearcoat: 0.85,
+      clearcoatRoughness: 0.14,
+      transparent: true,
+      opacity: 0.0,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    ownedMaterials.push(mudMat, mireMat);
 
-    return { group, flagA, flagB, ring, ringMat, ownedMaterials, ownedGeometries };
+    const mudMesh = new THREE.Mesh(mudGeo, mudMat);
+    mudMesh.name = 'war_killing_ground';
+    mudMesh.position.set(bfX, bfY + 0.05, bfZ);
+    mudMesh.quaternion.copy(bfQuat);
+    group.add(mudMesh);
+
+    const mireMesh = new THREE.Mesh(mireGeo, mireMat);
+    mireMesh.name = 'war_blood_mire';
+    mireMesh.position.set(bfX, bfY + 0.065, bfZ);
+    mireMesh.quaternion.copy(bfQuat);
+    group.add(mireMesh);
+
+    // Scattered grim wreckage: snapped spears jutting crookedly from the mud & a cracked half-buried shield
+    const wreckageGroup = new THREE.Group();
+    wreckageGroup.name = 'war_battlefield_wreckage';
+    wreckageGroup.visible = false;
+    const brokenShaftGeo = new THREE.CylinderGeometry(0.024, 0.03, 1.35, 6);
+    const crackedShieldGeo = new THREE.CylinderGeometry(0.46, 0.46, 0.05, 10, 1, false, 0, Math.PI * 1.55);
+    ownedGeometries.push(brokenShaftGeo, crackedShieldGeo);
+    for (let i = 0; i < 5; i++) {
+      const ang = axisYaw + i * 1.27 + 0.45;
+      const dist = 2.4 + (i % 3) * 1.45;
+      const wx = bfX + Math.cos(ang) * dist;
+      const wz = bfZ + Math.sin(ang) * dist;
+      const wy = this.world.terrain.getHeightAt(wx, wz);
+      const shaft = new THREE.Mesh(brokenShaftGeo, this.darkTimberMat);
+      shaft.position.set(wx, wy + 0.42, wz);
+      shaft.rotation.set(0.32 + (i % 2) * 0.28, ang, (i % 2 === 0 ? 1 : -1) * 0.36);
+      shaft.castShadow = true;
+      wreckageGroup.add(shaft);
+    }
+    for (let i = 0; i < 2; i++) {
+      const ang = axisYaw + (i === 0 ? 0.9 : -2.1);
+      const wx = bfX + Math.cos(ang) * 3.1;
+      const wz = bfZ + Math.sin(ang) * 3.1;
+      const wy = this.world.terrain.getHeightAt(wx, wz);
+      const shield = new THREE.Mesh(crackedShieldGeo, this.darkTimberMat);
+      shield.position.set(wx, wy + 0.09, wz);
+      shield.rotation.set(0.24, ang, 0.18 * (i === 0 ? 1 : -1));
+      shield.castShadow = true;
+      wreckageGroup.add(shield);
+    }
+    group.add(wreckageGroup);
+
+    return { group, flagA, flagB, mireMat, mudMat, wreckageGroup, ownedMaterials, ownedGeometries };
   }
 
   private disposeWarBannerMarker(marker: RenderedWarBanner): void {

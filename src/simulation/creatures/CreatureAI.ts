@@ -1682,10 +1682,15 @@ export class CreatureAI {
         war.totalStrikes++;
       }
 
+      const victimScale = target.getSizeScale();
+      const impactDir = { x: dirX, z: dirZ };
+      const hitPointFrac = parried ? 0.5 : 0.78;
       const impactPos = {
-        x: isRangedBow ? target.x : (creature.x + target.x) * 0.5,
-        y: (isRangedBow ? target.y : (creature.y + target.y) * 0.5) + 0.78,
-        z: isRangedBow ? target.z : (creature.z + target.z) * 0.5,
+        x: isRangedBow ? target.x : creature.x + (target.x - creature.x) * hitPointFrac,
+        y:
+          (isRangedBow ? target.y : creature.y + (target.y - creature.y) * hitPointFrac) +
+          0.56 * victimScale,
+        z: isRangedBow ? target.z : creature.z + (target.z - creature.z) * hitPointFrac,
       };
 
       if (isRangedBow && dist > 2.8) {
@@ -1697,14 +1702,26 @@ export class CreatureAI {
             duration: Math.max(0.24, Math.min(0.55, dist / 24)),
           },
         );
-        world.emitCombatSpark(impactPos, { kind: 'hit' });
+        world.emitCombatSpark(impactPos, {
+          kind: 'hit',
+          victimColorHex: target.def.primaryColor,
+          victimSecondaryColorHex: target.def.secondaryColor,
+          victimScale,
+          impactDir,
+        });
       } else {
         const hitKind = parried
           ? 'clash'
           : creature.warWeapon === 'battle_axe' || creature.warWeapon === 'war_club' || dmg >= 15
             ? 'heavy_hit'
             : 'hit';
-        world.emitCombatSpark(impactPos, { kind: hitKind });
+        world.emitCombatSpark(impactPos, {
+          kind: hitKind,
+          victimColorHex: target.def.primaryColor,
+          victimSecondaryColorHex: target.def.secondaryColor,
+          victimScale,
+          impactDir,
+        });
       }
 
       world.deity.observeConflict(0.6);
@@ -1730,8 +1747,15 @@ export class CreatureAI {
             target.mateId = null;
           }
           world.emitCombatSpark(
-            { x: target.x, y: target.y + 0.75, z: target.z },
-            { kind: 'fatal', duration: 0.95 },
+            { x: target.x, y: target.y + 0.52 * victimScale, z: target.z },
+            {
+              kind: 'fatal',
+              duration: 1.15,
+              victimColorHex: target.def.primaryColor,
+              victimSecondaryColorHex: target.def.secondaryColor,
+              victimScale,
+              impactDir,
+            },
           );
           if (war) {
             world.wars.recordCasualty(war.id, target.settlementId, 'killed', target.id);

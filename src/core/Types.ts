@@ -288,6 +288,10 @@ export interface CombatSparkVisual {
   readonly kind?: CombatEffectKind;
   readonly targetPosition?: Vec3;
   readonly colorHex?: number;
+  readonly victimColorHex?: number;
+  readonly victimSecondaryColorHex?: number;
+  readonly victimScale?: number;
+  readonly impactDir?: Vec2;
 }
 
 export interface TradeRouteVisual {

@@ -2116,14 +2116,106 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     expect(visibleWarWeaponNames.has('war_bow')).toBe(true);
     expect(visibleWarWeaponNames.has('war_shield')).toBe(true);
 
+    // Verify combat clashes never spawn additive glowing Octahedron squares; instead spawn wet blood & gibs
+    const goreGroup = creatureRenderer.rootGroup.getObjectByName('combat_gore_system');
+    expect(goreGroup).toBeDefined();
+    const goreNames = new Set<string>();
+    let additiveCombatMeshes = 0;
+    let octahedronCombatMeshes = 0;
+    goreGroup!.traverse((obj) => {
+      if (obj.name) goreNames.add(obj.name);
+      if (obj instanceof THREE.Mesh) {
+        if (obj.geometry instanceof THREE.OctahedronGeometry) octahedronCombatMeshes++;
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for (const m of mats) {
+          if (m.blending === THREE.AdditiveBlending) additiveCombatMeshes++;
+        }
+      }
+    });
+    expect(additiveCombatMeshes).toBe(0);
+    expect(octahedronCombatMeshes).toBe(0);
+    expect(goreNames.has('gib_flesh')).toBe(true);
+    expect(goreNames.has('gib_viscera')).toBe(true);
+    expect(goreNames.has('gib_bone')).toBe(true);
+    expect(goreNames.has('gib_pelt_chunk')).toBe(true);
+    expect(goreNames.has('blood_pool') || goreNames.has('blood_stain')).toBe(true);
+    expect(goreNames.has('carrion_swarm')).toBe(true);
+
     // Battlefield war banner group exists while war is active and is removed once a truce ends it
     expect(settlementRenderer.rootGroup.getObjectByName(`war_battlefield_${war.id}`)).toBeDefined();
+    expect(settlementRenderer.rootGroup.getObjectByName('war_killing_ground')).toBeDefined();
+    expect(settlementRenderer.rootGroup.getObjectByName('war_blood_mire')).toBeDefined();
     world.wars.declareTruce(war.id, world);
     settlementRenderer.update(0.05);
     expect(settlementRenderer.rootGroup.getObjectByName(`war_battlefield_${war.id}`)).toBeUndefined();
 
     creatureRenderer.dispose();
     settlementRenderer.dispose();
+    textures.dispose();
+  });
+
+  it('simulates directional blood sprays, bouncing/settling 3D gibs, expanding blood pools, carrion flies, and wounded blood trails', () => {
+    const world = new WorldState(new EventBus(), {
+      seed: 424242,
+      initialSettlements: 1,
+      initialWaterwaySettlements: 0,
+      initialCreaturesPerSettlement: 4,
+      deityDecisionIntervalSec: 999,
+    });
+    const victim = world.creatures[0];
+    victim.activity = 'fleeing';
+    victim.health = victim.maxHealth * 0.25;
+
+    const scene = new THREE.Scene();
+    const textures = createStubTextureLibrary();
+    const creatureRenderer = new CreatureRenderer(scene, world, textures);
+
+    // Trigger a fatal blow with victim species coat metadata and impact direction
+    creatureRenderer.spawnCombatSpark({
+      id: 9501,
+      position: { x: victim.x, y: victim.y + 0.65, z: victim.z },
+      createdAt: world.elapsedSeconds,
+      duration: 1.1,
+      kind: 'fatal',
+      victimColorHex: victim.def.primaryColor,
+      victimSecondaryColorHex: victim.def.secondaryColor,
+      victimScale: victim.getSizeScale(),
+      impactDir: { x: 1, z: 0 },
+    });
+
+    const goreGroup = creatureRenderer.rootGroup.getObjectByName('combat_gore_system')!;
+    expect(goreGroup).toBeDefined();
+
+    // Advance ~3 seconds so droplets splatter, gibs bounce and settle, blood pool spreads, and flies appear
+    for (let i = 0; i < 60; i++) {
+      world.elapsedSeconds += 0.05;
+      creatureRenderer.update(0.05, null);
+    }
+
+    let poolCount = 0;
+    let stainCount = 0;
+    let gibCount = 0;
+    let visibleSwarms = 0;
+    goreGroup.traverse((obj) => {
+      if (obj.name === 'blood_pool') poolCount++;
+      if (obj.name === 'blood_stain') stainCount++;
+      if (
+        obj.name === 'gib_flesh' ||
+        obj.name === 'gib_viscera' ||
+        obj.name === 'gib_bone' ||
+        obj.name === 'gib_pelt_chunk'
+      ) {
+        gibCount++;
+      }
+      if (obj.name === 'carrion_swarm' && obj.visible) visibleSwarms++;
+    });
+
+    expect(poolCount).toBeGreaterThanOrEqual(1);
+    expect(stainCount).toBeGreaterThanOrEqual(3);
+    expect(gibCount).toBeGreaterThanOrEqual(10);
+    expect(visibleSwarms).toBe(1);
+
+    creatureRenderer.dispose();
     textures.dispose();
   });
 });

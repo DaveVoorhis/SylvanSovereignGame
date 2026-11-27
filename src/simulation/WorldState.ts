@@ -592,6 +592,10 @@ export class WorldState {
       targetPosition?: Vec3;
       colorHex?: number;
       duration?: number;
+      victimColorHex?: number;
+      victimSecondaryColorHex?: number;
+      victimScale?: number;
+      impactDir?: Vec2;
     },
   ): void {
     const spark: CombatSparkVisual = {
@@ -604,6 +608,10 @@ export class WorldState {
       kind: options?.kind,
       targetPosition: options?.targetPosition,
       colorHex: options?.colorHex,
+      victimColorHex: options?.victimColorHex,
+      victimSecondaryColorHex: options?.victimSecondaryColorHex,
+      victimScale: options?.victimScale,
+      impactDir: options?.impactDir,
     };
     this.activeCombatSparks.push(spark);
     this.bus.emit('combat:spark', spark);

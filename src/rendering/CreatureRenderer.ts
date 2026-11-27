@@ -22,6 +22,7 @@ import {
   createTaperedTubeGeo,
   mergePartGeometries,
 } from './GeometryHelpers';
+import { CombatGoreSystem } from './CombatGoreSystem';
 import type { TextureLibrary } from './ProceduralTextures';
 
 interface WorkToolKit {
@@ -62,6 +63,7 @@ interface CreatureRig {
   readonly baseRightEarZ: number;
   readonly baseTailX: number;
   workChipCooldown: number;
+  bleedCooldown: number;
   readonly adaptation: VillageAdaptationId;
   readonly swimRipple?: THREE.Mesh;
   readonly baseFootY: number;
@@ -151,7 +153,6 @@ interface SharedGeometries {
   readonly wizardHat: THREE.BufferGeometry;
   readonly acornHat: THREE.BufferGeometry;
   readonly selectionRing: THREE.BufferGeometry;
-  readonly sparkStar: THREE.BufferGeometry;
   readonly workChip: THREE.BufferGeometry;
   readonly axeHead: THREE.BufferGeometry;
   readonly spadeBlade: THREE.BufferGeometry;
@@ -175,7 +176,6 @@ interface SharedGeometries {
   readonly warClubHead: THREE.BufferGeometry;
   readonly bowStave: THREE.BufferGeometry;
   readonly arrowMesh: THREE.BufferGeometry;
-  readonly slashArc: THREE.BufferGeometry;
 }
 
 function hashString(str: string): number {
@@ -1168,8 +1168,6 @@ function createSharedGeometries(): SharedGeometries {
   const swimRipple = new THREE.RingGeometry(0.42, 0.54, 24);
   swimRipple.rotateX(-Math.PI / 2);
 
-  const slashArc = new THREE.RingGeometry(0.24, 0.54, 16, 1, -Math.PI * 0.42, Math.PI * 0.84);
-
   return {
     tunic,
     mantle,
@@ -1211,7 +1209,6 @@ function createSharedGeometries(): SharedGeometries {
     wizardHat: buildWizardHatGeo(),
     acornHat: buildAcornHatGeo(),
     selectionRing,
-    sparkStar: new THREE.OctahedronGeometry(0.24, 0),
     workChip,
     axeHead: buildAxeHeadGeo(),
     spadeBlade: buildSpadeBladeGeo(),
@@ -1235,7 +1232,6 @@ function createSharedGeometries(): SharedGeometries {
     warClubHead: buildWarClubHeadGeo(),
     bowStave: buildBowStaveGeo(),
     arrowMesh: buildArrowGeo(),
-    slashArc,
   };
 }
 
@@ -1250,6 +1246,7 @@ export class CreatureRenderer {
   private readonly rigs = new Map<string, CreatureRig>();
   private readonly sparks: SparkVisual[] = [];
   private readonly arrows: ArrowVisual[] = [];
+  private readonly gore: CombatGoreSystem;
   private readonly geo: SharedGeometries;
   private readonly speciesMats = new Map<SpeciesId, SpeciesMaterialSet>();
   private readonly adaptationMats = new Map<
@@ -1566,6 +1563,9 @@ export class CreatureRenderer {
       this.bowstringMat,
     );
 
+    this.gore = new CombatGoreSystem(world);
+    this.rootGroup.add(this.gore.group);
+
     scene.add(this.rootGroup);
     this.syncCreatures(null);
   }
@@ -1602,83 +1602,8 @@ export class CreatureRenderer {
       return;
     }
 
-    const isHeavy = kind === 'heavy_hit';
-    const isFatal = kind === 'fatal';
-    const isMeleeHit = kind === 'hit' || isHeavy || isFatal;
-
-    // Glowing crescent melee slash arc on blade/axe/club/spear impacts
-    if (isMeleeHit) {
-      const slashColor = spark.colorHex ?? (isFatal ? 0xff3b30 : isHeavy ? 0xff7b29 : 0xffe082);
-      const slashMat = new THREE.MeshBasicMaterial({
-        color: slashColor,
-        transparent: true,
-        opacity: 0.92,
-        side: THREE.DoubleSide,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      const slashScale = isFatal ? 1.75 : isHeavy ? 1.35 : 0.95;
-      const slash = new THREE.Mesh(this.geo.slashArc, slashMat);
-      slash.name = 'combat_slash';
-      slash.position.set(spark.position.x, spark.position.y + 0.18, spark.position.z);
-      slash.rotation.set(
-        (Math.random() - 0.5) * 1.1,
-        Math.random() * Math.PI * 2,
-        (Math.random() - 0.5) * 0.9,
-      );
-      slash.scale.setScalar(slashScale);
-      this.rootGroup.add(slash);
-      this.sparks.push({
-        mesh: slash,
-        mat: slashMat,
-        createdAt: spark.createdAt,
-        duration: isFatal ? 0.4 : isHeavy ? 0.3 : 0.24,
-        vx: 0,
-        vy: 0.25,
-        vz: 0,
-        baseScale: slashScale,
-        gravity: 0,
-        spinRate: 4.5,
-      });
-    }
-
-    const count = isFatal ? 10 : isHeavy ? 7 : kind === 'hit' ? 5 : 4;
-    const colors = isFatal
-      ? [0xd92626, 0xff4d3b, 0xff9e3d, 0xfff0a6]
-      : isHeavy
-        ? [0xff6a29, 0xd93829, 0xffcf5c]
-        : kind === 'hit'
-          ? [0xe64a33, 0xffa64d, 0xffe49e]
-          : [0xffdf73, 0xffffff, 0xffb347];
-    const spread = isFatal ? 3.2 : isHeavy ? 2.4 : 1.7;
-    for (let i = 0; i < count; i++) {
-      const mat = new THREE.MeshBasicMaterial({
-        color: colors[i % colors.length],
-        transparent: true,
-        opacity: 0.95,
-        blending: THREE.AdditiveBlending,
-      });
-      const baseScale = (isFatal ? 0.95 : isHeavy ? 0.82 : 0.62) + Math.random() * 0.48;
-      const mesh = new THREE.Mesh(this.geo.sparkStar, mat);
-      mesh.position.set(
-        spark.position.x + (Math.random() - 0.5) * 0.25,
-        spark.position.y + 0.15,
-        spark.position.z + (Math.random() - 0.5) * 0.25,
-      );
-      mesh.scale.setScalar(baseScale);
-      this.rootGroup.add(mesh);
-      this.sparks.push({
-        mesh,
-        mat,
-        createdAt: spark.createdAt,
-        duration: spark.duration * (isFatal ? 1.2 : 1.0),
-        vx: (Math.random() - 0.5) * spread,
-        vy: (isFatal ? 1.6 : 0.95) + Math.random() * (isFatal ? 1.8 : 1.25),
-        vz: (Math.random() - 0.5) * spread,
-        baseScale,
-        gravity: isMeleeHit ? 3.4 : 0.9,
-      });
-    }
+    // Physically grounded arterial blood spray, bouncing 3D gibs, blood pools, and carrion flies
+    this.gore.spawnImpact(spark);
   }
 
   /** Spawns tiny lit 3D wood splinters, earthen clods, stone chips, or hammer sparks when actively constructing. */
@@ -2288,6 +2213,26 @@ export class CreatureRenderer {
         squashY *= 1 - hitFrac * 0.09;
       }
 
+      // Wounded & routed creatures bleed steadily onto the grass, leaving an unsettling trail
+      const healthFrac = c.health / Math.max(1, c.maxHealth);
+      const isBleeding =
+        !isFish &&
+        healthFrac < 0.72 &&
+        (c.activity === 'fighting' || c.activity === 'fleeing' || c.combatHitTimer > 0);
+      if (isBleeding) {
+        rig.bleedCooldown -= safeDt;
+        if (rig.bleedCooldown <= 0) {
+          this.gore.spawnWoundDrip(
+            rig.root.position.x,
+            rig.root.position.y,
+            rig.root.position.z,
+            t,
+            effectiveScale,
+          );
+          rig.bleedCooldown = THREE.MathUtils.lerp(0.24, 0.78, Math.max(0, healthFrac / 0.72));
+        }
+      }
+
       // Smoothly blend posture and limbs so activity transitions never pop in a single frame
       const bobLerp = hopSample ? 1 - Math.exp(-20 * safeDt) : poseLerp;
       rig.bobY += (bobY - rig.bobY) * bobLerp;
@@ -2472,7 +2417,7 @@ export class CreatureRenderer {
       }
     }
 
-    // Update twinkling combat sparks and ballistic construction chips
+    // Update ballistic construction chips and festival confetti
     for (let i = this.sparks.length - 1; i >= 0; i--) {
       const sp = this.sparks[i];
       const pct = (t - sp.createdAt) / sp.duration;
@@ -2516,6 +2461,9 @@ export class CreatureRenderer {
         ar.mesh.lookAt(nx, ny, nz);
       }
     }
+
+    // Update blood sprays, bouncing 3D gibs, spreading/coagulating blood pools & carrion flies
+    this.gore.update(safeDt, t);
   }
 
   private getSpeciesMaterials(c: Creature): SpeciesMaterialSet {
@@ -2653,6 +2601,7 @@ export class CreatureRenderer {
       this.ironMat,
       this.crimsonMat,
       this.bowstringMat,
+      ...this.gore.getWarmupMaterials(),
     ];
     const archetypes: SpeciesId[] = ['fox', 'owl', 'frog', 'crow', 'magpie', 'snake', 'turtle', 'beaver', 'otter', 'fish'];
     for (const sp of archetypes) {
@@ -4334,6 +4283,7 @@ export class CreatureRenderer {
       baseRightEarZ,
       baseTailX,
       workChipCooldown: 0.15,
+      bleedCooldown: 0.25 + seed * 0.4,
       adaptation,
       swimRipple,
       baseFootY,
@@ -4363,6 +4313,8 @@ export class CreatureRenderer {
       this.rootGroup.remove(ar.mesh);
     }
     this.arrows.length = 0;
+    this.rootGroup.remove(this.gore.group);
+    this.gore.dispose();
     const shared = this.sharedDisposableSet;
     this.rootGroup.traverse((obj) => {
       if (obj instanceof THREE.Mesh && obj.geometry && !shared.has(obj.geometry)) {
