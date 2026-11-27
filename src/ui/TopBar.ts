@@ -1,25 +1,35 @@
 import type { QualityPreset } from '@core/Config';
-import type { Season, WeatherType } from '@core/Types';
+import type { Season, SelectionTarget, WeatherType } from '@core/Types';
 import { getBiomeDisplayName } from '@simulation/settlements/VillageAdaptation';
 import type { WorldState } from '@simulation/WorldState';
+import { bindDialogPill, type DialogPillHandle } from './DialogPillController';
+import type { RealmOverviewTab } from './RealmOverviewLogic';
 
 export interface TopBarCallbacks {
   onSetSpeed: (speed: number) => void;
   onToggleCinematic: () => boolean;
   onToggleCreatureView: () => void;
-  onToggleCreatureDirectory: () => void;
-  onToggleDeityPanel: () => void;
-  onToggleChroniclePanel: () => void;
+  isCreatureDirectoryOpen: () => boolean;
+  onSetCreatureDirectoryOpen: (open: boolean) => void;
+  isRealmOverviewTabOpen: (tab: RealmOverviewTab) => boolean;
+  onOpenRealmOverviewTab: (tab: RealmOverviewTab) => void;
+  onCloseRealmOverview: () => void;
+  isDeityPanelOpen: () => boolean;
+  onSetDeityPanelOpen: (open: boolean) => void;
+  isChroniclePanelOpen: () => boolean;
+  onSetChroniclePanelOpen: (open: boolean) => void;
   onToggleZenMode: () => void;
   onResetOverview: () => void;
   onNewWorld: () => void;
   onChangeQuality: (preset: QualityPreset) => void;
   onFocusSettlement: (settlementId: string) => void;
+  onCloseInspector: () => void;
 }
 
 interface TelemetrySlotNodes {
-  readonly root: HTMLElement;
+  readonly root: HTMLButtonElement;
   readonly valueEl: HTMLElement;
+  readonly pillHandle: DialogPillHandle;
 }
 
 interface SettlementPillNodes {
@@ -29,6 +39,8 @@ interface SettlementPillNodes {
   readonly nameEl: HTMLElement;
   readonly metaLabelEl: HTMLElement;
   readonly popEl: HTMLElement;
+  readonly pillHandle: DialogPillHandle;
+  readonly tooltipState: { base: string };
 }
 
 const SEASON_ICONS: Record<Season, string> = {
@@ -47,27 +59,6 @@ const WEATHER_ICONS: Record<WeatherType, string> = {
   snow: '🌨️',
   blossom: '🌸',
 };
-
-function createTelemetrySlot(icon: string, label: string, title: string): TelemetrySlotNodes {
-  const root = document.createElement('span');
-  root.className = 'telemetry-slot';
-  root.title = title;
-
-  const iconEl = document.createElement('span');
-  iconEl.className = 'telemetry-icon';
-  iconEl.textContent = icon;
-
-  const valueEl = document.createElement('span');
-  valueEl.className = 'telemetry-value';
-  valueEl.textContent = '0';
-
-  const labelEl = document.createElement('span');
-  labelEl.className = 'telemetry-label';
-  labelEl.textContent = label;
-
-  root.append(iconEl, valueEl, labelEl);
-  return { root, valueEl };
-}
 
 export class TopBar {
   readonly element: HTMLElement;
@@ -97,15 +88,22 @@ export class TopBar {
   private readonly zenBtn: HTMLButtonElement;
   private readonly qualitySelect: HTMLSelectElement;
 
+  // Shared dialog-pill handles so every dialog-opening pill toggles open/close consistently
+  private readonly kinPill: DialogPillHandle;
+  private readonly deityPill: DialogPillHandle;
+  private readonly chroniclePill: DialogPillHandle;
+  private readonly eventPill: DialogPillHandle;
+
   // Band 2: reconciled settlement pills + dedicated right-anchored event slot
   private readonly settlementsBar: HTMLElement;
   private readonly settlementPills = new Map<string, SettlementPillNodes>();
   private readonly eventBadgeEl: HTMLButtonElement;
   private readonly eventIconEl: HTMLElement;
   private readonly eventTextEl: HTMLElement;
+  private activeSelection: SelectionTarget = null;
   private activeEventSettlementIds: string[] = [];
-  private activeEventKey = '';
-  private eventCycleIndex = 0;
+  private eventTooltipClosed = '';
+  private eventTooltipOpen = '';
 
   constructor(private readonly callbacks: TopBarCallbacks) {
     this.element = document.createElement('header');
@@ -170,14 +168,13 @@ export class TopBar {
     clockCapsule.append(daySeg, timeSeg, seasonSeg, weatherSeg);
     leftZone.append(brand, clockCapsule);
 
-    // Center Zone: Fixed-slot Telemetry Strip + Interactive Creature Census button
+    // Center Zone: Interactive Telemetry Strip (Census + Young/Bldgs/Trade/Pioneers summaries)
     const telemetry = document.createElement('div');
     telemetry.className = 'topbar-telemetry';
 
     this.kinBtn = document.createElement('button');
     this.kinBtn.type = 'button';
     this.kinBtn.className = 'telemetry-btn';
-    this.kinBtn.title = 'Open Woodland Census & Family Trees (C)';
     const kinIcon = document.createElement('span');
     kinIcon.className = 'telemetry-icon';
     kinIcon.textContent = '🐾';
@@ -191,12 +188,41 @@ export class TopBar {
     kinCaret.className = 'telemetry-caret';
     kinCaret.textContent = '🌳';
     this.kinBtn.append(kinIcon, this.kinValueEl, kinLabel, kinCaret);
-    this.kinBtn.addEventListener('click', () => this.callbacks.onToggleCreatureDirectory());
+    this.kinPill = bindDialogPill({
+      button: this.kinBtn,
+      isOpen: () => this.callbacks.isCreatureDirectoryOpen(),
+      open: () => this.callbacks.onSetCreatureDirectoryOpen(true),
+      close: () => this.callbacks.onSetCreatureDirectoryOpen(false),
+      getTitle: (open) =>
+        open
+          ? 'Close Woodland Census & Family Trees (C)'
+          : 'Open Woodland Census & Family Trees (C)',
+    });
 
-    this.youngSlot = createTelemetrySlot('🐣', 'Young', 'Newborn & juvenile woodland kin');
-    this.buildingsSlot = createTelemetrySlot('🏡', 'Bldgs', 'Completed settlement buildings');
-    this.tradeSlot = createTelemetrySlot('⚖️', 'Trade', 'Active merchant caravans');
-    this.pioneersSlot = createTelemetrySlot('🧭', 'Pioneers', 'Emigration pioneer parties');
+    this.youngSlot = this.createTelemetryPill(
+      'young',
+      '🐣',
+      'Young',
+      'Nursery & Young Woodland Kin',
+    );
+    this.buildingsSlot = this.createTelemetryPill(
+      'buildings',
+      '🏡',
+      'Bldgs',
+      'Realm Architecture & Public Works',
+    );
+    this.tradeSlot = this.createTelemetryPill(
+      'trade',
+      '⚖️',
+      'Trade',
+      'Caravans, Markets & Trade Ledger',
+    );
+    this.pioneersSlot = this.createTelemetryPill(
+      'pioneers',
+      '🧭',
+      'Pioneers',
+      'Pioneer Expeditions & Frontier',
+    );
 
     telemetry.append(
       this.kinBtn,
@@ -318,31 +344,48 @@ export class TopBar {
     this.eventTextEl = document.createElement('span');
     this.eventTextEl.className = 'cel-slot-text';
     this.eventBadgeEl.append(this.eventIconEl, this.eventTextEl);
-    this.eventBadgeEl.addEventListener('click', () => {
-      if (this.activeEventSettlementIds.length === 0) return;
-      const targetId =
-        this.activeEventSettlementIds[this.eventCycleIndex % this.activeEventSettlementIds.length];
-      this.eventCycleIndex = (this.eventCycleIndex + 1) % this.activeEventSettlementIds.length;
-      this.callbacks.onFocusSettlement(targetId);
+    this.eventPill = bindDialogPill({
+      button: this.eventBadgeEl,
+      isOpen: () =>
+        this.activeEventSettlementIds.length > 0 &&
+        this.activeSelection?.kind === 'settlement' &&
+        this.activeEventSettlementIds.includes(this.activeSelection.id),
+      open: () => {
+        const targetId = this.activeEventSettlementIds[0];
+        if (targetId) {
+          this.callbacks.onFocusSettlement(targetId);
+        }
+      },
+      close: () => this.callbacks.onCloseInspector(),
+      getTitle: (open) => (open ? this.eventTooltipOpen : this.eventTooltipClosed),
     });
+
     const panelGroup = document.createElement('div');
     panelGroup.className = 'panel-toggle-group';
 
     this.deityBtn = document.createElement('button');
     this.deityBtn.type = 'button';
-    this.deityBtn.className = 'hud-btn panel-toggle-btn active';
+    this.deityBtn.className = 'hud-btn panel-toggle-btn';
     this.deityBtn.textContent = '✦ Deity';
-    this.deityBtn.title = 'Hide Deity panel';
-    this.deityBtn.setAttribute('aria-pressed', 'true');
-    this.deityBtn.addEventListener('click', () => this.callbacks.onToggleDeityPanel());
+    this.deityPill = bindDialogPill({
+      button: this.deityBtn,
+      isOpen: () => this.callbacks.isDeityPanelOpen(),
+      open: () => this.callbacks.onSetDeityPanelOpen(true),
+      close: () => this.callbacks.onSetDeityPanelOpen(false),
+      getTitle: (open) => (open ? 'Close Deity panel' : 'Open Deity panel'),
+    });
 
     this.chronicleBtn = document.createElement('button');
     this.chronicleBtn.type = 'button';
-    this.chronicleBtn.className = 'hud-btn panel-toggle-btn active';
+    this.chronicleBtn.className = 'hud-btn panel-toggle-btn';
     this.chronicleBtn.textContent = '📜 Chronicle';
-    this.chronicleBtn.title = 'Hide Living Chronicle';
-    this.chronicleBtn.setAttribute('aria-pressed', 'true');
-    this.chronicleBtn.addEventListener('click', () => this.callbacks.onToggleChroniclePanel());
+    this.chroniclePill = bindDialogPill({
+      button: this.chronicleBtn,
+      isOpen: () => this.callbacks.isChroniclePanelOpen(),
+      open: () => this.callbacks.onSetChroniclePanelOpen(true),
+      close: () => this.callbacks.onSetChroniclePanelOpen(false),
+      getTitle: (open) => (open ? 'Close Living Chronicle' : 'Open Living Chronicle'),
+    });
 
     panelGroup.append(this.deityBtn, this.chronicleBtn);
     eventSlot.append(this.eventBadgeEl, panelGroup);
@@ -361,23 +404,24 @@ export class TopBar {
     this.zenBtn.classList.toggle('active', active);
   }
 
-  setDirectoryOpen(open: boolean): void {
-    this.kinBtn.classList.toggle('active', open);
+  /** Synchronizes every dialog-opening pill's active, ARIA, and tooltip state. */
+  syncDialogPills(): void {
+    this.kinPill.sync();
+    this.youngSlot.pillHandle.sync();
+    this.buildingsSlot.pillHandle.sync();
+    this.tradeSlot.pillHandle.sync();
+    this.pioneersSlot.pillHandle.sync();
+    this.deityPill.sync();
+    this.chroniclePill.sync();
+    this.eventPill.sync();
+    for (const nodes of this.settlementPills.values()) {
+      nodes.pillHandle.sync();
+    }
   }
 
-  setDeityOpen(open: boolean): void {
-    this.deityBtn.classList.toggle('active', open);
-    this.deityBtn.setAttribute('aria-pressed', String(open));
-    this.deityBtn.title = open ? 'Hide Deity panel' : 'Open Deity panel';
-  }
+  update(world: WorldState, inCreaturePov: boolean, selection: SelectionTarget = null): void {
+    this.activeSelection = selection;
 
-  setChronicleOpen(open: boolean): void {
-    this.chronicleBtn.classList.toggle('active', open);
-    this.chronicleBtn.setAttribute('aria-pressed', String(open));
-    this.chronicleBtn.title = open ? 'Hide Living Chronicle' : 'Open Living Chronicle';
-  }
-
-  update(world: WorldState, inCreaturePov: boolean): void {
     // 1. POV button text (fixed min-width in CSS prevents horizontal shift)
     const nextPovText = inCreaturePov ? '🌍 World View' : '👁 Creature View';
     if (this.povToggleBtn.textContent !== nextPovText) {
@@ -437,36 +481,34 @@ export class TopBar {
     const activeRegional = world.festivals.activeCelebrations.find((c) => c.scope === 'regional');
     const activeLocals = world.festivals.activeCelebrations.filter((c) => c.scope === 'local');
 
-    let nextEventKey = '';
     let nextTargets: string[] = [];
 
     this.eventBadgeEl.classList.remove('scope-national', 'scope-regional', 'scope-local', 'is-idle');
     if (nationalHoliday) {
-      nextEventKey = nationalHoliday.id;
       nextTargets = [
         nationalHoliday.hostSettlementId,
         ...nationalHoliday.participatingSettlementIds.filter((id) => id !== nationalHoliday.hostSettlementId),
       ];
       const hostName = world.getSettlement(nationalHoliday.hostSettlementId)?.name;
       this.eventBadgeEl.classList.add('scope-national');
-      this.eventBadgeEl.title = hostName
+      this.eventTooltipClosed = hostName
         ? `${nationalHoliday.theme} — Click to go to ${hostName}`
         : `${nationalHoliday.theme} — Click to visit celebration`;
+      this.eventTooltipOpen = `${nationalHoliday.theme} — Click to close inspector`;
       this.setTextIfChanged(this.eventIconEl, nationalHoliday.icon);
       this.setTextIfChanged(this.eventTextEl, `Holiday: ${nationalHoliday.name}`);
     } else if (activeRegional) {
-      nextEventKey = activeRegional.id;
       nextTargets = [activeRegional.hostSettlementId];
       const hostName = world.getSettlement(activeRegional.hostSettlementId)?.name;
       this.eventBadgeEl.classList.add('scope-regional');
-      this.eventBadgeEl.title = hostName
+      this.eventTooltipClosed = hostName
         ? `${activeRegional.theme} — Click to go to ${hostName}`
         : `${activeRegional.theme} — Click to visit celebration`;
+      this.eventTooltipOpen = `${activeRegional.theme} — Click to close inspector`;
       this.setTextIfChanged(this.eventIconEl, activeRegional.icon);
       this.setTextIfChanged(this.eventTextEl, `${activeRegional.name} (${celebratingCount})`);
     } else if (activeLocals.length > 0 || celebratingCount > 0) {
       if (activeLocals.length > 0) {
-        nextEventKey = activeLocals.map((c) => c.id).join(',');
         nextTargets = Array.from(new Set(activeLocals.map((c) => c.hostSettlementId)));
       } else {
         const fallbackIds = new Set<string>();
@@ -476,27 +518,26 @@ export class TopBar {
           }
         }
         nextTargets = Array.from(fallbackIds);
-        nextEventKey = `local:${nextTargets.join(',')}`;
       }
       const primaryLocal = activeLocals[0];
       const hostName = nextTargets[0] ? world.getSettlement(nextTargets[0])?.name : undefined;
       this.eventBadgeEl.classList.add('scope-local');
-      this.eventBadgeEl.title = primaryLocal
+      this.eventTooltipClosed = primaryLocal
         ? `${primaryLocal.name}: ${primaryLocal.theme} — Click to go to ${hostName ?? 'celebration'}`
         : hostName
           ? `Village celebration underway — Click to go to ${hostName}`
           : 'Village celebration underway — Click to visit';
+      this.eventTooltipOpen = primaryLocal
+        ? `${primaryLocal.name}: ${primaryLocal.theme} — Click to close inspector`
+        : 'Village celebration underway — Click to close inspector';
       this.setTextIfChanged(this.eventIconEl, primaryLocal?.icon ?? '🎉');
       this.setTextIfChanged(this.eventTextEl, `${celebratingCount} Celebrating`);
     } else {
       this.eventBadgeEl.classList.add('is-idle');
-      this.eventBadgeEl.title = '';
+      this.eventTooltipClosed = '';
+      this.eventTooltipOpen = '';
     }
 
-    if (nextEventKey !== this.activeEventKey) {
-      this.activeEventKey = nextEventKey;
-      this.eventCycleIndex = 0;
-    }
     this.activeEventSettlementIds = nextTargets;
     this.eventBadgeEl.disabled = nextTargets.length === 0;
 
@@ -532,21 +573,71 @@ export class TopBar {
       this.setTextIfChanged(nodes.metaLabelEl, profile.shortLabel);
       this.setTextIfChanged(nodes.popEl, String(pop));
 
-      const nextTitle = cel
+      nodes.tooltipState.base = cel
         ? `${s.name} — ${cel.icon} ${cel.name} (${cel.scope}): ${cel.theme}`
         : `${s.name} — ${profile.title} (${getBiomeDisplayName(s.biome)}): ${profile.summary}`;
-      if (nodes.button.title !== nextTitle) {
-        nodes.button.title = nextTitle;
-      }
     }
 
     // Remove pills only if a settlement no longer exists (e.g. after New World reset)
     for (const [id, nodes] of this.settlementPills) {
       if (!activeIds.has(id)) {
+        nodes.pillHandle.dispose();
         nodes.button.remove();
         this.settlementPills.delete(id);
       }
     }
+
+    this.syncDialogPills();
+  }
+
+  dispose(): void {
+    this.kinPill.dispose();
+    this.youngSlot.pillHandle.dispose();
+    this.buildingsSlot.pillHandle.dispose();
+    this.tradeSlot.pillHandle.dispose();
+    this.pioneersSlot.pillHandle.dispose();
+    this.deityPill.dispose();
+    this.chroniclePill.dispose();
+    this.eventPill.dispose();
+    for (const nodes of this.settlementPills.values()) {
+      nodes.pillHandle.dispose();
+    }
+    this.settlementPills.clear();
+  }
+
+  private createTelemetryPill(
+    tab: RealmOverviewTab,
+    icon: string,
+    label: string,
+    summaryTitle: string,
+  ): TelemetrySlotNodes {
+    const root = document.createElement('button');
+    root.type = 'button';
+    root.className = 'telemetry-slot telemetry-slot-btn';
+
+    const iconEl = document.createElement('span');
+    iconEl.className = 'telemetry-icon';
+    iconEl.textContent = icon;
+
+    const valueEl = document.createElement('span');
+    valueEl.className = 'telemetry-value';
+    valueEl.textContent = '0';
+
+    const labelEl = document.createElement('span');
+    labelEl.className = 'telemetry-label';
+    labelEl.textContent = label;
+
+    root.append(iconEl, valueEl, labelEl);
+
+    const pillHandle = bindDialogPill({
+      button: root,
+      isOpen: () => this.callbacks.isRealmOverviewTabOpen(tab),
+      open: () => this.callbacks.onOpenRealmOverviewTab(tab),
+      close: () => this.callbacks.onCloseRealmOverview(),
+      getTitle: (open) => (open ? `Close ${summaryTitle}` : `Open ${summaryTitle}`),
+    });
+
+    return { root, valueEl, pillHandle };
   }
 
   private createSettlementPill(settlementId: string): SettlementPillNodes {
@@ -574,9 +665,32 @@ export class TopBar {
     metaWrap.append(metaLabelEl, sepEl, popEl);
 
     button.append(dotEl, iconEl, nameEl, metaWrap);
-    button.addEventListener('click', () => this.callbacks.onFocusSettlement(settlementId));
 
-    return { button, dotEl, iconEl, nameEl, metaLabelEl, popEl };
+    const tooltipState = { base: '' };
+    const pillHandle = bindDialogPill({
+      button,
+      isOpen: () =>
+        this.activeSelection?.kind === 'settlement' && this.activeSelection.id === settlementId,
+      open: () => this.callbacks.onFocusSettlement(settlementId),
+      close: () => this.callbacks.onCloseInspector(),
+      getTitle: (open) => {
+        if (!tooltipState.base) return '';
+        return open
+          ? `${tooltipState.base} — Click to close inspector`
+          : `${tooltipState.base} — Click to inspect`;
+      },
+    });
+
+    return {
+      button,
+      dotEl,
+      iconEl,
+      nameEl,
+      metaLabelEl,
+      popEl,
+      pillHandle,
+      tooltipState,
+    };
   }
 
   private updateSlot(slot: TelemetrySlotNodes, count: number): void {

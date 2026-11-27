@@ -210,9 +210,9 @@ export class GameEngine {
 
     this.onKeyDownBound = (e: KeyboardEvent) => {
       const activeTag = (document.activeElement as HTMLElement | null)?.tagName;
-      if (e.code === 'Escape' && this.hud.isCreatureDirectoryOpen()) {
+      if (e.code === 'Escape' && this.hud.isAnyModalOpen()) {
         e.preventDefault();
-        this.hud.closeCreatureDirectory();
+        this.hud.closeModals();
         return;
       }
       if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return;

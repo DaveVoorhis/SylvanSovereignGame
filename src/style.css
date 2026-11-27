@@ -272,8 +272,39 @@ body,
   transition: opacity 0.25s ease;
 }
 
+.telemetry-slot-btn {
+  font-family: inherit;
+  cursor: pointer;
+  transition: opacity 0.2s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
+}
+
+.telemetry-slot-btn:hover {
+  opacity: 1;
+  background: rgba(229, 190, 109, 0.16);
+  border-color: rgba(229, 190, 109, 0.55);
+  color: #f9eac4;
+}
+
+.telemetry-slot-btn.active {
+  opacity: 1;
+  background: rgba(101, 184, 119, 0.32);
+  border-color: var(--accent-moss);
+  color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(101, 184, 119, 0.28);
+}
+
+.telemetry-slot-btn.active .telemetry-value,
+.telemetry-slot-btn:hover .telemetry-value {
+  color: inherit;
+}
+
 .telemetry-slot.is-empty {
-  opacity: 0.38;
+  opacity: 0.58;
+}
+
+.telemetry-slot-btn.is-empty:hover,
+.telemetry-slot-btn.is-empty.active {
+  opacity: 1;
 }
 
 .telemetry-icon {
@@ -449,6 +480,17 @@ body,
   background: linear-gradient(90deg, rgba(255, 205, 92, 0.2), rgba(255, 120, 175, 0.2));
 }
 
+.settlement-pill.active {
+  background: rgba(101, 184, 119, 0.32);
+  border-color: var(--accent-moss);
+  color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(101, 184, 119, 0.28);
+}
+
+.settlement-pill.active small {
+  color: rgba(235, 248, 236, 0.85);
+}
+
 .topbar-event-slot {
   display: flex;
   align-items: center;
@@ -527,6 +569,12 @@ body,
   border-color: rgba(255, 150, 196, 0.68);
   background: linear-gradient(90deg, rgba(255, 206, 104, 0.26), rgba(255, 122, 178, 0.26));
   color: #fff2c2;
+}
+
+.celebration-pill.active {
+  border-color: rgba(255, 236, 179, 0.92);
+  box-shadow: 0 0 0 1.5px rgba(255, 236, 179, 0.55), 0 0 12px rgba(255, 206, 104, 0.28);
+  filter: brightness(1.14);
 }
 
 /* Buttons & Selects */
@@ -2245,4 +2293,354 @@ body,
   gap: 10px;
   padding: 12px 14px 14px;
   border-top: 1px solid rgba(176, 212, 172, 0.12);
+}
+
+/* =========================================================================
+   Realm Overview Modal (Young, Buildings, Trade, Pioneers)
+   ========================================================================= */
+.ro-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ro-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 19px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-main);
+}
+
+.ro-tab.active .ro-tab-badge {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+.ro-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ro-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+  gap: 10px;
+}
+
+.ro-kpi-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 11px 14px;
+  border-radius: 10px;
+  background: rgba(7, 14, 10, 0.52);
+  border: 1px solid rgba(176, 212, 172, 0.16);
+}
+
+.ro-kpi-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.ro-kpi-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--accent-gold);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.ro-kpi-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.ro-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ro-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ro-section-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.ro-filter-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ro-filter-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.ro-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(255px, 1fr));
+  gap: 9px;
+}
+
+.ro-party-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ro-info-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(7, 14, 10, 0.46);
+  border: 1px solid rgba(176, 212, 172, 0.15);
+}
+
+.ro-info-card.is-highlight {
+  border-color: rgba(229, 190, 109, 0.34);
+  background: rgba(24, 34, 24, 0.56);
+}
+
+.ro-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.ro-card-metrics {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.ro-card-foot {
+  font-size: 11px;
+  color: var(--text-muted);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 6px;
+}
+
+.ro-pill-badge,
+.ro-status-pill,
+.ro-stance-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-muted);
+}
+
+.ro-status-pill.is-ready,
+.ro-stance-pill.stance-allied,
+.ro-stance-pill.stance-friendly {
+  background: rgba(101, 184, 119, 0.2);
+  border-color: rgba(101, 184, 119, 0.45);
+  color: #cbf2d2;
+}
+
+.ro-stance-pill.stance-tense {
+  background: rgba(229, 190, 109, 0.18);
+  border-color: rgba(229, 190, 109, 0.45);
+  color: #f9e4ad;
+}
+
+.ro-stance-pill.stance-war {
+  background: rgba(224, 106, 96, 0.22);
+  border-color: rgba(224, 106, 96, 0.5);
+  color: #ffc8c2;
+}
+
+.ro-progress-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 140px;
+}
+
+.ro-progress-track {
+  flex: 1 1 70px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+}
+
+.ro-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #56a869, #a4db8c);
+}
+
+.ro-progress-fill.is-amber {
+  background: linear-gradient(90deg, #d38b47, #f0c26b);
+}
+
+.ro-progress-text {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ro-inline-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #dcebd9;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ro-inline-link:hover {
+  color: var(--accent-gold);
+  text-decoration: underline;
+}
+
+.ro-muted {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.ro-arrow {
+  color: var(--accent-gold);
+  margin: 0 5px;
+  font-weight: 600;
+}
+
+.ro-gen-tag {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.ro-chip-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ro-arch-chip,
+.ro-res-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(176, 212, 172, 0.16);
+  font-size: 11px;
+  color: var(--text-main);
+  margin-right: 4px;
+}
+
+.ro-stockpile-cell {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.ro-ledger-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ro-ledger-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 11px;
+  border-radius: 8px;
+  background: rgba(7, 14, 10, 0.44);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 11.5px;
+}
+
+.ro-ledger-text {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ro-ledger-day {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--accent-gold);
+  font-variant-numeric: tabular-nums;
+}
+
+.ro-btn-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ro-member-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  padding-top: 7px;
+}
+
+.ro-member-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+}
+
+.ro-member-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }

@@ -6,6 +6,8 @@ import { CreatureDirectoryModal } from './CreatureDirectoryModal';
 import { CreaturePovBar } from './CreaturePovBar';
 import { DeityPanel } from './DeityPanel';
 import { InspectorPanel } from './InspectorPanel';
+import type { RealmOverviewTab } from './RealmOverviewLogic';
+import { RealmOverviewModal } from './RealmOverviewModal';
 import { TopBar } from './TopBar';
 
 export interface HudCallbacks {
@@ -40,6 +42,7 @@ export class HudManager {
   private readonly chroniclePanel: ChroniclePanel;
   private readonly inspectorPanel: InspectorPanel;
   private readonly directoryModal: CreatureDirectoryModal;
+  private readonly realmOverviewModal: RealmOverviewModal;
   private readonly povBar: CreaturePovBar;
   private readonly footerHint: HTMLElement;
   private readonly zenToast: HTMLElement;
@@ -53,26 +56,10 @@ export class HudManager {
     this.root = root;
     root.innerHTML = '';
 
-    this.topBar = new TopBar({
-      onSetSpeed: callbacks.onSetSpeed,
-      onToggleCinematic: callbacks.onToggleCinematic,
-      onToggleCreatureView: callbacks.onToggleCreatureView,
-      onToggleCreatureDirectory: () => this.toggleCreatureDirectory(),
-      onToggleDeityPanel: () => this.toggleDeityPanel(),
-      onToggleChroniclePanel: () => this.toggleChroniclePanel(),
-      onToggleZenMode: callbacks.onToggleZenMode,
-      onResetOverview: callbacks.onResetOverview,
-      onNewWorld: callbacks.onNewWorld,
-      onChangeQuality: callbacks.onChangeQuality,
-      onFocusSettlement: callbacks.onFocusSettlement,
-    });
-
     this.deityPanel = new DeityPanel(callbacks.onWhisper, () => this.setDeityPanelOpen(false));
     this.chroniclePanel = new ChroniclePanel(callbacks.onFocusPosition, () =>
       this.setChroniclePanelOpen(false),
     );
-    this.topBar.setDeityOpen(this.deityPanel.isOpen());
-    this.topBar.setChronicleOpen(this.chroniclePanel.isOpen());
 
     this.inspectorPanel = new InspectorPanel({
       onClose: callbacks.onClearSelection,
@@ -85,11 +72,25 @@ export class HudManager {
 
     this.directoryModal = new CreatureDirectoryModal({
       onClose: () => {
-        this.topBar.setDirectoryOpen(false);
+        this.topBar.syncDialogPills();
       },
       onInspectCreature: callbacks.onInspectCreature,
       onEnterCreaturePov: callbacks.onEnterCreaturePov,
       onFocusSettlement: callbacks.onFocusSettlement,
+    });
+
+    this.realmOverviewModal = new RealmOverviewModal({
+      onClose: () => {
+        this.topBar.syncDialogPills();
+      },
+      onTabChange: () => {
+        this.topBar.syncDialogPills();
+      },
+      onInspectCreature: callbacks.onInspectCreature,
+      onEnterCreaturePov: callbacks.onEnterCreaturePov,
+      onFocusSettlement: callbacks.onFocusSettlement,
+      onFocusPosition: callbacks.onFocusPosition,
+      onOpenLineage: (creatureId) => this.openCreatureLineage(creatureId),
     });
 
     this.povBar = new CreaturePovBar({
@@ -97,6 +98,27 @@ export class HudManager {
       onNextCreature: callbacks.onNextCreature,
       onRandomCreature: callbacks.onRandomCreature,
       onExitPov: callbacks.onExitCreaturePov,
+    });
+
+    this.topBar = new TopBar({
+      onSetSpeed: callbacks.onSetSpeed,
+      onToggleCinematic: callbacks.onToggleCinematic,
+      onToggleCreatureView: callbacks.onToggleCreatureView,
+      isCreatureDirectoryOpen: () => this.directoryModal.isOpen(),
+      onSetCreatureDirectoryOpen: (open) => this.setCreatureDirectoryOpen(open),
+      isRealmOverviewTabOpen: (tab) => this.realmOverviewModal.isTabOpen(tab),
+      onOpenRealmOverviewTab: (tab) => this.openRealmOverviewTab(tab),
+      onCloseRealmOverview: () => this.closeRealmOverview(),
+      isDeityPanelOpen: () => this.deityPanel.isOpen(),
+      onSetDeityPanelOpen: (open) => this.setDeityPanelOpen(open),
+      isChroniclePanelOpen: () => this.chroniclePanel.isOpen(),
+      onSetChroniclePanelOpen: (open) => this.setChroniclePanelOpen(open),
+      onToggleZenMode: callbacks.onToggleZenMode,
+      onResetOverview: callbacks.onResetOverview,
+      onNewWorld: callbacks.onNewWorld,
+      onChangeQuality: callbacks.onChangeQuality,
+      onFocusSettlement: callbacks.onFocusSettlement,
+      onCloseInspector: callbacks.onClearSelection,
     });
 
     this.footerHint = document.createElement('div');
@@ -117,6 +139,7 @@ export class HudManager {
       this.footerHint,
       this.zenToast,
       this.directoryModal.element,
+      this.realmOverviewModal.element,
     );
 
     if (typeof ResizeObserver !== 'undefined') {
@@ -134,7 +157,7 @@ export class HudManager {
 
   setDeityPanelOpen(open: boolean): void {
     this.deityPanel.setOpen(open);
-    this.topBar.setDeityOpen(open);
+    this.topBar.syncDialogPills();
     if (open && this.lastWorld) {
       this.deityPanel.update(this.lastWorld);
     }
@@ -146,7 +169,7 @@ export class HudManager {
 
   setChroniclePanelOpen(open: boolean): void {
     this.chroniclePanel.setOpen(open);
-    this.topBar.setChronicleOpen(open);
+    this.topBar.syncDialogPills();
     if (open && this.lastWorld) {
       this.chroniclePanel.update(this.lastWorld.chronicle.entries, true);
     }
@@ -160,29 +183,70 @@ export class HudManager {
     return this.directoryModal.isOpen();
   }
 
+  isAnyModalOpen(): boolean {
+    return this.directoryModal.isOpen() || this.realmOverviewModal.isOpen();
+  }
+
+  closeModals(): void {
+    if (this.directoryModal.isOpen()) {
+      this.directoryModal.close();
+    }
+    if (this.realmOverviewModal.isOpen()) {
+      this.realmOverviewModal.close();
+    }
+    this.topBar.syncDialogPills();
+  }
+
+  setCreatureDirectoryOpen(open: boolean): void {
+    if (open) {
+      if (!this.lastWorld) return;
+      if (this.realmOverviewModal.isOpen()) {
+        this.realmOverviewModal.close();
+      }
+      this.directoryModal.openModal(this.lastWorld);
+    } else if (this.directoryModal.isOpen()) {
+      this.directoryModal.close();
+    }
+    this.topBar.syncDialogPills();
+  }
+
   toggleCreatureDirectory(): void {
+    this.setCreatureDirectoryOpen(!this.directoryModal.isOpen());
+  }
+
+  openRealmOverviewTab(tab: RealmOverviewTab): void {
     if (!this.lastWorld) return;
-    const nowOpen = this.directoryModal.toggle(this.lastWorld);
-    this.topBar.setDirectoryOpen(nowOpen);
+    if (this.directoryModal.isOpen()) {
+      this.directoryModal.close();
+    }
+    this.realmOverviewModal.openTab(this.lastWorld, tab);
+    this.topBar.syncDialogPills();
+  }
+
+  closeRealmOverview(): void {
+    if (!this.realmOverviewModal.isOpen()) return;
+    this.realmOverviewModal.close();
+    this.topBar.syncDialogPills();
   }
 
   openCreatureLineage(creatureId: string): void {
     if (!this.lastWorld) return;
+    if (this.realmOverviewModal.isOpen()) {
+      this.realmOverviewModal.close();
+    }
     this.directoryModal.openModal(this.lastWorld, { mode: 'tree', focusCreatureId: creatureId });
-    this.topBar.setDirectoryOpen(true);
+    this.topBar.syncDialogPills();
   }
 
   closeCreatureDirectory(): void {
-    if (!this.directoryModal.isOpen()) return;
-    this.directoryModal.close();
-    this.topBar.setDirectoryOpen(false);
+    this.setCreatureDirectoryOpen(false);
   }
 
   /** Toggles Zen Mode: hides all floating HUD panels/text and briefly fades a whisper exit hint. */
   setZenMode(active: boolean): void {
     this.zenMode = active;
-    if (active && this.directoryModal.isOpen()) {
-      this.closeCreatureDirectory();
+    if (active && this.isAnyModalOpen()) {
+      this.closeModals();
     }
     this.root.classList.toggle('zen-mode', active);
     this.topBar.setZenActive(active);
@@ -214,12 +278,13 @@ export class HudManager {
     this.lastWorld = world;
     if (this.zenMode) return;
     this.directoryModal.update(dt, world, force);
+    this.realmOverviewModal.update(dt, world, force);
     this.accumSec += dt;
     if (!force && this.accumSec < 0.22) return;
     this.accumSec = 0;
 
     const inPov = povCreatureId !== null;
-    this.topBar.update(world, inPov);
+    this.topBar.update(world, inPov, selection);
     this.deityPanel.update(world);
     this.chroniclePanel.update(world.chronicle.entries);
     this.inspectorPanel.update(selection, world, isFollowing, povCreatureId);
@@ -228,6 +293,7 @@ export class HudManager {
   }
 
   dispose(): void {
+    this.topBar.dispose();
     if (this.topBarResizeObserver) {
       this.topBarResizeObserver.disconnect();
     }
