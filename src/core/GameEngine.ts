@@ -1,5 +1,14 @@
 import type { QualityPreset } from './Config';
 import { EventBus } from './EventBus';
+import {
+  buildSaveRecord,
+  DEFAULT_AUTOSAVE_SLOT_ID,
+  makeManualSlotId,
+  SaveStore,
+  type SaveGameRecord,
+  type SaveSlotMeta,
+  type SaveViewState,
+} from './SaveStore';
 import { generateRandomSeed } from './SeededRandom';
 import type { SelectionTarget } from './Types';
 import type { CreaturePovPose } from '@rendering/CameraController';
@@ -9,12 +18,12 @@ import { WorldState } from '@simulation/WorldState';
 import { HudManager } from '@ui/HudManager';
 import { nextPaintFrame, type SplashScreen } from '@ui/SplashScreen';
 
+const AUTOSAVE_INTERVAL_SEC = 25;
+
 /**
- * Picks the starting world seed on page load: respects an explicit `?seed=<int>`
- * URL query parameter for reproducible sharing, otherwise generates a fresh
- * random seed so every load creates a brand-new procedural terrain layout.
+ * Reads an explicit `?seed=<int>` URL query parameter if provided.
  */
-function resolveInitialSeed(): number {
+function resolveExplicitUrlSeed(): number | null {
   if (typeof window !== 'undefined' && window.location?.search) {
     const raw = new URLSearchParams(window.location.search).get('seed');
     if (raw !== null && /^\d+$/.test(raw.trim())) {
@@ -22,7 +31,11 @@ function resolveInitialSeed(): number {
       if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
     }
   }
-  return generateRandomSeed();
+  return null;
+}
+
+function resolveInitialSeed(): number {
+  return resolveExplicitUrlSeed() ?? generateRandomSeed();
 }
 
 /**
@@ -36,6 +49,7 @@ export class GameEngine {
   private readonly sceneManager: SceneManager;
   private readonly hud: HudManager;
   private readonly splash: SplashScreen | null;
+  private readonly saveStore: SaveStore;
 
   private simSpeed = 1;
   private selection: SelectionTarget = null;
@@ -45,9 +59,13 @@ export class GameEngine {
   private isRebuilding = false;
   private rafId: number | null = null;
   private lastFrameMs = 0;
+  private autosaveAccumSec = 0;
+  private autosaveInFlight = false;
 
   private readonly onKeyDownBound: (e: KeyboardEvent) => void;
   private readonly onFullscreenChangeBound: () => void;
+  private readonly onVisibilityChangeBound: () => void;
+  private readonly onPageHideBound: () => void;
 
   static async create(
     canvas: HTMLCanvasElement,
@@ -55,16 +73,40 @@ export class GameEngine {
     splash?: SplashScreen | null,
   ): Promise<GameEngine> {
     const bus = new EventBus();
-    splash?.setProgress(10, 'Carving alpine peaks, watersheds & sunlit shores…');
-    await nextPaintFrame();
+    const saveStore = new SaveStore();
+    const explicitSeed = resolveExplicitUrlSeed();
 
-    const world = new WorldState(bus, { seed: resolveInitialSeed(), initialWaterwaySettlements: 1 });
-    splash?.setProgress(22, 'Awakening the woodland sovereign & setting the stage…');
-    await nextPaintFrame();
+    let loadedAutosave: SaveGameRecord | null = null;
+    if (explicitSeed === null && saveStore.isAvailable()) {
+      splash?.setProgress(6, 'Checking saved woodland realms…');
+      loadedAutosave = await saveStore.loadAutosave();
+    }
+
+    let world: WorldState;
+    if (loadedAutosave) {
+      splash?.setProgress(
+        12,
+        `Restoring saved realm (Day ${loadedAutosave.meta.day} · ${loadedAutosave.meta.deityName})…`,
+      );
+      await nextPaintFrame();
+      world = WorldState.fromSnapshot(bus, loadedAutosave.world);
+      splash?.setProgress(22, 'Rebuilding villages, kin & living memories…');
+      await nextPaintFrame();
+    } else {
+      splash?.setProgress(10, 'Carving alpine peaks, watersheds & sunlit shores…');
+      await nextPaintFrame();
+      world = new WorldState(bus, {
+        seed: explicitSeed ?? generateRandomSeed(),
+        initialWaterwaySettlements: 1,
+      });
+      splash?.setProgress(22, 'Awakening the woodland sovereign & setting the stage…');
+      await nextPaintFrame();
+    }
 
     const engine = new GameEngine(canvas, hudRoot, {
       bus,
       world,
+      saveStore,
       deferSceneBuild: true,
       splash: splash ?? null,
     });
@@ -73,6 +115,11 @@ export class GameEngine {
       (pct, label) => splash?.setProgress(pct, label),
       true,
     );
+    if (loadedAutosave?.view) {
+      engine.applyViewState(loadedAutosave.view);
+    } else if (!loadedAutosave && explicitSeed === null) {
+      void engine.persistAutosaveQuietly();
+    }
     engine.refreshHudNow();
     return engine;
   }
@@ -83,12 +130,14 @@ export class GameEngine {
     init?: {
       bus?: EventBus;
       world?: WorldState;
+      saveStore?: SaveStore;
       deferSceneBuild?: boolean;
       splash?: SplashScreen | null;
     },
   ) {
     this.bus = init?.bus ?? new EventBus();
     this.splash = init?.splash ?? null;
+    this.saveStore = init?.saveStore ?? new SaveStore();
     this.world = init?.world ?? new WorldState(this.bus, { seed: resolveInitialSeed(), initialWaterwaySettlements: 1 });
     this.sceneManager = new SceneManager(canvas, this.world, 'high', init?.deferSceneBuild ?? false);
 
@@ -185,6 +234,18 @@ export class GameEngine {
         this.sceneManager.cameraController.follow(null);
         this.refreshHudNow();
       },
+      onListSaveSlots: () => this.saveStore.listSlots(),
+      onSaveAutosave: () => this.saveSlot(DEFAULT_AUTOSAVE_SLOT_ID, 'Autosave'),
+      onSaveNewSlot: (name) => {
+        const fallback = `Day ${this.world.day} · ${this.world.season[0].toUpperCase()}${this.world.season.slice(1)}`;
+        const cleanName = name.trim() || fallback;
+        return this.saveSlot(makeManualSlotId(cleanName), cleanName);
+      },
+      onOverwriteSlot: (slotId, name) => this.saveSlot(slotId, name),
+      onLoadSaveSlot: (slotId) => this.loadSlotAsync(slotId),
+      onDeleteSaveSlot: (slotId) => this.saveStore.deleteSlot(slotId),
+      onExportSaveRecord: () => this.buildCurrentSaveRecord(DEFAULT_AUTOSAVE_SLOT_ID, 'Exported Realm'),
+      onImportSaveRecord: (record) => this.loadSaveRecordAsync(record),
     });
 
     this.bus.on('selection:changed', (target) => {
@@ -260,6 +321,17 @@ export class GameEngine {
     };
     document.addEventListener('fullscreenchange', this.onFullscreenChangeBound);
     document.addEventListener('webkitfullscreenchange', this.onFullscreenChangeBound);
+
+    this.onVisibilityChangeBound = () => {
+      if (document.visibilityState === 'hidden') {
+        void this.persistAutosaveQuietly();
+      }
+    };
+    this.onPageHideBound = () => {
+      void this.persistAutosaveQuietly();
+    };
+    document.addEventListener('visibilitychange', this.onVisibilityChangeBound);
+    window.addEventListener('pagehide', this.onPageHideBound);
 
     this.refreshHudNow();
   }
@@ -462,6 +534,11 @@ export class GameEngine {
         for (let i = 0; i < steps; i++) {
           this.world.step(stepDt);
         }
+        this.autosaveAccumSec += realDt;
+        if (this.autosaveAccumSec >= AUTOSAVE_INTERVAL_SEC) {
+          this.autosaveAccumSec = 0;
+          void this.persistAutosaveQuietly();
+        }
       }
 
       // If the currently viewed creature fell, smoothly jump to the next living creature or return to world view
@@ -527,10 +604,126 @@ export class GameEngine {
         (pct, label) => this.splash?.setProgress(pct, label),
         true,
       );
+      this.autosaveAccumSec = 0;
+      void this.persistAutosaveQuietly();
       this.bus.emit('world:reset', { seed });
       this.refreshHudNow();
       this.lastFrameMs = performance.now();
       await this.splash?.dismiss(220);
+    } finally {
+      this.isRebuilding = false;
+    }
+  }
+
+  private captureViewState(): SaveViewState {
+    const cam = this.sceneManager.cameraController.getWorldViewState();
+    return {
+      simSpeed: this.simSpeed,
+      cameraPosition: cam.position,
+      cameraTarget: cam.target,
+      cinematicDrift: cam.cinematicDrift,
+      povCreatureId: this.povCreatureId,
+      selection: this.selection ? { ...this.selection } : null,
+      deityPanelOpen: this.hud.isDeityPanelOpen(),
+      chroniclePanelOpen: this.hud.isChroniclePanelOpen(),
+    };
+  }
+
+  private applyViewState(view: SaveViewState): void {
+    this.simSpeed = view.simSpeed;
+    this.hud.setActiveSpeed(view.simSpeed);
+    this.sceneManager.cameraController.setWorldViewState({
+      position: view.cameraPosition,
+      target: view.cameraTarget,
+      cinematicDrift: view.cinematicDrift,
+    });
+    this.hud.setCinematicActive(view.cinematicDrift);
+    this.hud.setDeityPanelOpen(view.deityPanelOpen);
+    this.hud.setChroniclePanelOpen(view.chroniclePanelOpen);
+
+    if (view.povCreatureId) {
+      const host = this.world.getCreature(view.povCreatureId);
+      if (host && host.alive) {
+        this.enterCreaturePov(host.id);
+        return;
+      }
+    }
+
+    if (view.selection) {
+      const valid =
+        (view.selection.kind === 'creature' && Boolean(this.world.getCreature(view.selection.id))) ||
+        (view.selection.kind === 'settlement' && Boolean(this.world.getSettlement(view.selection.id)));
+      if (valid) {
+        this.selection = { ...view.selection };
+        this.sceneManager.setSelection(this.selection);
+      }
+    }
+  }
+
+  private buildCurrentSaveRecord(slotId: string, name: string): SaveGameRecord {
+    return buildSaveRecord({
+      slotId,
+      name,
+      world: this.world,
+      view: this.captureViewState(),
+    });
+  }
+
+  async saveSlot(slotId: string, name: string): Promise<SaveSlotMeta> {
+    const record = this.buildCurrentSaveRecord(slotId, name);
+    await this.saveStore.save(record);
+    return record.meta;
+  }
+
+  private async persistAutosaveQuietly(): Promise<void> {
+    if (this.isRebuilding || this.autosaveInFlight || !this.saveStore.isAvailable()) return;
+    this.autosaveInFlight = true;
+    try {
+      await this.saveSlot(DEFAULT_AUTOSAVE_SLOT_ID, 'Autosave');
+    } catch {
+      // Swallow background autosave errors so gameplay is never interrupted
+    } finally {
+      this.autosaveInFlight = false;
+    }
+  }
+
+  async loadSlotAsync(slotId: string): Promise<boolean> {
+    const record = await this.saveStore.load(slotId);
+    if (!record) return false;
+    return this.loadSaveRecordAsync(record);
+  }
+
+  async loadSaveRecordAsync(record: SaveGameRecord): Promise<boolean> {
+    if (this.isRebuilding) return false;
+    this.isRebuilding = true;
+    try {
+      this.splash?.show(`Restoring "${record.name}"…`);
+      this.splash?.setProgress(12, `Reconstructing Day ${record.meta.day} terrain & villages…`);
+      await nextPaintFrame();
+
+      this.povCreatureId = null;
+      this.selection = null;
+      this.sceneManager.setPovCreatureId(null);
+      this.sceneManager.setSelection(null);
+      this.sceneManager.cameraController.exitCreaturePov(false);
+      this.sceneManager.cameraController.follow(null);
+
+      this.world = WorldState.fromSnapshot(this.bus, record.world);
+      await this.sceneManager.rebuildWorldSceneAsync(
+        this.world,
+        (pct, label) => this.splash?.setProgress(pct, label),
+        true,
+      );
+      if (record.view) {
+        this.applyViewState(record.view);
+      }
+      this.autosaveAccumSec = 0;
+      this.bus.emit('world:reset', { seed: this.world.config.seed });
+      this.refreshHudNow();
+      this.lastFrameMs = performance.now();
+      await this.splash?.dismiss(220);
+      void this.persistAutosaveQuietly();
+      return true;
     } finally {
       this.isRebuilding = false;
     }
@@ -569,6 +762,8 @@ export class GameEngine {
     window.removeEventListener('keydown', this.onKeyDownBound);
     document.removeEventListener('fullscreenchange', this.onFullscreenChangeBound);
     document.removeEventListener('webkitfullscreenchange', this.onFullscreenChangeBound);
+    document.removeEventListener('visibilitychange', this.onVisibilityChangeBound);
+    window.removeEventListener('pagehide', this.onPageHideBound);
     this.hud.dispose();
     if (this.rafId !== null) {
       cancelAnimationFrame(this.rafId);

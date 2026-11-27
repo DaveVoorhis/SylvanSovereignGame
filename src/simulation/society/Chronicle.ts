@@ -1,6 +1,11 @@
 import type { EventBus } from '@core/EventBus';
 import type { ChronicleCategory, ChronicleEntry, Season, Vec2 } from '@core/Types';
 
+export interface ChronicleSnapshot {
+  readonly seq: number;
+  readonly entries: readonly ChronicleEntry[];
+}
+
 /**
  * Maintains the living mythic chronicle of the woodland realm.
  */
@@ -36,5 +41,26 @@ export class Chronicle {
 
     this.bus.emit('chronicle:added', entry);
     return entry;
+  }
+
+  exportSnapshot(): ChronicleSnapshot {
+    return {
+      seq: this.seq,
+      entries: this.entries.map((e) => ({
+        ...e,
+        position: e.position ? { x: e.position.x, z: e.position.z } : undefined,
+      })),
+    };
+  }
+
+  importSnapshot(snapshot: ChronicleSnapshot): void {
+    this.seq = Math.max(1, Math.floor(snapshot.seq));
+    this.entries.length = 0;
+    for (const e of snapshot.entries.slice(0, this.maxEntries)) {
+      this.entries.push({
+        ...e,
+        position: e.position ? { x: e.position.x, z: e.position.z } : undefined,
+      });
+    }
   }
 }

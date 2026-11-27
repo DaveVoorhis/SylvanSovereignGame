@@ -11,6 +11,18 @@ import type { Settlement } from '@simulation/settlements/Settlement';
 import { HEARTH_FIRE_KEEP_OUT_RADIUS } from '@simulation/terrain/ObstacleMap';
 import type { WorldState } from '@simulation/WorldState';
 
+export interface FestivalSnapshot {
+  readonly seq: number;
+  readonly localTimer: number;
+  readonly regionalTimer: number;
+  readonly nationalTimer: number;
+  readonly totalLocalFestivalsHeld: number;
+  readonly totalRegionalEventsHeld: number;
+  readonly totalNationalHolidaysHeld: number;
+  readonly settlementCooldowns: readonly [string, number][];
+  readonly activeCelebrations: readonly ActiveCelebration[];
+}
+
 interface FestivalTemplate {
   readonly title: string;
   readonly theme: string;
@@ -838,5 +850,45 @@ export class FestivalSystem {
       copy[j] = tmp;
     }
     return copy.slice(0, Math.max(0, count));
+  }
+
+  exportSnapshot(): FestivalSnapshot {
+    return {
+      seq: this.seq,
+      localTimer: this.localTimer,
+      regionalTimer: this.regionalTimer,
+      nationalTimer: this.nationalTimer,
+      totalLocalFestivalsHeld: this.totalLocalFestivalsHeld,
+      totalRegionalEventsHeld: this.totalRegionalEventsHeld,
+      totalNationalHolidaysHeld: this.totalNationalHolidaysHeld,
+      settlementCooldowns: Array.from(this.settlementCooldowns.entries()),
+      activeCelebrations: this.activeCelebrations.map((c) => ({
+        ...c,
+        participatingSettlementIds: [...c.participatingSettlementIds],
+        position: { x: c.position.x, z: c.position.z },
+      })),
+    };
+  }
+
+  importSnapshot(snapshot: FestivalSnapshot): void {
+    this.seq = snapshot.seq;
+    this.localTimer = snapshot.localTimer;
+    this.regionalTimer = snapshot.regionalTimer;
+    this.nationalTimer = snapshot.nationalTimer;
+    this.totalLocalFestivalsHeld = snapshot.totalLocalFestivalsHeld;
+    this.totalRegionalEventsHeld = snapshot.totalRegionalEventsHeld;
+    this.totalNationalHolidaysHeld = snapshot.totalNationalHolidaysHeld;
+    this.settlementCooldowns.clear();
+    for (const [id, remaining] of snapshot.settlementCooldowns) {
+      this.settlementCooldowns.set(id, remaining);
+    }
+    this.activeCelebrations.length = 0;
+    for (const c of snapshot.activeCelebrations) {
+      this.activeCelebrations.push({
+        ...c,
+        participatingSettlementIds: [...c.participatingSettlementIds],
+        position: { x: c.position.x, z: c.position.z },
+      });
+    }
   }
 }

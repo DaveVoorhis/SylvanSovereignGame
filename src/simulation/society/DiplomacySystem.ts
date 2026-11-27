@@ -2,6 +2,11 @@ import type { DiplomaticStance } from '@core/Types';
 import type { Settlement } from '@simulation/settlements/Settlement';
 import type { WorldState } from '@simulation/WorldState';
 
+export interface DiplomacySnapshot {
+  readonly timer: number;
+  readonly relations: readonly [string, number][];
+}
+
 /**
  * Tracks emergent relationships between woodland settlements:
  * alliances forged by trade, rivalries sparked by ambition, border wars, and truces.
@@ -142,6 +147,21 @@ export class DiplomacySystem {
         world,
         roll < 0 ? 'foraging border dispute' : 'shared harvest festival',
       );
+    }
+  }
+
+  exportSnapshot(): DiplomacySnapshot {
+    return {
+      timer: this.timer,
+      relations: Array.from(this.relations.entries()),
+    };
+  }
+
+  importSnapshot(snapshot: DiplomacySnapshot): void {
+    this.timer = snapshot.timer;
+    this.relations.clear();
+    for (const [key, score] of snapshot.relations) {
+      this.relations.set(key, score);
     }
   }
 }

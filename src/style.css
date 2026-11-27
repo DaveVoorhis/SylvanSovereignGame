@@ -1430,6 +1430,33 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
+/* =========================================================================
+   Save / Load Modal (IndexedDB)
+   ========================================================================= */
+.save-modal {
+  max-width: 780px;
+}
+
+.save-status-banner {
+  padding: 8px 18px;
+  font-size: 12px;
+  background: rgba(101, 184, 119, 0.16);
+  border-bottom: 1px solid rgba(101, 184, 119, 0.32);
+  color: #d6f5dc;
+  flex-shrink: 0;
+}
+
+.save-status-banner.is-error {
+  background: rgba(224, 106, 96, 0.18);
+  border-bottom-color: rgba(224, 106, 96, 0.45);
+  color: #ffd0ca;
+}
+
+.save-del-btn:hover {
+  background: rgba(224, 106, 96, 0.25);
+  border-color: rgba(224, 106, 96, 0.55);
+}
+
 .cmodal-header-right {
   display: flex;
   align-items: center;

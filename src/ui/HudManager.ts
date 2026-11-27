@@ -1,4 +1,5 @@
 import type { QualityPreset } from '@core/Config';
+import type { SaveGameRecord, SaveSlotMeta } from '@core/SaveStore';
 import type { PrayerIntent, SelectionTarget, Vec2 } from '@core/Types';
 import type { WorldState } from '@simulation/WorldState';
 import { ChroniclePanel } from './ChroniclePanel';
@@ -8,6 +9,7 @@ import { DeityPanel } from './DeityPanel';
 import { InspectorPanel } from './InspectorPanel';
 import type { RealmOverviewTab } from './RealmOverviewLogic';
 import { RealmOverviewModal } from './RealmOverviewModal';
+import { SaveLoadModal } from './SaveLoadModal';
 import { TopBar } from './TopBar';
 
 export interface HudCallbacks {
@@ -29,6 +31,14 @@ export interface HudCallbacks {
   onInspectCreature: (creatureId: string) => void;
   onFollowCreature: (creatureId: string) => void;
   onClearSelection: () => void;
+  onListSaveSlots: () => Promise<SaveSlotMeta[]>;
+  onSaveAutosave: () => Promise<SaveSlotMeta>;
+  onSaveNewSlot: (name: string) => Promise<SaveSlotMeta>;
+  onOverwriteSlot: (slotId: string, name: string) => Promise<SaveSlotMeta>;
+  onLoadSaveSlot: (slotId: string) => Promise<boolean>;
+  onDeleteSaveSlot: (slotId: string) => Promise<void>;
+  onExportSaveRecord: () => SaveGameRecord;
+  onImportSaveRecord: (record: SaveGameRecord) => Promise<boolean>;
 }
 
 /**
@@ -43,6 +53,7 @@ export class HudManager {
   private readonly inspectorPanel: InspectorPanel;
   private readonly directoryModal: CreatureDirectoryModal;
   private readonly realmOverviewModal: RealmOverviewModal;
+  private readonly saveLoadModal: SaveLoadModal;
   private readonly povBar: CreaturePovBar;
   private readonly footerHint: HTMLElement;
   private readonly zenToast: HTMLElement;
@@ -93,6 +104,20 @@ export class HudManager {
       onOpenLineage: (creatureId) => this.openCreatureLineage(creatureId),
     });
 
+    this.saveLoadModal = new SaveLoadModal({
+      onClose: () => {
+        this.topBar.syncDialogPills();
+      },
+      onListSlots: callbacks.onListSaveSlots,
+      onSaveAutosave: callbacks.onSaveAutosave,
+      onSaveNewSlot: callbacks.onSaveNewSlot,
+      onOverwriteSlot: callbacks.onOverwriteSlot,
+      onLoadSlot: callbacks.onLoadSaveSlot,
+      onDeleteSlot: callbacks.onDeleteSaveSlot,
+      onExportCurrent: callbacks.onExportSaveRecord,
+      onImportRecord: callbacks.onImportSaveRecord,
+    });
+
     this.povBar = new CreaturePovBar({
       onPrevCreature: callbacks.onPrevCreature,
       onNextCreature: callbacks.onNextCreature,
@@ -113,6 +138,8 @@ export class HudManager {
       onSetDeityPanelOpen: (open) => this.setDeityPanelOpen(open),
       isChroniclePanelOpen: () => this.chroniclePanel.isOpen(),
       onSetChroniclePanelOpen: (open) => this.setChroniclePanelOpen(open),
+      isSaveModalOpen: () => this.saveLoadModal.isOpen(),
+      onSetSaveModalOpen: (open) => this.setSaveModalOpen(open),
       onToggleZenMode: callbacks.onToggleZenMode,
       onResetOverview: callbacks.onResetOverview,
       onNewWorld: callbacks.onNewWorld,
@@ -140,6 +167,7 @@ export class HudManager {
       this.zenToast,
       this.directoryModal.element,
       this.realmOverviewModal.element,
+      this.saveLoadModal.element,
     );
 
     if (typeof ResizeObserver !== 'undefined') {
@@ -153,6 +181,22 @@ export class HudManager {
       this.topBarResizeObserver.observe(this.topBar.element);
       syncOffset();
     }
+  }
+
+  isDeityPanelOpen(): boolean {
+    return this.deityPanel.isOpen();
+  }
+
+  isChroniclePanelOpen(): boolean {
+    return this.chroniclePanel.isOpen();
+  }
+
+  setActiveSpeed(speed: number): void {
+    this.topBar.setActiveSpeed(speed);
+  }
+
+  setCinematicActive(active: boolean): void {
+    this.topBar.setCinematicActive(active);
   }
 
   setDeityPanelOpen(open: boolean): void {
@@ -184,7 +228,11 @@ export class HudManager {
   }
 
   isAnyModalOpen(): boolean {
-    return this.directoryModal.isOpen() || this.realmOverviewModal.isOpen();
+    return (
+      this.directoryModal.isOpen() ||
+      this.realmOverviewModal.isOpen() ||
+      this.saveLoadModal.isOpen()
+    );
   }
 
   closeModals(): void {
@@ -194,6 +242,9 @@ export class HudManager {
     if (this.realmOverviewModal.isOpen()) {
       this.realmOverviewModal.close();
     }
+    if (this.saveLoadModal.isOpen()) {
+      this.saveLoadModal.close();
+    }
     this.topBar.syncDialogPills();
   }
 
@@ -202,6 +253,9 @@ export class HudManager {
       if (!this.lastWorld) return;
       if (this.realmOverviewModal.isOpen()) {
         this.realmOverviewModal.close();
+      }
+      if (this.saveLoadModal.isOpen()) {
+        this.saveLoadModal.close();
       }
       this.directoryModal.openModal(this.lastWorld);
     } else if (this.directoryModal.isOpen()) {
@@ -219,6 +273,9 @@ export class HudManager {
     if (this.directoryModal.isOpen()) {
       this.directoryModal.close();
     }
+    if (this.saveLoadModal.isOpen()) {
+      this.saveLoadModal.close();
+    }
     this.realmOverviewModal.openTab(this.lastWorld, tab);
     this.topBar.syncDialogPills();
   }
@@ -229,10 +286,28 @@ export class HudManager {
     this.topBar.syncDialogPills();
   }
 
+  setSaveModalOpen(open: boolean): void {
+    if (open) {
+      if (this.directoryModal.isOpen()) {
+        this.directoryModal.close();
+      }
+      if (this.realmOverviewModal.isOpen()) {
+        this.realmOverviewModal.close();
+      }
+      this.saveLoadModal.openModal();
+    } else if (this.saveLoadModal.isOpen()) {
+      this.saveLoadModal.close();
+    }
+    this.topBar.syncDialogPills();
+  }
+
   openCreatureLineage(creatureId: string): void {
     if (!this.lastWorld) return;
     if (this.realmOverviewModal.isOpen()) {
       this.realmOverviewModal.close();
+    }
+    if (this.saveLoadModal.isOpen()) {
+      this.saveLoadModal.close();
     }
     this.directoryModal.openModal(this.lastWorld, { mode: 'tree', focusCreatureId: creatureId });
     this.topBar.syncDialogPills();

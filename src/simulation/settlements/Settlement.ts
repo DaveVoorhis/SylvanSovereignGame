@@ -30,6 +30,27 @@ export interface BuildingInstance {
   replacementType?: BuildingType;
 }
 
+export interface SettlementSnapshot {
+  readonly id: string;
+  readonly name: string;
+  readonly bannerColor: number;
+  readonly center: Vec2;
+  readonly groundY: number;
+  readonly biome: BiomeType;
+  readonly adaptation: VillageAdaptationId;
+  readonly foundingSpecies: readonly SpeciesId[];
+  readonly stockpile: ResourceBundle;
+  readonly buildings: readonly BuildingInstance[];
+  readonly tier: SettlementTier;
+  readonly radius: number;
+  readonly treasury: number;
+  readonly prosperity: number;
+  readonly devotionTotal: number;
+  readonly tradeVolume: number;
+  readonly nextPlannedBuilding: BuildingType | null;
+  readonly lastBuiltType: BuildingType | null;
+}
+
 /** Derives the realistic multi-stage construction phase from a building's progress and state. */
 export function getBuildingStage(
   building: Pick<BuildingInstance, 'progress' | 'completed' | 'disassembling'>,
@@ -215,5 +236,61 @@ export class Settlement {
               : 9.5;
     this.radius = Math.min(31, Math.max(tierBaseRadius, farthestDist + 4.5));
     return nextTier;
+  }
+
+  toSnapshot(): SettlementSnapshot {
+    return {
+      id: this.id,
+      name: this.name,
+      bannerColor: this.bannerColor,
+      center: { x: this.center.x, z: this.center.z },
+      groundY: this.groundY,
+      biome: this.biome,
+      adaptation: this.adaptation,
+      foundingSpecies: [...this.foundingSpecies],
+      stockpile: { ...this.stockpile },
+      buildings: this.buildings.map((b) => ({
+        ...b,
+        position: { x: b.position.x, z: b.position.z },
+      })),
+      tier: this.tier,
+      radius: this.radius,
+      treasury: this.treasury,
+      prosperity: this.prosperity,
+      devotionTotal: this.devotionTotal,
+      tradeVolume: this.tradeVolume,
+      nextPlannedBuilding: this.nextPlannedBuilding,
+      lastBuiltType: this.lastBuiltType,
+    };
+  }
+
+  static fromSnapshot(snapshot: SettlementSnapshot): Settlement {
+    const settlement = new Settlement({
+      id: snapshot.id,
+      name: snapshot.name,
+      bannerColor: snapshot.bannerColor,
+      center: { x: snapshot.center.x, z: snapshot.center.z },
+      groundY: snapshot.groundY,
+      biome: snapshot.biome,
+      adaptation: snapshot.adaptation,
+      foundingSpecies: [...snapshot.foundingSpecies],
+    });
+    Object.assign(settlement.stockpile, snapshot.stockpile);
+    settlement.buildings.length = 0;
+    for (const b of snapshot.buildings) {
+      settlement.buildings.push({
+        ...b,
+        position: { x: b.position.x, z: b.position.z },
+      });
+    }
+    settlement.tier = snapshot.tier;
+    settlement.radius = snapshot.radius;
+    settlement.treasury = snapshot.treasury;
+    settlement.prosperity = snapshot.prosperity;
+    settlement.devotionTotal = snapshot.devotionTotal;
+    settlement.tradeVolume = snapshot.tradeVolume;
+    settlement.nextPlannedBuilding = snapshot.nextPlannedBuilding;
+    settlement.lastBuiltType = snapshot.lastBuiltType;
+    return settlement;
   }
 }

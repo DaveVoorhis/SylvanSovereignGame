@@ -26,6 +26,23 @@ export interface EmigrationParty {
   readonly species: SpeciesId[];
 }
 
+export interface SettlementManagerSnapshot {
+  readonly settlementSeq: number;
+  readonly buildingSeq: number;
+  readonly bridgeSeq: number;
+  readonly emigrationSeq: number;
+  readonly expansionCooldown: number;
+  readonly bridgeCooldown: number;
+  readonly emigrationCooldown: number;
+  readonly expansionCursor: number;
+  readonly bridgeCursor: number;
+  readonly emigrationCursor: number;
+  readonly bridgeRngState: number | null;
+  readonly emigrationRngState: number | null;
+  readonly activeEmigrations: readonly EmigrationParty[];
+  readonly bridgeNoRiverUntilSec: readonly [string, number][];
+}
+
 /**
  * Manages woodland settlement creation, organic multi-ring city expansion,
  * environmental adaptation of villages to their biome, pioneer emigration to found new villages,
@@ -1437,6 +1454,58 @@ export class SettlementManager {
     for (const [key, amount] of Object.entries(cost)) {
       const res = key as ResourceType;
       settlement.stockpile[res] = Math.max(0, settlement.stockpile[res] - (amount ?? 0));
+    }
+  }
+
+  exportSnapshot(): SettlementManagerSnapshot {
+    return {
+      settlementSeq: this.settlementSeq,
+      buildingSeq: this.buildingSeq,
+      bridgeSeq: this.bridgeSeq,
+      emigrationSeq: this.emigrationSeq,
+      expansionCooldown: this.expansionCooldown,
+      bridgeCooldown: this.bridgeCooldown,
+      emigrationCooldown: this.emigrationCooldown,
+      expansionCursor: this.expansionCursor,
+      bridgeCursor: this.bridgeCursor,
+      emigrationCursor: this.emigrationCursor,
+      bridgeRngState: this.bridgeRng ? this.bridgeRng.getState() : null,
+      emigrationRngState: this.emigrationRng ? this.emigrationRng.getState() : null,
+      activeEmigrations: Array.from(this.activeEmigrations.values()).map((p) => ({
+        ...p,
+        waypoints: p.waypoints.map((w) => ({ x: w.x, z: w.z })),
+        species: [...p.species],
+      })),
+      bridgeNoRiverUntilSec: Array.from(this.bridgeNoRiverUntilSec.entries()),
+    };
+  }
+
+  importSnapshot(snapshot: SettlementManagerSnapshot): void {
+    this.settlementSeq = snapshot.settlementSeq;
+    this.buildingSeq = snapshot.buildingSeq;
+    this.bridgeSeq = snapshot.bridgeSeq;
+    this.emigrationSeq = snapshot.emigrationSeq;
+    this.expansionCooldown = snapshot.expansionCooldown;
+    this.bridgeCooldown = snapshot.bridgeCooldown;
+    this.emigrationCooldown = snapshot.emigrationCooldown;
+    this.expansionCursor = snapshot.expansionCursor;
+    this.bridgeCursor = snapshot.bridgeCursor;
+    this.emigrationCursor = snapshot.emigrationCursor;
+    this.bridgeRng =
+      snapshot.bridgeRngState !== null ? new SeededRandom(snapshot.bridgeRngState) : null;
+    this.emigrationRng =
+      snapshot.emigrationRngState !== null ? new SeededRandom(snapshot.emigrationRngState) : null;
+    this.activeEmigrations.clear();
+    for (const p of snapshot.activeEmigrations) {
+      this.activeEmigrations.set(p.id, {
+        ...p,
+        waypoints: p.waypoints.map((w) => ({ x: w.x, z: w.z })),
+        species: [...p.species],
+      });
+    }
+    this.bridgeNoRiverUntilSec.clear();
+    for (const [id, sec] of snapshot.bridgeNoRiverUntilSec) {
+      this.bridgeNoRiverUntilSec.set(id, sec);
     }
   }
 }

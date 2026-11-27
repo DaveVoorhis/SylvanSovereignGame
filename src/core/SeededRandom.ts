@@ -90,6 +90,16 @@ export class SeededRandom {
     return mean + z0 * stdDev;
   }
 
+  /** Exports internal 32-bit PRNG state for deterministic save/load snapshots. */
+  getState(): number {
+    return this.state >>> 0;
+  }
+
+  /** Restores internal 32-bit PRNG state from a saved snapshot. */
+  setState(state: number): void {
+    this.state = state >>> 0;
+  }
+
   /** Creates a child PRNG derived deterministically from this stream. */
   fork(): SeededRandom {
     return new SeededRandom(Math.floor(this.next() * 0xffffffff));

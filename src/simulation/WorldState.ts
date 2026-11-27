@@ -10,7 +10,7 @@ import type {
   Vec3,
   WeatherType,
 } from '@core/Types';
-import { Creature } from './creatures/Creature';
+import { Creature, type CreatureSnapshot } from './creatures/Creature';
 import { CreatureAI } from './creatures/CreatureAI';
 import {
   SPECIES_CATALOG,
@@ -18,18 +18,46 @@ import {
   generateCreatureName,
   generateOffspringName,
 } from './creatures/SpeciesCatalog';
-import { ProceduralGod } from './deity/ProceduralGod';
-import type { Settlement } from './settlements/Settlement';
-import { SettlementManager } from './settlements/SettlementManager';
-import { Chronicle } from './society/Chronicle';
-import { DiplomacySystem } from './society/DiplomacySystem';
+import { ProceduralGod, type DeitySnapshot } from './deity/ProceduralGod';
+import { Settlement, type SettlementSnapshot } from './settlements/Settlement';
+import { SettlementManager, type SettlementManagerSnapshot } from './settlements/SettlementManager';
+import { Chronicle, type ChronicleSnapshot } from './society/Chronicle';
+import { DiplomacySystem, type DiplomacySnapshot } from './society/DiplomacySystem';
 import { EconomySystem } from './society/EconomySystem';
-import { FestivalSystem } from './society/FestivalSystem';
+import { FestivalSystem, type FestivalSnapshot } from './society/FestivalSystem';
 import type { BridgeInstance } from './terrain/Bridge';
 import { ObstacleMap } from './terrain/ObstacleMap';
 import { TerrainMap } from './terrain/TerrainMap';
 
 const SEASONS: readonly Season[] = ['spring', 'summer', 'autumn', 'winter'];
+
+/** Full serializable snapshot of a headless WorldState (terrain regenerates deterministically from config.seed). */
+export interface WorldSnapshot {
+  readonly version: 1;
+  readonly config: WorldConfig;
+  readonly rngState: number;
+  readonly elapsedSeconds: number;
+  readonly day: number;
+  readonly timeOfDay: number;
+  readonly season: Season;
+  readonly weather: WeatherType;
+  readonly weatherTimer: number;
+  readonly routeRefreshTimer: number;
+  readonly creatureSeq: number;
+  readonly litterSeq: number;
+  readonly sparkSeq: number;
+  readonly settlements: readonly SettlementSnapshot[];
+  readonly bridges: readonly BridgeInstance[];
+  readonly creatures: readonly CreatureSnapshot[];
+  readonly activeDivineEffects: readonly DivineEffectVisual[];
+  readonly activeCombatSparks: readonly CombatSparkVisual[];
+  readonly deity: DeitySnapshot;
+  readonly chronicle: ChronicleSnapshot;
+  readonly diplomacy: DiplomacySnapshot;
+  readonly festivals: FestivalSnapshot;
+  readonly settlementManager: SettlementManagerSnapshot;
+  readonly depletedResources: readonly [string, number][];
+}
 
 /**
  * Smooth time-of-day pace multiplier that lingers in bright daylight & golden hour
@@ -89,6 +117,7 @@ export class WorldState {
   constructor(
     readonly bus: EventBus,
     config: Partial<WorldConfig> = {},
+    options?: { skipInitialPopulation?: boolean },
   ) {
     this.config = { ...DEFAULT_WORLD_CONFIG, ...config };
     this.rng = new SeededRandom(this.config.seed);
@@ -102,17 +131,19 @@ export class WorldState {
     this.diplomacy = new DiplomacySystem();
     this.festivals = new FestivalSystem();
 
-    this.settlementManager.createInitialSettlements(this);
-    this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision);
-    this.diplomacy.initialize(this.settlements, this);
+    if (!options?.skipInitialPopulation) {
+      this.settlementManager.createInitialSettlements(this);
+      this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision);
+      this.diplomacy.initialize(this.settlements, this);
 
-    this.chronicle.record(
-      1,
-      this.season,
-      'deity',
-      `${this.deity.name} ${this.deity.epithet}`,
-      `A new woodland age begins under ${this.deity.name} (${this.deity.aspect}).`,
-    );
+      this.chronicle.record(
+        1,
+        this.season,
+        'deity',
+        `${this.deity.name} ${this.deity.epithet}`,
+        `A new woodland age begins under ${this.deity.name} (${this.deity.aspect}).`,
+      );
+    }
   }
 
   spawnCreature(
@@ -582,5 +613,98 @@ export class WorldState {
     // Keep rare misty spells brief while clear/sunny skies linger comfortably
     this.weatherTimer =
       this.weather === 'mist' ? this.rng.range(12, 20) : this.rng.range(28, 56);
+  }
+
+  /** Captures a complete, self-contained JSON-serializable snapshot of the live simulation. */
+  toSnapshot(): WorldSnapshot {
+    const depletedResources: [string, number][] = [];
+    for (const node of this.terrain.resourceNodes) {
+      if (node.amount < node.maxAmount - 0.01) {
+        depletedResources.push([node.id, Math.round(node.amount * 100) / 100]);
+      }
+    }
+
+    return {
+      version: 1,
+      config: { ...this.config },
+      rngState: this.rng.getState(),
+      elapsedSeconds: this.elapsedSeconds,
+      day: this.day,
+      timeOfDay: this.timeOfDay,
+      season: this.season,
+      weather: this.weather,
+      weatherTimer: this.weatherTimer,
+      routeRefreshTimer: this.routeRefreshTimer,
+      creatureSeq: this.creatureSeq,
+      litterSeq: this.litterSeq,
+      sparkSeq: this.sparkSeq,
+      settlements: this.settlements.map((s) => s.toSnapshot()),
+      bridges: this.bridges.map((b) => ({ ...b })),
+      creatures: this.creatures.map((c) => c.toSnapshot()),
+      activeDivineEffects: this.activeDivineEffects.map((fx) => ({
+        ...fx,
+        position: { x: fx.position.x, z: fx.position.z },
+      })),
+      activeCombatSparks: this.activeCombatSparks.map((sp) => ({
+        ...sp,
+        position: { x: sp.position.x, y: sp.position.y, z: sp.position.z },
+      })),
+      deity: this.deity.exportSnapshot(),
+      chronicle: this.chronicle.exportSnapshot(),
+      diplomacy: this.diplomacy.exportSnapshot(),
+      festivals: this.festivals.exportSnapshot(),
+      settlementManager: this.settlementManager.exportSnapshot(),
+      depletedResources,
+    };
+  }
+
+  /** Hydrates a full WorldState directly from a previously captured snapshot. */
+  static fromSnapshot(bus: EventBus, snapshot: WorldSnapshot): WorldState {
+    const world = new WorldState(bus, snapshot.config, { skipInitialPopulation: true });
+    world.rng.setState(snapshot.rngState);
+    world.elapsedSeconds = snapshot.elapsedSeconds;
+    world.day = snapshot.day;
+    world.timeOfDay = snapshot.timeOfDay;
+    world.season = snapshot.season;
+    world.weather = snapshot.weather;
+    world.weatherTimer = snapshot.weatherTimer;
+    world.routeRefreshTimer = snapshot.routeRefreshTimer;
+    world.creatureSeq = snapshot.creatureSeq;
+    world.litterSeq = snapshot.litterSeq;
+    world.sparkSeq = snapshot.sparkSeq;
+
+    for (const sSnap of snapshot.settlements) {
+      world.settlements.push(Settlement.fromSnapshot(sSnap));
+    }
+    for (const br of snapshot.bridges) {
+      world.bridges.push({ ...br });
+    }
+    for (const cSnap of snapshot.creatures) {
+      world.creatures.push(Creature.fromSnapshot(cSnap));
+    }
+    for (const fx of snapshot.activeDivineEffects) {
+      world.activeDivineEffects.push({ ...fx, position: { ...fx.position } });
+    }
+    for (const sp of snapshot.activeCombatSparks) {
+      world.activeCombatSparks.push({ ...sp, position: { ...sp.position } });
+    }
+
+    world.deity.importSnapshot(snapshot.deity);
+    world.chronicle.importSnapshot(snapshot.chronicle);
+    world.diplomacy.importSnapshot(snapshot.diplomacy);
+    world.festivals.importSnapshot(snapshot.festivals);
+    world.settlementManager.importSnapshot(snapshot.settlementManager);
+
+    for (const [nodeId, amount] of snapshot.depletedResources) {
+      const node = world.terrain.getResourceNode(nodeId);
+      if (node) {
+        node.amount = Math.max(0, Math.min(node.maxAmount, amount));
+      }
+    }
+
+    world.structureRevision++;
+    world.obstacles.sync(world.terrain, world.settlements, world.bridges, world.structureRevision);
+    world.economy.rebuildRouteSummary(world);
+    return world;
   }
 }

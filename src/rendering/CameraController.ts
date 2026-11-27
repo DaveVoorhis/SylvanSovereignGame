@@ -254,6 +254,31 @@ export class CameraController {
     );
   }
 
+  getWorldViewState(): { position: Vec3; target: Vec3; cinematicDrift: boolean } {
+    const pos = this.mode === 'creature_pov' && this.savedWorldPos ? this.savedWorldPos : this.camera.position;
+    const tgt = this.mode === 'creature_pov' && this.savedWorldTarget ? this.savedWorldTarget : this.controls.target;
+    return {
+      position: { x: pos.x, y: pos.y, z: pos.z },
+      target: { x: tgt.x, y: tgt.y, z: tgt.z },
+      cinematicDrift: this.cinematicDrift,
+    };
+  }
+
+  setWorldViewState(view: { position: Vec3; target: Vec3; cinematicDrift?: boolean }): void {
+    if (this.mode === 'creature_pov') {
+      this.exitCreaturePov(false);
+    }
+    this.followProvider = null;
+    this.desiredPosition = null;
+    this.desiredTarget = null;
+    this.camera.position.set(view.position.x, view.position.y, view.position.z);
+    this.controls.target.set(view.target.x, view.target.y, view.target.z);
+    if (view.cinematicDrift !== undefined) {
+      this.cinematicDrift = view.cinematicDrift;
+    }
+    this.controls.update();
+  }
+
   update(dt: number): void {
     if (this.mode === 'creature_pov') {
       this.updateCreaturePov(dt);

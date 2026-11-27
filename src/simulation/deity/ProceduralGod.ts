@@ -18,6 +18,21 @@ export interface DeityTraits {
   curiosity: number; // 0..1
 }
 
+export interface DeitySnapshot {
+  readonly name: string;
+  readonly epithet: string;
+  readonly traits: DeityTraits;
+  readonly aspect: DeityAspect;
+  readonly energy: number;
+  readonly lastOmen: string;
+  readonly lastActionName: string;
+  readonly favoredSettlementId: string | null;
+  readonly whisperCooldown: number;
+  readonly decisionTimer: number;
+  readonly effectSeq: number;
+  readonly settlementFavor: readonly [string, number][];
+}
+
 const DEITY_PREFIXES = [
   'Sylva', 'Oakh', 'Bramb', 'Vesper', 'Aurel', 'Thorn', 'Mire', 'Linden', 'Cinder', 'Moss',
 ];
@@ -43,8 +58,8 @@ const DEITY_EPITHETS = [
  * through its current temperament.
  */
 export class ProceduralGod {
-  readonly name: string;
-  readonly epithet: string;
+  name: string;
+  epithet: string;
   readonly traits: DeityTraits;
 
   aspect: DeityAspect = 'The Whispering Canopy';
@@ -405,5 +420,40 @@ export class ProceduralGod {
 
   private clamp01(v: number): number {
     return Math.max(0.05, Math.min(0.98, v));
+  }
+
+  exportSnapshot(): DeitySnapshot {
+    return {
+      name: this.name,
+      epithet: this.epithet,
+      traits: { ...this.traits },
+      aspect: this.aspect,
+      energy: this.energy,
+      lastOmen: this.lastOmen,
+      lastActionName: this.lastActionName,
+      favoredSettlementId: this.favoredSettlementId,
+      whisperCooldown: this.whisperCooldown,
+      decisionTimer: this.decisionTimer,
+      effectSeq: this.effectSeq,
+      settlementFavor: Array.from(this.settlementFavor.entries()),
+    };
+  }
+
+  importSnapshot(snapshot: DeitySnapshot): void {
+    this.name = snapshot.name;
+    this.epithet = snapshot.epithet;
+    Object.assign(this.traits, snapshot.traits);
+    this.aspect = snapshot.aspect;
+    this.energy = snapshot.energy;
+    this.lastOmen = snapshot.lastOmen;
+    this.lastActionName = snapshot.lastActionName;
+    this.favoredSettlementId = snapshot.favoredSettlementId;
+    this.whisperCooldown = snapshot.whisperCooldown;
+    this.decisionTimer = snapshot.decisionTimer;
+    this.effectSeq = snapshot.effectSeq;
+    this.settlementFavor.clear();
+    for (const [id, score] of snapshot.settlementFavor) {
+      this.settlementFavor.set(id, score);
+    }
   }
 }

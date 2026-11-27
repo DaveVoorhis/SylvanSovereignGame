@@ -18,6 +18,8 @@ export interface TopBarCallbacks {
   onSetDeityPanelOpen: (open: boolean) => void;
   isChroniclePanelOpen: () => boolean;
   onSetChroniclePanelOpen: (open: boolean) => void;
+  isSaveModalOpen: () => boolean;
+  onSetSaveModalOpen: (open: boolean) => void;
   onToggleZenMode: () => void;
   onResetOverview: () => void;
   onNewWorld: () => void;
@@ -86,12 +88,14 @@ export class TopBar {
   private readonly deityBtn: HTMLButtonElement;
   private readonly chronicleBtn: HTMLButtonElement;
   private readonly zenBtn: HTMLButtonElement;
+  private readonly saveBtn: HTMLButtonElement;
   private readonly qualitySelect: HTMLSelectElement;
 
   // Shared dialog-pill handles so every dialog-opening pill toggles open/close consistently
   private readonly kinPill: DialogPillHandle;
   private readonly deityPill: DialogPillHandle;
   private readonly chroniclePill: DialogPillHandle;
+  private readonly savePill: DialogPillHandle;
   private readonly eventPill: DialogPillHandle;
 
   // Band 2: reconciled settlement pills + dedicated right-anchored event slot
@@ -313,6 +317,18 @@ export class TopBar {
       this.callbacks.onChangeQuality(this.qualitySelect.value as QualityPreset);
     });
 
+    this.saveBtn = document.createElement('button');
+    this.saveBtn.type = 'button';
+    this.saveBtn.className = 'hud-btn';
+    this.saveBtn.textContent = '💾 Saves';
+    this.savePill = bindDialogPill({
+      button: this.saveBtn,
+      isOpen: () => this.callbacks.isSaveModalOpen(),
+      open: () => this.callbacks.onSetSaveModalOpen(true),
+      close: () => this.callbacks.onSetSaveModalOpen(false),
+      getTitle: (open) => (open ? 'Close Saved Realms' : 'Open Saved Realms'),
+    });
+
     const seedBtn = document.createElement('button');
     seedBtn.type = 'button';
     seedBtn.className = 'hud-btn accent';
@@ -320,7 +336,7 @@ export class TopBar {
     seedBtn.title = 'Generate a brand-new procedural world';
     seedBtn.addEventListener('click', () => this.callbacks.onNewWorld());
 
-    worldGroup.append(this.qualitySelect, seedBtn);
+    worldGroup.append(this.qualitySelect, this.saveBtn, seedBtn);
     controls.append(speedGroup, viewGroup, worldGroup);
 
     mainRow.append(leftZone, telemetry, controls);
@@ -404,6 +420,10 @@ export class TopBar {
     this.zenBtn.classList.toggle('active', active);
   }
 
+  setCinematicActive(active: boolean): void {
+    this.cinematicBtn.classList.toggle('active', active);
+  }
+
   /** Synchronizes every dialog-opening pill's active, ARIA, and tooltip state. */
   syncDialogPills(): void {
     this.kinPill.sync();
@@ -413,6 +433,7 @@ export class TopBar {
     this.pioneersSlot.pillHandle.sync();
     this.deityPill.sync();
     this.chroniclePill.sync();
+    this.savePill.sync();
     this.eventPill.sync();
     for (const nodes of this.settlementPills.values()) {
       nodes.pillHandle.sync();
@@ -598,6 +619,7 @@ export class TopBar {
     this.pioneersSlot.pillHandle.dispose();
     this.deityPill.dispose();
     this.chroniclePill.dispose();
+    this.savePill.dispose();
     this.eventPill.dispose();
     for (const nodes of this.settlementPills.values()) {
       nodes.pillHandle.dispose();
