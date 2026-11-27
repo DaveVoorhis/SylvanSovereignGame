@@ -17,12 +17,69 @@ export interface InspectorCallbacks {
 export class InspectorPanel {
   readonly element: HTMLElement;
   private readonly contentEl: HTMLElement;
+  private visible = false;
+  private lastHtml = '';
+  private cachedLitterKey = '';
+  private cachedLittermates: string[] = [];
+  private currentActionState:
+    | { kind: 'creature'; creatureId: string; isInPov: boolean; homeId: string | null }
+    | { kind: 'settlement'; settlementId: string }
+    | { kind: 'building'; ownerId: string }
+    | null = null;
 
   constructor(private readonly callbacks: InspectorCallbacks) {
     this.element = document.createElement('aside');
     this.element.className = 'hud-inspector glass-panel hidden';
     this.contentEl = document.createElement('div');
+    this.contentEl.addEventListener('click', (ev) => {
+      const target = ev.target as HTMLElement | null;
+      const actionEl = target?.closest?.('[data-action]') as HTMLElement | null;
+      if (!actionEl) return;
+      const action = actionEl.dataset?.action ?? actionEl.getAttribute?.('data-action');
+      if (!action) return;
+      if (action === 'close') {
+        this.callbacks.onClose();
+        return;
+      }
+      const state = this.currentActionState;
+      if (!state) return;
+      if (state.kind === 'creature') {
+        if (action === 'pov') {
+          if (state.isInPov) {
+            this.callbacks.onExitCreaturePov();
+          } else {
+            this.callbacks.onEnterCreaturePov(state.creatureId);
+          }
+        } else if (action === 'follow') {
+          this.callbacks.onFollowCreature(state.creatureId);
+        } else if (action === 'lineage') {
+          this.callbacks.onViewLineage?.(state.creatureId);
+        } else if (action === 'home' && state.homeId) {
+          this.callbacks.onFocusSettlement(state.homeId);
+        }
+      } else if (state.kind === 'settlement') {
+        if (action === 'focus') {
+          this.callbacks.onFocusSettlement(state.settlementId);
+        }
+      } else if (state.kind === 'building') {
+        if (action === 'owner') {
+          this.callbacks.onFocusSettlement(state.ownerId);
+        }
+      }
+    });
     this.element.appendChild(this.contentEl);
+  }
+
+  private setVisible(next: boolean): void {
+    if (this.visible === next) return;
+    this.visible = next;
+    this.element.classList.toggle('hidden', !next);
+  }
+
+  private setContentHtml(nextHtml: string): void {
+    if (nextHtml === this.lastHtml) return;
+    this.lastHtml = nextHtml;
+    this.contentEl.innerHTML = nextHtml;
   }
 
   update(
@@ -32,17 +89,19 @@ export class InspectorPanel {
     povCreatureId: string | null,
   ): void {
     if (!selection) {
-      this.element.classList.add('hidden');
+      this.currentActionState = null;
+      this.setVisible(false);
       return;
     }
-    this.element.classList.remove('hidden');
 
     if (selection.kind === 'creature') {
       const c = world.getCreature(selection.id);
       if (!c) {
-        this.element.classList.add('hidden');
+        this.currentActionState = null;
+        this.setVisible(false);
         return;
       }
+      this.setVisible(true);
       const home = world.getSettlement(c.settlementId);
       const homeProfile = home?.getAdaptationProfile();
       const statusText = c.alive ? c.activity.replace(/_/g, ' ') : 'fallen';
@@ -66,16 +125,35 @@ export class InspectorPanel {
       const parents = c.parentIds
         .map((pid) => world.getCreature(pid)?.name)
         .filter((n): n is string => Boolean(n));
-      const littermates = c.litterId
-        ? world.creatures
-            .filter((o) => o.id !== c.id && o.litterId === c.litterId)
-            .map((o) => o.name.split(' ')[0])
-        : [];
+      let littermates: string[];
+      if (c.litterId) {
+        const litterKey = `${c.id}:${c.litterId}`;
+        if (this.cachedLitterKey !== litterKey) {
+          this.cachedLitterKey = litterKey;
+          const found: string[] = [];
+          for (let i = 0; i < world.creatures.length; i++) {
+            const o = world.creatures[i];
+            if (o.id !== c.id && o.litterId === c.litterId) {
+              found.push(o.name.split(' ')[0]);
+            }
+          }
+          this.cachedLittermates = found;
+        }
+        littermates = this.cachedLittermates;
+      } else {
+        littermates = [];
+      }
       const livingOffspring = c.offspringIds
         .map((oid) => world.getCreature(oid))
         .filter((o): o is NonNullable<typeof o> => Boolean(o && o.alive));
 
-      this.contentEl.innerHTML = `
+      this.currentActionState = {
+        kind: 'creature',
+        creatureId: c.id,
+        isInPov: isInThisPov,
+        homeId: home?.id ?? null,
+      };
+      this.setContentHtml(`
         <div class="panel-header">
           <span>🐾 ${c.name}</span>
           <button class="close-btn" data-action="close">✕</button>
@@ -115,36 +193,18 @@ export class InspectorPanel {
           <button class="hud-btn" data-action="lineage" title="View family tree">🌳 Lineage</button>
           ${home ? `<button class="hud-btn" data-action="home">${home.name}</button>` : ''}
         </div>
-      `;
-
-      this.contentEl.querySelector('[data-action="close"]')?.addEventListener('click', () => {
-        this.callbacks.onClose();
-      });
-      this.contentEl.querySelector('[data-action="pov"]')?.addEventListener('click', () => {
-        if (isInThisPov) {
-          this.callbacks.onExitCreaturePov();
-        } else {
-          this.callbacks.onEnterCreaturePov(c.id);
-        }
-      });
-      this.contentEl.querySelector('[data-action="follow"]')?.addEventListener('click', () => {
-        this.callbacks.onFollowCreature(c.id);
-      });
-      this.contentEl.querySelector('[data-action="lineage"]')?.addEventListener('click', () => {
-        this.callbacks.onViewLineage?.(c.id);
-      });
-      this.contentEl.querySelector('[data-action="home"]')?.addEventListener('click', () => {
-        if (home) this.callbacks.onFocusSettlement(home.id);
-      });
+      `);
       return;
     }
 
     if (selection.kind === 'settlement') {
       const s = world.getSettlement(selection.id);
       if (!s) {
-        this.element.classList.add('hidden');
+        this.currentActionState = null;
+        this.setVisible(false);
         return;
       }
+      this.setVisible(true);
       const pop = world.getSettlementPopulation(s.id);
       const cap = s.getHousingCapacity();
       const profile = s.getAdaptationProfile();
@@ -187,7 +247,8 @@ export class InspectorPanel {
         })
         .join('');
 
-      this.contentEl.innerHTML = `
+      this.currentActionState = { kind: 'settlement', settlementId: s.id };
+      this.setContentHtml(`
         <div class="panel-header">
           <span>${profile.icon} ${s.name}</span>
           <button class="close-btn" data-action="close">✕</button>
@@ -223,14 +284,7 @@ export class InspectorPanel {
         <div class="inspector-actions">
           <button class="hud-btn accent" data-action="focus">Center Camera</button>
         </div>
-      `;
-
-      this.contentEl.querySelector('[data-action="close"]')?.addEventListener('click', () => {
-        this.callbacks.onClose();
-      });
-      this.contentEl.querySelector('[data-action="focus"]')?.addEventListener('click', () => {
-        this.callbacks.onFocusSettlement(s.id);
-      });
+      `);
       return;
     }
 
@@ -246,9 +300,11 @@ export class InspectorPanel {
         }
       }
       if (!foundBuilding || !owner) {
-        this.element.classList.add('hidden');
+        this.currentActionState = null;
+        this.setVisible(false);
         return;
       }
+      this.setVisible(true);
       const bp = BUILDING_CATALOG[foundBuilding.type];
       const stage = getBuildingStage(foundBuilding);
       const ownerProfile = owner.getAdaptationProfile();
@@ -261,7 +317,8 @@ export class InspectorPanel {
         : foundBuilding.completed
           ? 'Completed'
           : `${getConstructionStageLabel(stage, bp.frameStyle)} · ${Math.round(foundBuilding.progress)}%`;
-      this.contentEl.innerHTML = `
+      this.currentActionState = { kind: 'building', ownerId: owner.id };
+      this.setContentHtml(`
         <div class="panel-header">
           <span>🏡 ${bp.displayName}</span>
           <button class="close-btn" data-action="close">✕</button>
@@ -277,13 +334,7 @@ export class InspectorPanel {
         <div class="inspector-actions">
           <button class="hud-btn" data-action="owner">Inspect ${owner.name}</button>
         </div>
-      `;
-      this.contentEl.querySelector('[data-action="close"]')?.addEventListener('click', () => {
-        this.callbacks.onClose();
-      });
-      this.contentEl.querySelector('[data-action="owner"]')?.addEventListener('click', () => {
-        if (owner) this.callbacks.onFocusSettlement(owner.id);
-      });
+      `);
     }
   }
 }

@@ -15,6 +15,7 @@ interface CritterOrbit {
   readonly phase: number;
   readonly scale: number;
   readonly figureEight: boolean;
+  readonly orbitHeights?: Float32Array;
 }
 
 export interface AmbientCritterCounts {
@@ -214,7 +215,6 @@ export class AmbientCritterRenderer {
 
   private readonly disposables: (THREE.BufferGeometry | THREE.Material)[] = [];
   private readonly shaderUniforms: WingShaderUniforms = { uTime: { value: 0 } };
-  private readonly dummy = new THREE.Object3D();
   private elapsed = 0;
 
   constructor(
@@ -444,17 +444,27 @@ export class AmbientCritterRenderer {
     this.ladybugMesh.frustumCulled = false;
     for (let i = 0; i < ladybugCount; i++) {
       const spot = pickMeadowSpot();
+      const radiusX = rng.range(0.55, 1.85);
+      const radiusZ = rng.range(0.55, 1.85);
+      // Pre-sample terrain heights along the closed elliptical orbit (32 samples ≈ every 0.1–0.35m)
+      // to eliminate ~88 per-frame terrain.getHeightAt() calls while hugging terrain accurately.
+      const orbitHeights = new Float32Array(32);
+      for (let s = 0; s < 32; s++) {
+        const a = (s / 32) * Math.PI * 2;
+        orbitHeights[s] = world.terrain.getHeightAt(spot.x + Math.cos(a) * radiusX, spot.z + Math.sin(a) * radiusZ);
+      }
       this.ladybugOrbits.push({
         anchorX: spot.x,
         anchorY: spot.y + 0.08,
         anchorZ: spot.z,
-        radiusX: rng.range(0.55, 1.85),
-        radiusZ: rng.range(0.55, 1.85),
+        radiusX,
+        radiusZ,
         bobAmp: rng.range(0.03, 0.09),
         speed: rng.range(0.32, 0.68),
         phase: rng.range(0, Math.PI * 2),
         scale: rng.range(0.85, 1.25),
         figureEight: false,
+        orbitHeights,
       });
       colorScratch.setHex(ladybugPalette[i % ladybugPalette.length]);
       this.ladybugMesh.setColorAt(i, colorScratch);
@@ -560,8 +570,10 @@ export class AmbientCritterRenderer {
     groundHugging: boolean,
     pulseScale: boolean,
   ): void {
-    const dummy = this.dummy;
     const terrain = this.world.terrain;
+    const waterLevel = terrain.waterLevel;
+    const matArray = mesh.instanceMatrix.array as Float32Array;
+    const invTwoPi32 = 32 / (Math.PI * 2);
 
     for (let i = 0; i < orbits.length; i++) {
       const o = orbits[i];
@@ -589,27 +601,71 @@ export class AmbientCritterRenderer {
 
       let y: number;
       if (groundHugging) {
-        const h = terrain.getHeightAt(x, z);
-        y = Math.max(h, terrain.waterLevel) + 0.07 + Math.abs(Math.sin(ang * 3.0)) * o.bobAmp;
+        let h: number;
+        if (o.orbitHeights) {
+          let idxF = (ang * invTwoPi32) % 32;
+          if (idxF < 0) idxF += 32;
+          const idx0 = idxF | 0;
+          const frac = idxF - idx0;
+          const h0 = o.orbitHeights[idx0];
+          const h1 = o.orbitHeights[(idx0 + 1) & 31];
+          h = h0 + (h1 - h0) * frac;
+        } else {
+          h = terrain.getHeightAt(x, z);
+        }
+        y = Math.max(h, waterLevel) + 0.07 + Math.abs(Math.sin(ang * 3.0)) * o.bobAmp;
       } else {
         y = o.anchorY + Math.sin(ang * 1.7 + o.phase) * o.bobAmp;
       }
 
-      dummy.position.set(x, y, z);
-      dummy.rotation.set(
-        groundHugging ? 0 : -Math.cos(ang * 1.7 + o.phase) * 0.14,
-        Math.atan2(vx, vz),
-        groundHugging ? 0 : Math.sin(ang * 2.3) * 0.12,
-      );
-
       let sc = o.scale * (0.4 + 0.6 * activityScale);
       if (pulseScale) {
-        const twinkle = 0.35 + 0.65 * Math.pow(0.5 + 0.5 * Math.sin(t * 2.4 + o.phase * 3.1), 2);
-        sc *= twinkle;
+        const tw = 0.5 + 0.5 * Math.sin(t * 2.4 + o.phase * 3.1);
+        sc *= 0.35 + 0.65 * tw * tw;
       }
-      dummy.scale.setScalar(sc);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(i, dummy.matrix);
+
+      // Direct column-major XYZ-Euler TRS matrix write (matches Object3D.updateMatrix() without quaternion overhead)
+      const off = i * 16;
+      const invLen = 1 / Math.max(1e-6, Math.hypot(vx, vz));
+      const sb = vx * invLen; // sin(yaw)
+      const cb = vz * invLen; // cos(yaw)
+      if (groundHugging) {
+        matArray[off] = cb * sc;
+        matArray[off + 1] = 0;
+        matArray[off + 2] = -sb * sc;
+        matArray[off + 3] = 0;
+        matArray[off + 4] = 0;
+        matArray[off + 5] = sc;
+        matArray[off + 6] = 0;
+        matArray[off + 7] = 0;
+        matArray[off + 8] = sb * sc;
+        matArray[off + 9] = 0;
+        matArray[off + 10] = cb * sc;
+        matArray[off + 11] = 0;
+      } else {
+        const rx = -Math.cos(ang * 1.7 + o.phase) * 0.14;
+        const rz = Math.sin(ang * 2.3) * 0.12;
+        const sa = Math.sin(rx);
+        const ca = Math.cos(rx);
+        const sg = Math.sin(rz);
+        const cg = Math.cos(rz);
+        matArray[off] = (cb * cg) * sc;
+        matArray[off + 1] = (ca * sg + sa * sb * cg) * sc;
+        matArray[off + 2] = (sa * sg - ca * sb * cg) * sc;
+        matArray[off + 3] = 0;
+        matArray[off + 4] = (-cb * sg) * sc;
+        matArray[off + 5] = (ca * cg - sa * sb * sg) * sc;
+        matArray[off + 6] = (sa * cg + ca * sb * sg) * sc;
+        matArray[off + 7] = 0;
+        matArray[off + 8] = sb * sc;
+        matArray[off + 9] = (-sa * cb) * sc;
+        matArray[off + 10] = (ca * cb) * sc;
+        matArray[off + 11] = 0;
+      }
+      matArray[off + 12] = x;
+      matArray[off + 13] = y;
+      matArray[off + 14] = z;
+      matArray[off + 15] = 1;
     }
 
     mesh.instanceMatrix.needsUpdate = true;

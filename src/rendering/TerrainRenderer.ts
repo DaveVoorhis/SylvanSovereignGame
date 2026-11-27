@@ -134,9 +134,9 @@ function enhanceTerrainMaterial(
           float rockScale = 0.14;
           vec3 triRock;
           if (uHasRockMap > 0.5) {
-            vec3 rx = texture2D(uRockMap, vTerrainWorldPos.zy * rockScale).rgb;
-            vec3 ry = texture2D(uRockMap, vTerrainWorldPos.xz * rockScale).rgb;
-            vec3 rz = texture2D(uRockMap, vTerrainWorldPos.xy * rockScale).rgb;
+            vec3 rx = blendW.x > 0.01 ? texture2D(uRockMap, vTerrainWorldPos.zy * rockScale).rgb : vec3(0.0);
+            vec3 ry = blendW.y > 0.01 ? texture2D(uRockMap, vTerrainWorldPos.xz * rockScale).rgb : vec3(0.0);
+            vec3 rz = blendW.z > 0.01 ? texture2D(uRockMap, vTerrainWorldPos.xy * rockScale).rgb : vec3(0.0);
             triRock = rx * blendW.x + ry * blendW.y + rz * blendW.z;
           } else {
             float strata = sin(vTerrainWorldPos.y * 2.4 + macroB * 3.5) * 0.12 + 0.52;
@@ -166,11 +166,8 @@ function enhanceTerrainMaterial(
       .replace(
         '#include <roughnessmap_fragment>',
         `#include <roughnessmap_fragment>
-        float rAboveWater = vTerrainWorldPos.y - uWaterLevel;
-        float rShoreWet = (1.0 - smoothstep(-0.05, 0.45, rAboveWater)) * smoothstep(-1.2, -0.05, rAboveWater);
-        float rTotalWet = clamp(max(rShoreWet, uRainWetness * (1.0 - uWinter * 0.85) * 0.72), 0.0, 1.0);
         // Wet earth/shoreline reflects sky; dry rock/soil stays naturally matte
-        roughnessFactor = mix(roughnessFactor, 0.20, rTotalWet * 0.82);`,
+        roughnessFactor = mix(roughnessFactor, 0.20, totalWet * 0.82);`,
       )
       .replace(
         '#include <lights_physical_fragment>',
@@ -178,19 +175,21 @@ function enhanceTerrainMaterial(
         // Dry grass/soil has micro-occluding fibers that suppress grazing-angle Fresnel glare;
         // wet shoreline and rain-soaked earth restore dielectric water-film specular reflection.
         float drySpec = mix(0.12, 0.24, uWinter);
-        float terrainSpecScale = mix(drySpec, 1.0, rTotalWet);
+        float terrainSpecScale = mix(drySpec, 1.0, totalWet);
         material.specularColor *= terrainSpecScale;
         material.specularF90 = terrainSpecScale;`,
       )
       .replace(
         '#include <opaque_fragment>',
         `// 4. Drifting cumulus cloud shadows synchronized with AtmosphereSystem sky dome (linear HDR space)
-        vec2 cShadowUv = vTerrainWorldPos.xz * 0.0046 + vec2(uCloudTime * 0.011, uCloudTime * 0.0045);
-        float cNoise = tFbm(cShadowUv);
-        float cThresh = mix(0.64, 0.34, clamp(uCloudCoverage, 0.0, 1.0));
-        float cloudShadow = smoothstep(cThresh, cThresh + 0.22, cNoise);
-        float shadowDim = mix(1.0, 0.72, cloudShadow * uDaylight * (1.0 - uCloudCoverage * 0.35));
-        outgoingLight *= shadowDim;
+        if (uDaylight > 0.001) {
+          vec2 cShadowUv = vTerrainWorldPos.xz * 0.0046 + vec2(uCloudTime * 0.011, uCloudTime * 0.0045);
+          float cNoise = tFbm(cShadowUv);
+          float cThresh = mix(0.64, 0.34, clamp(uCloudCoverage, 0.0, 1.0));
+          float cloudShadow = smoothstep(cThresh, cThresh + 0.22, cNoise);
+          float shadowDim = mix(1.0, 0.72, cloudShadow * uDaylight * (1.0 - uCloudCoverage * 0.35));
+          outgoingLight *= shadowDim;
+        }
         #include <opaque_fragment>`,
       );
   };
@@ -230,15 +229,26 @@ export class TerrainRenderer {
     const colors = new Float32Array(pos.count * 3);
     this.vertexBiomes = new Array<BiomeType>(pos.count);
     this.vertexCoastDist = new Float32Array(pos.count);
-    for (let i = 0; i < pos.count; i++) {
-      const ux = pos.getX(i); // -1..1
-      const uz = pos.getZ(i); // -1..1
-      const x = warpTerrainCoord(ux, halfCore, horizonExtent);
-      const z = warpTerrainCoord(uz, halfCore, horizonExtent);
-      const y = world.terrain.getHeightAt(x, z);
-      pos.setXYZ(i, x, y, z);
-      // Constant meters-per-tile world-space UVs so PBR surface micro-detail stays crisp across vast worlds
-      uv.setXY(i, x / 145 + 0.5, z / 145 + 0.5);
+    const cols = totalSegments + 1;
+    const warpedCoords = new Float32Array(cols);
+    for (let k = 0; k < cols; k++) {
+      const u = -1 + (k / totalSegments) * 2;
+      warpedCoords[k] = warpTerrainCoord(u, halfCore, horizonExtent);
+    }
+    // PlaneGeometry rotated -PI/2 around X maps row iz=0..totalSegments to z = -1..+1 and col ix=0..totalSegments to x = -1..+1
+    const gridHeights = new Float32Array(cols * cols);
+    for (let iz = 0; iz < cols; iz++) {
+      const z = warpedCoords[iz];
+      const rowOff = iz * cols;
+      for (let ix = 0; ix < cols; ix++) {
+        const x = warpedCoords[ix];
+        const i = rowOff + ix;
+        const y = world.terrain.getHeightAt(x, z);
+        gridHeights[i] = y;
+        pos.setXYZ(i, x, y, z);
+        // Constant meters-per-tile world-space UVs so PBR surface micro-detail stays crisp across vast worlds
+        uv.setXY(i, x / 145 + 0.5, z / 145 + 0.5);
+      }
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.computeVertexNormals();
@@ -283,8 +293,9 @@ export class TerrainRenderer {
     this.waterSurface = createRealisticWaterSurface(
       world.terrain,
       worldSize,
-      Math.max(260, terrainSegments + 24),
+      totalSegments,
       6.5,
+      gridHeights,
     );
     this.waterMesh = this.waterSurface.mesh;
     scene.add(this.waterMesh);

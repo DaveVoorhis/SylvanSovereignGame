@@ -66,6 +66,7 @@ export class HudManager {
   private lastWorld: WorldState | null = null;
   private zenMode = false;
   private zenToastTimer: number | null = null;
+  private lastFooterHidden = false;
   private accumSec = 0.25;
 
   constructor(root: HTMLElement, callbacks: HudCallbacks) {
@@ -188,10 +189,15 @@ export class HudManager {
     );
 
     if (typeof ResizeObserver !== 'undefined') {
+      let lastOffsetPx = -1;
       const syncOffset = () => {
         const rect = this.topBar.element.getBoundingClientRect();
         if (rect.height > 0) {
-          this.root.style.setProperty('--hud-top-offset', `${Math.ceil(rect.height + 22)}px`);
+          const nextOffsetPx = Math.ceil(rect.height + 22);
+          if (nextOffsetPx !== lastOffsetPx) {
+            lastOffsetPx = nextOffsetPx;
+            this.root.style.setProperty('--hud-top-offset', `${nextOffsetPx}px`);
+          }
         }
       };
       this.topBarResizeObserver = new ResizeObserver(syncOffset);
@@ -437,7 +443,10 @@ export class HudManager {
     this.chroniclePanel.update(world.chronicle.entries);
     this.inspectorPanel.update(selection, world, isFollowing, povCreatureId);
     this.povBar.update(world, povCreatureId);
-    this.footerHint.classList.toggle('hidden', inPov);
+    if (inPov !== this.lastFooterHidden) {
+      this.lastFooterHidden = inPov;
+      this.footerHint.classList.toggle('hidden', inPov);
+    }
   }
 
   dispose(): void {

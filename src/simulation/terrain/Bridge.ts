@@ -81,28 +81,50 @@ export function isPointNearBridge(
   return Math.abs(across) <= bridge.width * 0.5 + margin;
 }
 
+export interface MutableBridgeApproach {
+  nearX: number;
+  nearZ: number;
+  farX: number;
+  farZ: number;
+  nearDist: number;
+}
+
+/** Allocation-free bridge approach query writing into `out`. */
+export function getBridgeApproachInto(
+  bridge: BridgeInstance,
+  x: number,
+  z: number,
+  out: MutableBridgeApproach,
+): MutableBridgeApproach {
+  const dStart = Math.hypot(bridge.startX - x, bridge.startZ - z);
+  const dEnd = Math.hypot(bridge.endX - x, bridge.endZ - z);
+  if (dStart <= dEnd) {
+    out.nearX = bridge.startX;
+    out.nearZ = bridge.startZ;
+    out.farX = bridge.endX;
+    out.farZ = bridge.endZ;
+    out.nearDist = dStart;
+  } else {
+    out.nearX = bridge.endX;
+    out.nearZ = bridge.endZ;
+    out.farX = bridge.startX;
+    out.farZ = bridge.startZ;
+    out.nearDist = dEnd;
+  }
+  return out;
+}
+
 /** Returns the closer bank abutment and the far bank abutment for a given position. */
 export function getBridgeApproach(
   bridge: BridgeInstance,
   x: number,
   z: number,
 ): { nearX: number; nearZ: number; farX: number; farZ: number; nearDist: number } {
-  const dStart = Math.hypot(bridge.startX - x, bridge.startZ - z);
-  const dEnd = Math.hypot(bridge.endX - x, bridge.endZ - z);
-  if (dStart <= dEnd) {
-    return {
-      nearX: bridge.startX,
-      nearZ: bridge.startZ,
-      farX: bridge.endX,
-      farZ: bridge.endZ,
-      nearDist: dStart,
-    };
-  }
-  return {
-    nearX: bridge.endX,
-    nearZ: bridge.endZ,
-    farX: bridge.startX,
-    farZ: bridge.startZ,
-    nearDist: dEnd,
-  };
+  return getBridgeApproachInto(bridge, x, z, {
+    nearX: 0,
+    nearZ: 0,
+    farX: 0,
+    farZ: 0,
+    nearDist: 0,
+  });
 }

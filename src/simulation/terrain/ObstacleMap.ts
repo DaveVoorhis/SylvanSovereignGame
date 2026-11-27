@@ -50,12 +50,6 @@ export function getBushCollisionRadius(bush: PropSpot): number {
 
 const CELL_SIZE = 6.0;
 const INV_CELL_SIZE = 1 / CELL_SIZE;
-const GRID_OFFSET = 512;
-const GRID_STRIDE = 1024;
-
-function cellKey(cx: number, cz: number): number {
-  return (cx + GRID_OFFSET) * GRID_STRIDE + (cz + GRID_OFFSET);
-}
 
 /**
  * Headless uniform spatial-hash obstacle map covering all solid world features:
@@ -63,9 +57,23 @@ function cellKey(cx: number, cz: number): number {
  * plump berry bushes, settlement hearth firepits, and town benches.
  */
 export class ObstacleMap {
-  private readonly cells = new Map<number, SolidObstacle[]>();
+  private grid: (SolidObstacle[] | null)[] = [];
+  private readonly activeCellIndices: number[] = [];
+  private gridHalf = 0;
+  private gridDim = 0;
   private readonly allObstacles: SolidObstacle[] = [];
   private readonly scratch: SolidObstacle[] = [];
+
+  // Cached static flora obstacle objects per TerrainMap to avoid reallocating ~4k objects on every build
+  private cachedTerrain: TerrainMap | null = null;
+  private cachedTreeObs: SolidObstacle[] = [];
+  private cachedRockObs: SolidObstacle[] = [];
+  private cachedBushObs: SolidObstacle[] = [];
+
+  /** Zero-allocation scratch output populated by resolveCollisionsInto / pushPointOutsideObstaclesInto. */
+  resX = 0;
+  resZ = 0;
+  resCollided = false;
 
   private lastSettlementCount = -1;
   private lastBuildingCount = -1;
@@ -105,12 +113,98 @@ export class ObstacleMap {
     this.lastBridgeCount = bridges.length;
     this.lastStructureRevision = structureRevision;
     this._version++;
-    for (const bucket of this.cells.values()) {
-      bucket.length = 0;
+
+    const neededHalf = Math.ceil((terrain.halfSize + 48) * INV_CELL_SIZE) + 2;
+    if (neededHalf !== this.gridHalf) {
+      this.gridHalf = neededHalf;
+      this.gridDim = neededHalf * 2;
+      this.grid = new Array<SolidObstacle[] | null>(this.gridDim * this.gridDim).fill(null);
+      this.activeCellIndices.length = 0;
+    } else {
+      for (let i = 0; i < this.activeCellIndices.length; i++) {
+        const bucket = this.grid[this.activeCellIndices[i]];
+        if (bucket) bucket.length = 0;
+      }
+      this.activeCellIndices.length = 0;
     }
     this.allObstacles.length = 0;
 
+    if (this.cachedTerrain !== terrain) {
+      this.cachedTerrain = terrain;
+      let staticId = 1_000_000;
+      this.cachedTreeObs = terrain.trees.map((tree) => ({
+        id: staticId++,
+        x: tree.x,
+        z: tree.z,
+        radius: getTreeTrunkRadius(tree),
+        minTotalRadius: 0,
+        height: 6.5 * tree.scale,
+        kind: 'tree' as const,
+        _stamp: 0,
+      }));
+      this.cachedRockObs = terrain.rocks.map((rock) => ({
+        id: staticId++,
+        x: rock.x,
+        z: rock.z,
+        radius: getRockCollisionRadius(rock),
+        minTotalRadius: 0,
+        height: 0.95 * rock.scale,
+        kind: 'rock' as const,
+        _stamp: 0,
+      }));
+      this.cachedBushObs = [];
+      for (let i = 0; i < terrain.undergrowth.length; i++) {
+        const prop = terrain.undergrowth[i];
+        if (prop.variant !== 1) continue;
+        this.cachedBushObs.push({
+          id: staticId++,
+          x: prop.x,
+          z: prop.z,
+          radius: getBushCollisionRadius(prop),
+          minTotalRadius: 0,
+          height: 0.9 * prop.scale,
+          kind: 'bush' as const,
+          _stamp: 0,
+        });
+      }
+    }
+
     let nextId = 1;
+    const grid = this.grid;
+    const gridHalf = this.gridHalf;
+    const gridDim = this.gridDim;
+    const activeCellIndices = this.activeCellIndices;
+
+    const insertObstacle = (obs: SolidObstacle): void => {
+      obs._stamp = 0;
+      this.allObstacles.push(obs);
+      const span = obs.radius > obs.minTotalRadius ? obs.radius : obs.minTotalRadius;
+      let minCx = Math.floor((obs.x - span) * INV_CELL_SIZE) + gridHalf;
+      let maxCx = Math.floor((obs.x + span) * INV_CELL_SIZE) + gridHalf;
+      let minCz = Math.floor((obs.z - span) * INV_CELL_SIZE) + gridHalf;
+      let maxCz = Math.floor((obs.z + span) * INV_CELL_SIZE) + gridHalf;
+      if (minCx < 0) minCx = 0;
+      if (minCz < 0) minCz = 0;
+      if (maxCx >= gridDim) maxCx = gridDim - 1;
+      if (maxCz >= gridDim) maxCz = gridDim - 1;
+
+      for (let cx = minCx; cx <= maxCx; cx++) {
+        const rowOffset = cx * gridDim;
+        for (let cz = minCz; cz <= maxCz; cz++) {
+          const idx = rowOffset + cz;
+          let bucket = grid[idx];
+          if (!bucket) {
+            bucket = [];
+            grid[idx] = bucket;
+          }
+          if (bucket.length === 0) {
+            activeCellIndices.push(idx);
+          }
+          bucket.push(obs);
+        }
+      }
+    };
+
     const addObstacle = (
       x: number,
       z: number,
@@ -119,7 +213,7 @@ export class ObstacleMap {
       kind: ObstacleKind,
       minTotalRadius = 0,
     ): void => {
-      const obs: SolidObstacle = {
+      insertObstacle({
         id: nextId++,
         x,
         z,
@@ -128,26 +222,7 @@ export class ObstacleMap {
         height,
         kind,
         _stamp: 0,
-      };
-      this.allObstacles.push(obs);
-
-      const span = Math.max(radius, minTotalRadius);
-      const minCx = Math.floor((x - span) * INV_CELL_SIZE);
-      const maxCx = Math.floor((x + span) * INV_CELL_SIZE);
-      const minCz = Math.floor((z - span) * INV_CELL_SIZE);
-      const maxCz = Math.floor((z + span) * INV_CELL_SIZE);
-
-      for (let cx = minCx; cx <= maxCx; cx++) {
-        for (let cz = minCz; cz <= maxCz; cz++) {
-          const key = cellKey(cx, cz);
-          let bucket = this.cells.get(key);
-          if (!bucket) {
-            bucket = [];
-            this.cells.set(key, bucket);
-          }
-          bucket.push(obs);
-        }
-      }
+      });
     };
 
     // 1. Settlement centerpieces (hearth firepit + cozy bench; banner pole sits inside hearth radius)
@@ -200,13 +275,14 @@ export class ObstacleMap {
       settleMaxDistSq[sIdx] = maxExtent * maxExtent;
     }
 
-    for (const tree of terrain.trees) {
-      if (overlapsScar(tree.x, tree.z)) continue;
+    for (let tIdx = 0; tIdx < this.cachedTreeObs.length; tIdx++) {
+      const treeObs = this.cachedTreeObs[tIdx];
+      if (overlapsScar(treeObs.x, treeObs.z)) continue;
       let cleared = false;
       for (let sIdx = 0; sIdx < settlements.length; sIdx++) {
         const s = settlements[sIdx];
-        const dx = tree.x - s.center.x;
-        const dz = tree.z - s.center.z;
+        const dx = treeObs.x - s.center.x;
+        const dz = treeObs.z - s.center.z;
         const distSq = dx * dx + dz * dz;
         if (distSq < clearingRadSq) {
           cleared = true;
@@ -215,8 +291,8 @@ export class ObstacleMap {
         if (distSq > settleMaxDistSq[sIdx]) continue;
         for (const b of s.buildings) {
           const clearDist = BUILDING_CATALOG[b.type].footprintRadius + 1.45;
-          const bdx = tree.x - b.position.x;
-          const bdz = tree.z - b.position.z;
+          const bdx = treeObs.x - b.position.x;
+          const bdz = treeObs.z - b.position.z;
           if (bdx * bdx + bdz * bdz < clearDist * clearDist) {
             cleared = true;
             break;
@@ -224,22 +300,23 @@ export class ObstacleMap {
         }
         if (cleared) break;
       }
-      if (cleared || overlapsBridge(tree.x, tree.z, 1.8)) continue;
+      if (cleared || overlapsBridge(treeObs.x, treeObs.z, 1.8)) continue;
 
-      addObstacle(tree.x, tree.z, getTreeTrunkRadius(tree), 6.5 * tree.scale, 'tree');
+      insertObstacle(treeObs);
     }
 
     // 4. Mossy boulders & forest rocks
-    for (const rock of terrain.rocks) {
-      if (overlapsBridge(rock.x, rock.z, 1.3)) continue;
-      addObstacle(rock.x, rock.z, getRockCollisionRadius(rock), 0.95 * rock.scale, 'rock');
+    for (let rIdx = 0; rIdx < this.cachedRockObs.length; rIdx++) {
+      const rockObs = this.cachedRockObs[rIdx];
+      if (bridges.length > 0 && overlapsBridge(rockObs.x, rockObs.z, 1.3)) continue;
+      insertObstacle(rockObs);
     }
 
     // 5. Plump berry bushes (undergrowth variant === 1; low ferns & toadstools remain walkable)
-    for (const prop of terrain.undergrowth) {
-      if (prop.variant !== 1) continue;
-      if (overlapsBridge(prop.x, prop.z, 1.2)) continue;
-      addObstacle(prop.x, prop.z, getBushCollisionRadius(prop), 0.9 * prop.scale, 'bush');
+    for (let bIdx = 0; bIdx < this.cachedBushObs.length; bIdx++) {
+      const bushObs = this.cachedBushObs[bIdx];
+      if (bridges.length > 0 && overlapsBridge(bushObs.x, bushObs.z, 1.2)) continue;
+      insertObstacle(bushObs);
     }
   }
 
@@ -256,17 +333,26 @@ export class ObstacleMap {
   /** Populates `out` with all unique solid obstacles overlapping the search square around (x, z). */
   queryNearby(x: number, z: number, searchRadius: number, out: SolidObstacle[]): void {
     out.length = 0;
+    const gridDim = this.gridDim;
+    if (gridDim === 0) return;
     const stamp = ++this.queryStamp;
+    const gridHalf = this.gridHalf;
+    const grid = this.grid;
 
-    const minCx = Math.floor((x - searchRadius) * INV_CELL_SIZE);
-    const maxCx = Math.floor((x + searchRadius) * INV_CELL_SIZE);
-    const minCz = Math.floor((z - searchRadius) * INV_CELL_SIZE);
-    const maxCz = Math.floor((z + searchRadius) * INV_CELL_SIZE);
+    let minCx = Math.floor((x - searchRadius) * INV_CELL_SIZE) + gridHalf;
+    let maxCx = Math.floor((x + searchRadius) * INV_CELL_SIZE) + gridHalf;
+    let minCz = Math.floor((z - searchRadius) * INV_CELL_SIZE) + gridHalf;
+    let maxCz = Math.floor((z + searchRadius) * INV_CELL_SIZE) + gridHalf;
+    if (minCx < 0) minCx = 0;
+    if (minCz < 0) minCz = 0;
+    if (maxCx >= gridDim) maxCx = gridDim - 1;
+    if (maxCz >= gridDim) maxCz = gridDim - 1;
 
     for (let cx = minCx; cx <= maxCx; cx++) {
+      const rowOffset = cx * gridDim;
       for (let cz = minCz; cz <= maxCz; cz++) {
-        const bucket = this.cells.get(cellKey(cx, cz));
-        if (!bucket) continue;
+        const bucket = grid[rowOffset + cz];
+        if (!bucket || bucket.length === 0) continue;
         for (let i = 0; i < bucket.length; i++) {
           const obs = bucket[i];
           if (obs._stamp === stamp) continue;
@@ -280,8 +366,9 @@ export class ObstacleMap {
   /**
    * Pushes a candidate destination or spawn point smoothly outside all nearby solid obstacles
    * using up to 3 separation passes so it never settles inside a building, tree, rock, or fire.
+   * Zero-allocation variant writes coordinates to `this.resX` and `this.resZ`.
    */
-  pushPointOutsideObstacles(
+  pushPointOutsideObstaclesInto(
     x: number,
     z: number,
     refX: number,
@@ -290,7 +377,7 @@ export class ObstacleMap {
     altitude: number,
     extraMargin: number,
     fallbackAngle: number,
-  ): { x: number; z: number } {
+  ): void {
     let px = x;
     let pz = z;
 
@@ -333,20 +420,45 @@ export class ObstacleMap {
       if (!moved) break;
     }
 
-    return { x: px, z: pz };
+    this.resX = px;
+    this.resZ = pz;
+  }
+
+  pushPointOutsideObstacles(
+    x: number,
+    z: number,
+    refX: number,
+    refZ: number,
+    creatureRadius: number,
+    altitude: number,
+    extraMargin: number,
+    fallbackAngle: number,
+  ): { x: number; z: number } {
+    this.pushPointOutsideObstaclesInto(
+      x,
+      z,
+      refX,
+      refZ,
+      creatureRadius,
+      altitude,
+      extraMargin,
+      fallbackAngle,
+    );
+    return { x: this.resX, z: this.resZ };
   }
 
   /**
    * Resolves physical overlaps against nearby solid obstacles (multi-pass circle separation)
    * so creatures can never clip through buildings, tree trunks, boulders, bushes, benches, or fires.
+   * Zero-allocation variant writes results to `this.resX`, `this.resZ`, and `this.resCollided`.
    */
-  resolveCollisions(
+  resolveCollisionsInto(
     x: number,
     z: number,
     creatureRadius: number,
     altitude: number,
     fallbackHeading: number,
-  ): { x: number; z: number; collided: boolean } {
+  ): void {
     let px = x;
     let pz = z;
     let collided = false;
@@ -383,6 +495,19 @@ export class ObstacleMap {
       if (!moved) break;
     }
 
-    return { x: px, z: pz, collided };
+    this.resX = px;
+    this.resZ = pz;
+    this.resCollided = collided;
+  }
+
+  resolveCollisions(
+    x: number,
+    z: number,
+    creatureRadius: number,
+    altitude: number,
+    fallbackHeading: number,
+  ): { x: number; z: number; collided: boolean } {
+    this.resolveCollisionsInto(x, z, creatureRadius, altitude, fallbackHeading);
+    return { x: this.resX, z: this.resZ, collided: this.resCollided };
   }
 }

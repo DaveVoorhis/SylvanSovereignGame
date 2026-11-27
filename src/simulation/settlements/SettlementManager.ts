@@ -245,15 +245,68 @@ export class SettlementManager {
     for (const settlement of world.settlements) {
       // Regional environmental adaptation yields local specialties naturally
       const profile = settlement.getAdaptationProfile();
-      for (const [key, rate] of Object.entries(profile.passiveYield)) {
-        const res = key as ResourceType;
-        if (rate) {
-          settlement.stockpile[res] += rate * dt;
+      const py = profile.passiveYield;
+      if (py.timber) settlement.stockpile.timber += py.timber * dt;
+      if (py.berries) settlement.stockpile.berries += py.berries * dt;
+      if (py.acorns) settlement.stockpile.acorns += py.acorns * dt;
+      if (py.stone) settlement.stockpile.stone += py.stone * dt;
+      if (py.herbs) settlement.stockpile.herbs += py.herbs * dt;
+      if (py.crafts) settlement.stockpile.crafts += py.crafts * dt;
+
+      // Single-pass count of completed civic/production buildings (replaces 11 linear scans per settlement)
+      let workshops = 0;
+      let granaries = 0;
+      let bakeries = 0;
+      let windmills = 0;
+      let greenhouses = 0;
+      let libraries = 0;
+      let guildhalls = 0;
+      let waterwheels = 0;
+      let lilyMarkets = 0;
+      let sanctuaries = 0;
+      let tideShrines = 0;
+      const buildings = settlement.buildings;
+      for (let i = 0; i < buildings.length; i++) {
+        const b = buildings[i];
+        if (!b.completed) continue;
+        switch (b.type) {
+          case 'workshop':
+            workshops++;
+            break;
+          case 'granary':
+            granaries++;
+            break;
+          case 'bakery':
+            bakeries++;
+            break;
+          case 'windmill':
+            windmills++;
+            break;
+          case 'greenhouse':
+            greenhouses++;
+            break;
+          case 'library':
+            libraries++;
+            break;
+          case 'guildhall':
+            guildhalls++;
+            break;
+          case 'waterwheel_mill':
+            waterwheels++;
+            break;
+          case 'lily_market':
+            lilyMarkets++;
+            break;
+          case 'aquatic_sanctuary':
+            sanctuaries++;
+            break;
+          case 'tide_shrine':
+            tideShrines++;
+            break;
         }
       }
 
       // Workshops refine timber into crafts and shape dressed stone for city masonry
-      const workshops = settlement.getCompletedCount('workshop');
       if (workshops > 0) {
         if (settlement.stockpile.timber >= 0.35 * dt) {
           const made = workshops * 0.2 * dt;
@@ -264,14 +317,12 @@ export class SettlementManager {
       }
 
       // Granaries preserve & cultivate berries and acorns
-      const granaries = settlement.getCompletedCount('granary');
       if (granaries > 0) {
         settlement.stockpile.berries += granaries * 0.11 * dt;
         settlement.stockpile.acorns += granaries * 0.11 * dt;
       }
 
       // Bakeries turn harvest abundance into food surplus & bustling coin
-      const bakeries = settlement.getCompletedCount('bakery');
       if (bakeries > 0) {
         settlement.stockpile.berries += bakeries * 0.14 * dt;
         settlement.stockpile.acorns += bakeries * 0.14 * dt;
@@ -279,28 +330,24 @@ export class SettlementManager {
       }
 
       // Windmills mill grain & saw timber planks for ongoing city construction
-      const windmills = settlement.getCompletedCount('windmill');
       if (windmills > 0) {
         settlement.stockpile.timber += windmills * 0.22 * dt;
         settlement.stockpile.acorns += windmills * 0.18 * dt;
       }
 
       // Canopy Conservatories cultivate herbs and berries in every season
-      const greenhouses = settlement.getCompletedCount('greenhouse');
       if (greenhouses > 0) {
         settlement.stockpile.herbs += greenhouses * 0.2 * dt;
         settlement.stockpile.berries += greenhouses * 0.15 * dt;
       }
 
       // Owl Archives inspire artisans & scholarly devotion
-      const libraries = settlement.getCompletedCount('library');
       if (libraries > 0) {
         settlement.stockpile.crafts += libraries * 0.16 * dt;
         settlement.devotionTotal += libraries * 0.08 * dt;
       }
 
       // Grand Guildhalls coordinate city masonry, lumbering, and civic wealth
-      const guildhalls = settlement.getCompletedCount('guildhall');
       if (guildhalls > 0) {
         settlement.stockpile.timber += guildhalls * 0.26 * dt;
         settlement.stockpile.stone += guildhalls * 0.22 * dt;
@@ -308,7 +355,6 @@ export class SettlementManager {
       }
 
       // Waterwheel Mills saw driftwood timber, grind reed flour & fashion river crafts
-      const waterwheels = settlement.getCompletedCount('waterwheel_mill');
       if (waterwheels > 0) {
         settlement.stockpile.timber += waterwheels * 0.25 * dt;
         settlement.stockpile.acorns += waterwheels * 0.16 * dt;
@@ -316,7 +362,6 @@ export class SettlementManager {
       }
 
       // Lily-Pad Markets harvest aquatic herbs, riverberries, and trade coin
-      const lilyMarkets = settlement.getCompletedCount('lily_market');
       if (lilyMarkets > 0) {
         settlement.stockpile.herbs += lilyMarkets * 0.18 * dt;
         settlement.stockpile.berries += lilyMarkets * 0.16 * dt;
@@ -324,7 +369,6 @@ export class SettlementManager {
       }
 
       // Aquatic Sanctuaries cultivate lotus herbs, pearl crafts & river devotion
-      const sanctuaries = settlement.getCompletedCount('aquatic_sanctuary');
       if (sanctuaries > 0) {
         settlement.stockpile.herbs += sanctuaries * 0.22 * dt;
         settlement.stockpile.crafts += sanctuaries * 0.18 * dt;
@@ -332,7 +376,6 @@ export class SettlementManager {
       }
 
       // Tide Shrines channel serene waterway prayers
-      const tideShrines = settlement.getCompletedCount('tide_shrine');
       if (tideShrines > 0) {
         settlement.devotionTotal += tideShrines * 0.15 * dt;
       }
@@ -543,9 +586,9 @@ export class SettlementManager {
     world.structureRevision++;
 
     // Transfer all living emigrants in the party to their new village
-    for (const c of world.creatures) {
+    for (const c of world.aliveCreatures) {
       if (c.alive && c.emigrationPartyId === partyId) {
-        c.settlementId = settlement.id;
+        world.transferCreatureSettlement(c, settlement.id);
         c.emigrationPartyId = null;
         c.emigrationTargetX = null;
         c.emigrationTargetZ = null;
@@ -559,10 +602,15 @@ export class SettlementManager {
 
     // Accompanying kin who traveled with the settlers help break ground right away
     const companionRoles: CreatureRole[] = ['builder', 'forager', 'builder', 'artisan'];
+    let aliveCount = 0;
+    for (let i = 0; i < world.aliveCreatures.length; i++) {
+      if (world.aliveCreatures[i].alive) aliveCount++;
+    }
     for (const role of companionRoles) {
-      if (world.creatures.filter((c) => c.alive).length >= world.config.maxPopulation) break;
+      if (aliveCount >= world.config.maxPopulation) break;
       const species = world.rng.pick(settlement.foundingSpecies);
       world.spawnCreature(settlement, species, role);
+      aliveCount++;
     }
 
     // Stake out the fledgling village's very first adapted construction plots at stage 0 (clearing land!)
@@ -875,7 +923,7 @@ export class SettlementManager {
     if (!site) return;
 
     // Pick 2-3 sturdy pioneers (preferring at least 1 builder and 1 forager)
-    const eligible = world.creatures.filter(
+    const eligible = world.aliveCreatures.filter(
       (c) =>
         c.alive &&
         c.lifeStage === 'adult' &&
@@ -1001,7 +1049,7 @@ export class SettlementManager {
     }
     const rng = this.emigrationRng;
 
-    const eligible = world.creatures.filter(
+    const eligible = world.aliveCreatures.filter(
       (c) =>
         c.alive &&
         c.lifeStage === 'adult' &&
@@ -1262,8 +1310,9 @@ export class SettlementManager {
 
   private considerPopulationGrowth(settlement: Settlement, world: WorldState): void {
     let aliveTotal = 0;
-    for (let i = 0; i < world.creatures.length; i++) {
-      if (world.creatures[i].alive) aliveTotal++;
+    const aliveList = world.aliveCreatures;
+    for (let i = 0; i < aliveList.length; i++) {
+      if (aliveList[i].alive) aliveTotal++;
     }
     if (aliveTotal >= world.config.maxPopulation) return;
 
@@ -1272,7 +1321,7 @@ export class SettlementManager {
     const food = settlement.stockpile.berries + settlement.stockpile.acorns;
     if (food < 14) return;
 
-    const residents = world.creatures.filter(
+    const residents = aliveList.filter(
       (c) =>
         c.alive &&
         c.settlementId === settlement.id &&

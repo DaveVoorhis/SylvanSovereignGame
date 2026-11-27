@@ -147,11 +147,11 @@ function tileFbm(
  * Converts a tileable grayscale bump/height canvas into a true tangent-space RGB normal map
  * using a 3x3 Sobel gradient filter for crisp directional micro-surface PBR lighting.
  */
-function createNormalCanvasFromBump(bumpCanvas: HTMLCanvasElement, strength = 2.6): HTMLCanvasElement {
-  const size = bumpCanvas.width;
-  const srcCtx = bumpCanvas.getContext('2d')!;
-  const srcData = srcCtx.getImageData(0, 0, size, size).data;
-
+function createNormalCanvasFromHeightData(
+  srcData: Uint8ClampedArray,
+  size: number,
+  strength = 2.6,
+): HTMLCanvasElement {
   const [outCanvas, outCtx] = createCanvas(size);
   const outImg = outCtx.createImageData(size, size);
   const out = outImg.data;
@@ -191,6 +191,13 @@ function createNormalCanvasFromBump(bumpCanvas: HTMLCanvasElement, strength = 2.
 
   outCtx.putImageData(outImg, 0, 0);
   return outCanvas;
+}
+
+function createNormalCanvasFromBump(bumpCanvas: HTMLCanvasElement, strength = 2.6): HTMLCanvasElement {
+  const size = bumpCanvas.width;
+  const srcCtx = bumpCanvas.getContext('2d')!;
+  const srcData = srcCtx.getImageData(0, 0, size, size).data;
+  return createNormalCanvasFromHeightData(srcData, size, strength);
 }
 
 /**
@@ -358,7 +365,7 @@ function createRock(size: number): PbrTextureSet {
   ctxBump.putImageData(imgBump, 0, 0);
   ctxRough.putImageData(imgRough, 0, 0);
 
-  const cNormal = createNormalCanvasFromBump(cBump, 3.2);
+  const cNormal = createNormalCanvasFromHeightData(dBump, size, 3.2);
   return {
     map: finalizeTexture(cMap, 4, true),
     bumpMap: finalizeTexture(cBump, 4, false),
@@ -420,7 +427,7 @@ function createPlaster(size: number): PbrTextureSet {
   ctxBump.putImageData(imgBump, 0, 0);
   ctxRough.putImageData(imgRough, 0, 0);
 
-  const cNormal = createNormalCanvasFromBump(cBump, 1.8);
+  const cNormal = createNormalCanvasFromHeightData(dBump, size, 1.8);
   return {
     map: finalizeTexture(cMap, 2, true),
     bumpMap: finalizeTexture(cBump, 2, false),
@@ -504,7 +511,7 @@ function createSlateRoof(size: number): PbrTextureSet {
   ctxBump.putImageData(imgBump, 0, 0);
   ctxRough.putImageData(imgRough, 0, 0);
 
-  const cNormal = createNormalCanvasFromBump(cBump, 2.8);
+  const cNormal = createNormalCanvasFromHeightData(dBump, size, 2.8);
   return {
     map: finalizeTexture(cMap, 2, true),
     bumpMap: finalizeTexture(cBump, 2, false),
@@ -657,7 +664,7 @@ function createBark(size: number, kind: 'oak' | 'pine' | 'birch'): PbrTextureSet
   ctxBump.putImageData(imgBump, 0, 0);
   ctxRough.putImageData(imgRough, 0, 0);
 
-  const cNormal = createNormalCanvasFromBump(cBump, kind === 'birch' ? 1.8 : 3.2);
+  const cNormal = createNormalCanvasFromHeightData(dBump, size, kind === 'birch' ? 1.8 : 3.2);
   return {
     map: finalizeTexture(cMap, 2, true),
     bumpMap: finalizeTexture(cBump, 2, false),
@@ -976,7 +983,7 @@ function createTimber(size: number): PbrTextureSet {
   ctxBump.putImageData(imgBump, 0, 0);
   ctxRough.putImageData(imgRough, 0, 0);
 
-  const cNormal = createNormalCanvasFromBump(cBump, 2.4);
+  const cNormal = createNormalCanvasFromHeightData(dBump, size, 2.4);
   return {
     map: finalizeTexture(cMap, 2, true),
     bumpMap: finalizeTexture(cBump, 2, false),
@@ -1157,7 +1164,7 @@ function createStone(size: number): PbrTextureSet {
   ctxBump.putImageData(imgBump, 0, 0);
   ctxRough.putImageData(imgRough, 0, 0);
 
-  const cNormal = createNormalCanvasFromBump(cBump, 3.0);
+  const cNormal = createNormalCanvasFromHeightData(dBump, size, 3.0);
   return {
     map: finalizeTexture(cMap, 2, true),
     bumpMap: finalizeTexture(cBump, 2, false),

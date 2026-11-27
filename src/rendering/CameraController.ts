@@ -55,6 +55,11 @@ export class CameraController {
   private povLastPointerY = 0;
   private savedWorldPos: THREE.Vector3 | null = null;
   private savedWorldTarget: THREE.Vector3 | null = null;
+  private readonly tmpNextTarget = new THREE.Vector3();
+  private readonly tmpDelta = new THREE.Vector3();
+  private readonly tmpForward = new THREE.Vector3();
+  private readonly tmpRight = new THREE.Vector3();
+  private readonly tmpMove = new THREE.Vector3();
 
   private readonly onKeyDownBound: (e: KeyboardEvent) => void;
   private readonly onKeyUpBound: (e: KeyboardEvent) => void;
@@ -308,8 +313,8 @@ export class CameraController {
     if (this.followProvider) {
       const pos = this.followProvider();
       if (pos) {
-        const nextTarget = new THREE.Vector3(pos.x, pos.y + 0.9, pos.z);
-        const delta = new THREE.Vector3().subVectors(nextTarget, this.controls.target);
+        const nextTarget = this.tmpNextTarget.set(pos.x, pos.y + 0.9, pos.z);
+        const delta = this.tmpDelta.subVectors(nextTarget, this.controls.target);
         const lerpAmt = 1 - Math.exp(-6.5 * Math.max(0, Math.min(dt, 0.1)));
         this.controls.target.addScaledVector(delta, lerpAmt);
         this.camera.position.addScaledVector(delta, lerpAmt);
@@ -333,29 +338,31 @@ export class CameraController {
     }
 
     // 3. Keyboard WASD / Arrow panning relative to camera yaw (scales smoothly with zoom altitude)
-    const camDist = this.camera.position.distanceTo(this.controls.target);
-    const panSpeed = (32 + camDist * 0.52) * dt;
-    const forward = new THREE.Vector3();
-    this.camera.getWorldDirection(forward);
-    forward.y = 0;
-    forward.normalize();
-    const right = new THREE.Vector3().crossVectors(forward, THREE.Object3D.DEFAULT_UP).normalize();
-    const move = new THREE.Vector3();
+    if (this.keys.size > 0) {
+      const camDist = this.camera.position.distanceTo(this.controls.target);
+      const panSpeed = (32 + camDist * 0.52) * dt;
+      const forward = this.tmpForward;
+      this.camera.getWorldDirection(forward);
+      forward.y = 0;
+      forward.normalize();
+      const right = this.tmpRight.crossVectors(forward, THREE.Object3D.DEFAULT_UP).normalize();
+      const move = this.tmpMove.set(0, 0, 0);
 
-    if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) move.add(forward);
-    if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) move.sub(forward);
-    if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) move.add(right);
-    if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) move.sub(right);
+      if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) move.add(forward);
+      if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) move.sub(forward);
+      if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) move.add(right);
+      if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) move.sub(right);
 
-    if (move.lengthSq() > 0) {
-      move.normalize().multiplyScalar(panSpeed);
-      this.camera.position.add(move);
-      this.controls.target.add(move);
+      if (move.lengthSq() > 0) {
+        move.normalize().multiplyScalar(panSpeed);
+        this.camera.position.add(move);
+        this.controls.target.add(move);
+      }
     }
 
     // 4. Optional slow cinematic spectator orbit
     if (this.cinematicDrift && !this.desiredPosition) {
-      const offset = new THREE.Vector3().subVectors(this.camera.position, this.controls.target);
+      const offset = this.tmpDelta.subVectors(this.camera.position, this.controls.target);
       offset.applyAxisAngle(THREE.Object3D.DEFAULT_UP, dt * 0.085);
       this.camera.position.copy(this.controls.target).add(offset);
     }

@@ -21,6 +21,14 @@ const EXPORT_RESERVE: Record<ResourceType, number> = {
   timber: 18,
   stone: 14,
 };
+const EXPORT_PRIORITY: readonly ResourceType[] = [
+  'crafts',
+  'berries',
+  'acorns',
+  'herbs',
+  'timber',
+  'stone',
+];
 
 /**
  * Coordinates woodland barter, inter-settlement merchant caravans,
@@ -59,11 +67,11 @@ export class EconomySystem {
 
   pickExportGood(origin: Settlement): ResourceType | null {
     const profile = origin.getAdaptationProfile();
-    const priority: ResourceType[] = ['crafts', 'berries', 'acorns', 'herbs', 'timber', 'stone'];
     let best: ResourceType | null = null;
     let bestScore = 0;
 
-    for (const res of priority) {
+    for (let i = 0; i < EXPORT_PRIORITY.length; i++) {
+      const res = EXPORT_PRIORITY[i];
       const qty = origin.stockpile[res];
       const surplus = qty - EXPORT_RESERVE[res];
       if (surplus < 2) continue;
@@ -140,7 +148,7 @@ export class EconomySystem {
     this.activeRoutes.length = 0;
     const counts = new Map<string, { from: Settlement; to: Settlement; count: number }>();
 
-    for (const c of world.creatures) {
+    for (const c of world.aliveCreatures) {
       if (!c.alive || c.activity !== 'trading' || !c.tradeDestinationSettlementId) continue;
       const from = world.getSettlement(c.settlementId);
       const to = world.getSettlement(c.tradeDestinationSettlementId);

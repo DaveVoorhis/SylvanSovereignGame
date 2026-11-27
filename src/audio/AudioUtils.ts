@@ -56,8 +56,8 @@ export function createSeamlessNoiseBuffer(
   const buffer = ctx.createBuffer(2, length, sampleRate);
   const rand = makeBufferRng(seed);
 
+  const raw = new Float32Array(rawLen);
   for (let ch = 0; ch < 2; ch++) {
-    const raw = new Float32Array(rawLen);
     if (color === 'white') {
       for (let i = 0; i < rawLen; i++) {
         raw[i] = rand() * 2 - 1;
@@ -129,7 +129,9 @@ export function createWoodlandReverbBuffer(
       const t = i / length;
       // Soft pre-delay and smooth exponential outdoor air decay
       const preDelay = smoothstep(0.0, 0.025, t);
-      const decay = Math.pow(1 - t, 2.75) * preDelay;
+      const inv = 1 - t;
+      const s = Math.sqrt(inv);
+      const decay = inv * inv * s * Math.sqrt(s) * preDelay;
       const white = rand() * 2 - 1;
       // Progressive high-frequency air absorption
       const alpha = 0.24 * (1 - t * 0.72) + 0.04;

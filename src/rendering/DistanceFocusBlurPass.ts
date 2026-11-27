@@ -37,6 +37,8 @@ const FRAGMENT_SHADER = /* glsl */ `
   uniform float uNear;
   uniform float uFar;
   uniform float uAspect;
+  uniform float uInvAspect;
+  uniform vec2 uProjScale;
   uniform vec2 uTexelSize;
   uniform mat4 uInvProjectionMatrix;
   uniform mat4 uCameraWorldMatrix;
@@ -72,9 +74,8 @@ const FRAGMENT_SHADER = /* glsl */ `
   }
 
   vec3 getViewPos(vec2 uv, float rawDepth) {
-    vec4 ndc = vec4(uv * 2.0 - 1.0, rawDepth * 2.0 - 1.0, 1.0);
-    vec4 vp = uInvProjectionMatrix * ndc;
-    return vp.xyz / max(vp.w, 0.00001);
+    float viewZ = perspectiveDepthToViewZ(rawDepth, uNear, uFar);
+    return vec3((uv * 2.0 - 1.0) * uProjScale * (-viewZ), viewZ);
   }
 
   // Edge-preserving view-space normal reconstruction from hardware depth buffer
@@ -118,26 +119,30 @@ const FRAGMENT_SHADER = /* glsl */ `
     float worldRadius = clamp(centerDist * 0.028, 0.28, 1.85);
     // Approximate screen-space UV radius from projected world radius
     float screenRadius = clamp((worldRadius / max(centerDist, 0.5)) * 0.62, 0.0035, 0.028);
-    vec2 aspectScale = vec2(1.0 / max(0.5, uAspect), 1.0);
+    vec2 aspectScale = vec2(uInvAspect, 1.0);
 
     float occ = 0.0;
     // Incremental 2D rotation matrix for GOLDEN_ANGLE = 2.39996323 rad (avoids per-tap cos/sin)
     const mat2 GOLDEN_ROT = mat2(-0.73736888, 0.67549029, -0.67549029, -0.73736888);
+    const float AO_SQRT_RADII[8] = float[8](
+      0.2500000, 0.4330127, 0.5590170, 0.6614378,
+      0.7500000, 0.8291562, 0.9013878, 0.9682458
+    );
     float baseAngle = ign * 6.2831853;
     vec2 rotDir = vec2(cos(baseAngle), sin(baseAngle));
 
     for (int i = 0; i < 8; i++) {
-      float fi = (float(i) + 0.5) / 8.0;
       vec2 curDir = rotDir;
       rotDir = GOLDEN_ROT * rotDir;
-      vec2 offset = curDir * (sqrt(fi) * screenRadius) * aspectScale;
+      vec2 offset = curDir * (AO_SQRT_RADII[i] * screenRadius) * aspectScale;
       vec2 sUv = uv + offset;
       if (sUv.x <= 0.002 || sUv.x >= 0.998 || sUv.y <= 0.002 || sUv.y >= 0.998) continue;
 
       float sDepth = texture2D(tDepth, sUv).x;
-      if (isSkyPixel(sDepth, getViewDist(sDepth))) continue;
+      float sViewZ = perspectiveDepthToViewZ(sDepth, uNear, uFar);
+      if (isSkyPixel(sDepth, -sViewZ)) continue;
 
-      vec3 sPos = getViewPos(sUv, sDepth);
+      vec3 sPos = vec3((sUv * 2.0 - 1.0) * uProjScale * (-sViewZ), sViewZ);
       vec3 diff = sPos - centerPos;
       float dLenSq = dot(diff, diff);
       if (dLenSq < 1e-6) continue;
@@ -180,7 +185,7 @@ const FRAGMENT_SHADER = /* glsl */ `
 
     if (centerCoc > 0.02 && uMaxBlur > 0.00015) {
       float blurRadius = centerCoc * uMaxBlur;
-      vec2 aspectScale = vec2(1.0 / max(0.5, uAspect), 1.0);
+      vec2 aspectScale = vec2(uInvAspect, 1.0);
       const float GOLDEN_ANGLE = 2.39996323;
       const mat2 GOLDEN_ROT = mat2(-0.73736888, 0.67549029, -0.67549029, -0.73736888);
       float tapCountF = float(max(uTaps, 6));
@@ -213,7 +218,7 @@ const FRAGMENT_SHADER = /* glsl */ `
 
     // Contact Ambient Occlusion + Height Valley Mist + Mie Atmospheric In-Scattering
     if (!isSkyPixel(centerDepth, centerDist)) {
-      vec3 viewPos = getViewPos(vUv, centerDepth);
+      vec3 viewPos = vec3((vUv * 2.0 - 1.0) * uProjScale * centerDist, -centerDist);
       float radialDist = length(viewPos);
 
       // 1. Grounded crevice/contact AO around roots, paws, boulders, foundations, and eaves
@@ -233,7 +238,7 @@ const FRAGMENT_SHADER = /* glsl */ `
       float valleyDistFactor = 1.0 - exp(-max(0.0, centerDist - 18.0) * (0.0022 + uMistStrength * 0.0055));
       float valleyMist = clamp(valleyHeightFactor * valleyDistFactor * uMistStrength, 0.0, 0.68) * (1.0 - underwaterCam);
 
-      vec3 sunDir = normalize(uSunDirection);
+      vec3 sunDir = uSunDirection;
       float sunDot = max(dot(rayDir, sunDir), 0.0);
       float mieScatter = pow(sunDot, 7.0) * uDaylight * 0.48;
       vec3 mistColor = mix(uHorizonColor, uSunColor * 1.15, clamp(mieScatter, 0.0, 0.65));
@@ -306,6 +311,13 @@ export class DistanceFocusBlurPass extends Pass {
         uNear: { value: camera.near },
         uFar: { value: camera.far },
         uAspect: { value: camera.aspect },
+        uInvAspect: { value: 1 / Math.max(0.5, camera.aspect) },
+        uProjScale: {
+          value: new THREE.Vector2(
+            camera.projectionMatrixInverse.elements[0] || Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)) * camera.aspect,
+            camera.projectionMatrixInverse.elements[5] || Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)),
+          ),
+        },
         uTexelSize: { value: new THREE.Vector2(1 / 1280, 1 / 720) },
         uInvProjectionMatrix: { value: new THREE.Matrix4() },
         uCameraWorldMatrix: { value: new THREE.Matrix4() },
@@ -358,9 +370,10 @@ export class DistanceFocusBlurPass extends Pass {
     u.uNear.value = this.camera.near;
     u.uFar.value = this.camera.far;
     u.uAspect.value = this.camera.aspect;
+    u.uInvAspect.value = 1 / Math.max(0.5, this.camera.aspect);
 
     if (params.sunDirection) {
-      (u.uSunDirection.value as THREE.Vector3).copy(params.sunDirection);
+      (u.uSunDirection.value as THREE.Vector3).copy(params.sunDirection).normalize();
     }
     if (params.sunColor) {
       (u.uSunColor.value as THREE.Color).copy(params.sunColor);
@@ -393,7 +406,12 @@ export class DistanceFocusBlurPass extends Pass {
     u.uNear.value = this.camera.near;
     u.uFar.value = this.camera.far;
     u.uAspect.value = this.camera.aspect;
+    u.uInvAspect.value = 1 / Math.max(0.5, this.camera.aspect);
     (u.uInvProjectionMatrix.value as THREE.Matrix4).copy(this.camera.projectionMatrixInverse);
+    (u.uProjScale.value as THREE.Vector2).set(
+      this.camera.projectionMatrixInverse.elements[0],
+      this.camera.projectionMatrixInverse.elements[5],
+    );
     (u.uCameraWorldMatrix.value as THREE.Matrix4).copy(this.camera.matrixWorld);
     if (readBuffer.width > 0 && readBuffer.height > 0) {
       (u.uTexelSize.value as THREE.Vector2).set(1 / readBuffer.width, 1 / readBuffer.height);
@@ -411,7 +429,9 @@ export class DistanceFocusBlurPass extends Pass {
 
   override setSize(width: number, height: number): void {
     if (height > 0 && width > 0) {
-      this.material.uniforms.uAspect.value = width / height;
+      const aspect = width / height;
+      this.material.uniforms.uAspect.value = aspect;
+      this.material.uniforms.uInvAspect.value = 1 / Math.max(0.5, aspect);
       (this.material.uniforms.uTexelSize.value as THREE.Vector2).set(1 / width, 1 / height);
     }
   }

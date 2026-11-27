@@ -13,18 +13,44 @@ export interface DiplomacySnapshot {
  */
 export class DiplomacySystem {
   private readonly relations = new Map<string, number>(); // key "a|b" -> [-100, 100]
+  /** Zero-allocation symmetric lookup table: first -> (second -> score). */
+  private readonly relationByPair = new Map<string, Map<string, number>>();
+  private warPairCount = 0;
   private timer = 10;
 
   private static pairKey(a: string, b: string): string {
     return a < b ? `${a}|${b}` : `${b}|${a}`;
   }
 
+  private setPairScore(a: string, b: string, score: number): void {
+    const first = a < b ? a : b;
+    const second = a < b ? b : a;
+    let inner = this.relationByPair.get(first);
+    if (!inner) {
+      inner = new Map<string, number>();
+      this.relationByPair.set(first, inner);
+    }
+    const prev = inner.get(second);
+    const wasWar = prev !== undefined && prev < -50;
+    const isWar = score < -50;
+    if (wasWar && !isWar) this.warPairCount = Math.max(0, this.warPairCount - 1);
+    else if (!wasWar && isWar) this.warPairCount++;
+    inner.set(second, score);
+    this.relations.set(DiplomacySystem.pairKey(first, second), score);
+  }
+
+  /** O(1) check whether any settlement pair currently holds a 'war' diplomatic stance. */
+  hasActiveWarRelations(): boolean {
+    return this.warPairCount > 0;
+  }
+
   initialize(settlements: readonly Settlement[], world: WorldState): void {
     this.relations.clear();
+    this.relationByPair.clear();
+    this.warPairCount = 0;
     for (let i = 0; i < settlements.length; i++) {
       for (let j = i + 1; j < settlements.length; j++) {
-        const key = DiplomacySystem.pairKey(settlements[i].id, settlements[j].id);
-        this.relations.set(key, world.rng.range(-18, 32));
+        this.setPairScore(settlements[i].id, settlements[j].id, world.rng.range(-18, 32));
       }
     }
   }
@@ -37,17 +63,20 @@ export class DiplomacySystem {
   ): void {
     for (const other of world.settlements) {
       if (other.id === newSettlement.id) continue;
-      const key = DiplomacySystem.pairKey(newSettlement.id, other.id);
-      if (this.relations.has(key)) continue;
+      const first = newSettlement.id < other.id ? newSettlement.id : other.id;
+      const second = newSettlement.id < other.id ? other.id : newSettlement.id;
+      if (this.relationByPair.get(first)?.has(second)) continue;
       const initialScore =
         parentSettlement && other.id === parentSettlement.id ? 38 : world.rng.range(-10, 28);
-      this.relations.set(key, initialScore);
+      this.setPairScore(newSettlement.id, other.id, initialScore);
     }
   }
 
   getScore(a: string, b: string): number {
     if (a === b) return 100;
-    return this.relations.get(DiplomacySystem.pairKey(a, b)) ?? 0;
+    const first = a < b ? a : b;
+    const second = a < b ? b : a;
+    return this.relationByPair.get(first)?.get(second) ?? 0;
   }
 
   getStance(a: string, b: string): DiplomaticStance {
@@ -65,10 +94,11 @@ export class DiplomacySystem {
    */
   concludeWarWithPeace(a: Settlement, b: Settlement, targetScore = -28): void {
     if (a.id === b.id) return;
-    const key = DiplomacySystem.pairKey(a.id, b.id);
-    const cur = this.relations.get(key) ?? -60;
+    const first = a.id < b.id ? a.id : b.id;
+    const second = a.id < b.id ? b.id : a.id;
+    const cur = this.relationByPair.get(first)?.get(second) ?? -60;
     const clamped = Math.max(-45, Math.min(100, Math.max(cur, targetScore)));
-    this.relations.set(key, clamped);
+    this.setPairScore(a.id, b.id, clamped);
   }
 
   adjustRelation(
@@ -79,10 +109,9 @@ export class DiplomacySystem {
     reason?: string,
   ): void {
     if (a.id === b.id) return;
-    const key = DiplomacySystem.pairKey(a.id, b.id);
     const prevStance = this.getStance(a.id, b.id);
-    const next = Math.max(-100, Math.min(100, (this.relations.get(key) ?? 0) + delta));
-    this.relations.set(key, next);
+    const next = Math.max(-100, Math.min(100, this.getScore(a.id, b.id) + delta));
+    this.setPairScore(a.id, b.id, next);
     const nextStance = this.getStance(a.id, b.id);
 
     if (prevStance !== nextStance) {
@@ -183,6 +212,7 @@ export class DiplomacySystem {
     settlements: readonly Settlement[],
     stance: DiplomaticStance,
   ): Array<[Settlement, Settlement]> {
+    if (stance === 'war' && this.warPairCount === 0) return [];
     const pairs: Array<[Settlement, Settlement]> = [];
     for (let i = 0; i < settlements.length; i++) {
       for (let j = i + 1; j < settlements.length; j++) {
@@ -281,8 +311,15 @@ export class DiplomacySystem {
   importSnapshot(snapshot: DiplomacySnapshot): void {
     this.timer = snapshot.timer;
     this.relations.clear();
+    this.relationByPair.clear();
+    this.warPairCount = 0;
     for (const [key, score] of snapshot.relations) {
-      this.relations.set(key, score);
+      const sep = key.indexOf('|');
+      if (sep > 0) {
+        this.setPairScore(key.slice(0, sep), key.slice(sep + 1), score);
+      } else {
+        this.relations.set(key, score);
+      }
     }
   }
 }

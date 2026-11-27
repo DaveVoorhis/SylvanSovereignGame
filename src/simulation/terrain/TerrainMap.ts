@@ -145,6 +145,14 @@ export class TerrainMap {
   readonly tributaryAngle: number;
   readonly resourceNodes: ResourceNode[] = [];
   private readonly resourceNodeById = new Map<string, ResourceNode>();
+  private readonly resourceNodesByType: Record<ResourceType, ResourceNode[]> = {
+    timber: [],
+    berries: [],
+    acorns: [],
+    stone: [],
+    herbs: [],
+    crafts: [],
+  };
   readonly trees: TreeSpot[] = [];
   readonly undergrowth: PropSpot[] = [];
   readonly rocks: PropSpot[] = [];
@@ -1237,6 +1245,11 @@ export class TerrainMap {
     }
 
     for (const pond of this.ponds) {
+      const dx = x - pond.x;
+      const dz = z - pond.z;
+      const maxScale = pond.scaleX > pond.scaleZ ? pond.scaleX : pond.scaleZ;
+      const bound = (waterDist + 3.81 + pond.radius) * maxScale;
+      if (bound > 0 && dx * dx + dz * dz >= bound * bound) continue;
       const pondDist = this.getPondSignedDistance(x, z, pond);
       waterDist = smoothMin(waterDist, pondDist, 3.8);
     }
@@ -1533,18 +1546,21 @@ export class TerrainMap {
         : 0;
 
     const ridgeWeight = Math.min(1.35, Math.max(0, radialDist - 0.22)) * landMask;
-    const ridgeNoise = this.elevationNoise.ridged(
-      wx * this.ridgeScale + this.ridgeOffsetX,
-      wz * this.ridgeScale + this.ridgeOffsetZ,
-      2,
-    );
+    const mountainEnvelope =
+      alpineDepth > -52 ? smoothstep(-52, 86, alpineDepth) * landMask : 0;
+    const ridgeNoise =
+      ridgeWeight > 0 || mountainEnvelope > 0.001
+        ? this.elevationNoise.ridged(
+            wx * this.ridgeScale + this.ridgeOffsetX,
+            wz * this.ridgeScale + this.ridgeOffsetZ,
+            2,
+          )
+        : 0;
     const ridge = ridgeWeight > 0 ? ridgeNoise * this.ridgeAmplitude * ridgeWeight : 0;
 
     // 1. Back (-Z) Continuous Craggy Alpine Mountain Cordillera
     //    Foothills & climbable slopes (alpineDepth -48..+55) rise into an impassable towering wall (+60..infinity)
     let craggyMassif = 0;
-    const mountainEnvelope =
-      alpineDepth > -52 ? smoothstep(-52, 86, alpineDepth) * landMask : 0;
     if (mountainEnvelope > 0.001) {
       const alongBack = -x * this.coastSin + z * this.coastCos;
       const alpineRidge = this.elevationNoise.ridged(
@@ -1623,39 +1639,44 @@ export class TerrainMap {
     }
 
     // 2. Amorphous Interior Biomes: Arid Sand Dunes/Mesas & Flat Sunlit Prairies
-    this.sampleAmorphousBiomesToScratch(
-      x,
-      z,
-      coastDist,
-      alpineDepth,
-      freshDist,
-    );
-    const aridity = this.tmpAridity;
-    const prairie = this.tmpPrairie;
     const alpineSuppress = 1 - smoothstep(-10, 26, alpineDepth);
-
-    const desMask = smoothstep(0.45, 0.72, aridity) * landMask * alpineSuppress;
+    let desMask = 0;
     let desertSculpt = 0;
-    if (desMask > 0.001) {
-      const duneU = x * this.duneCos + z * this.duneSin;
-      const duneV = -x * this.duneSin + z * this.duneCos;
-      const duneWarp = this.climateNoise.sample(duneU * 0.008, duneV * 0.008) * 5.2;
-      const primaryDune = Math.pow(1 - Math.abs(Math.sin(duneU * 0.052 + duneWarp)), 1.35) * 3.4;
-      const crossDune =
-        (1 - Math.abs(Math.sin(duneU * 0.115 - duneV * 0.032 + duneWarp * 0.6))) * 0.85;
-      const mesaRaw =
-        (this.elevationNoise.fbm(x * 0.01 + 31.4, z * 0.01 - 19.2, 2) + 1) * 0.5;
-      const mesa = smoothstep(0.69, 0.78, mesaRaw) * 8.2;
-      desertSculpt = desMask * (1.2 + primaryDune + crossDune + mesa);
+    let praFlat = 0;
+    let fenMask = 0;
+    if (landMask > 0 && alpineSuppress > 0) {
+      this.sampleAmorphousBiomesToScratch(
+        x,
+        z,
+        coastDist,
+        alpineDepth,
+        freshDist,
+      );
+      const aridity = this.tmpAridity;
+      const prairie = this.tmpPrairie;
+
+      desMask = smoothstep(0.45, 0.72, aridity) * landMask * alpineSuppress;
+      if (desMask > 0.001) {
+        const duneU = x * this.duneCos + z * this.duneSin;
+        const duneV = -x * this.duneSin + z * this.duneCos;
+        const duneWarp = this.climateNoise.sample(duneU * 0.008, duneV * 0.008) * 5.2;
+        const primaryDune = Math.pow(1 - Math.abs(Math.sin(duneU * 0.052 + duneWarp)), 1.35) * 3.4;
+        const crossDune =
+          (1 - Math.abs(Math.sin(duneU * 0.115 - duneV * 0.032 + duneWarp * 0.6))) * 0.85;
+        const mesaRaw =
+          (this.elevationNoise.fbm(x * 0.01 + 31.4, z * 0.01 - 19.2, 2) + 1) * 0.5;
+        const mesa = smoothstep(0.69, 0.78, mesaRaw) * 8.2;
+        desertSculpt = desMask * (1.2 + primaryDune + crossDune + mesa);
+      }
+
+      praFlat = smoothstep(0.46, 0.72, prairie) * landMask * alpineSuppress;
+
+      // 3. Lowland Misty Fen Depression
+      const fdx = x - this.fenCenterX;
+      const fdz = z - this.fenCenterZ;
+      const fenDist = Math.sqrt(fdx * fdx + fdz * fdz) / this.fenRadius;
+      fenMask = (1 - smoothstep(0.2, 1.05, fenDist)) * landMask * alpineSuppress;
     }
-
-    const praFlat = smoothstep(0.46, 0.72, prairie) * landMask * alpineSuppress;
-
-    // 3. Lowland Misty Fen Depression
-    const fdx = x - this.fenCenterX;
-    const fdz = z - this.fenCenterZ;
-    const fenDist = Math.sqrt(fdx * fdx + fdz * fdz) / this.fenRadius;
-    const fenMask = (1 - smoothstep(0.2, 1.05, fenDist)) * landMask * alpineSuppress;
 
     const micro =
       this.elevationNoise.sample(rx * 0.085 + this.elevOffsetX, rz * 0.085 + this.elevOffsetZ) *
@@ -1732,8 +1753,12 @@ export class TerrainMap {
   }
 
   getSlopeAt(x: number, z: number): number {
-    const n = this.getNormalAt(x, z);
-    return 1 - n.y;
+    const eps = 0.65;
+    const nx = this.getHeightAt(x - eps, z) - this.getHeightAt(x + eps, z);
+    const ny = 2 * eps;
+    const nz = this.getHeightAt(x, z - eps) - this.getHeightAt(x, z + eps);
+    const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+    return 1 - ny / len;
   }
 
   private computeMoisture(x: number, z: number, freshDist: number, aridity: number): number {
@@ -1930,12 +1955,67 @@ export class TerrainMap {
 
   /** Classifies the natural environmental village adaptation at (x, z). */
   getSiteAdaptation(x: number, z: number): VillageAdaptationId {
-    const biome = this.getBiomeAt(x, z);
-    const elevation = this.getHeightAt(x, z);
-    const freshDist = this.getFreshwaterDistance(x, z);
-    const moisture = this.getMoistureAt(x, z);
-    const coastDist = this.getCoastSignedDistance(x, z);
-    return resolveVillageAdaptation(biome, elevation, freshDist, moisture, coastDist);
+    return this.sampleSiteAdaptation(x, z).adaptation;
+  }
+
+  /** Single-pass terrain/biome/climate/adaptation sample avoiding 4-5x redundant noise evaluations. */
+  private sampleSiteAdaptation(
+    x: number,
+    z: number,
+    knownH?: number,
+    knownSlope?: number,
+    knownCoastDist?: number,
+    knownAlpineDepth?: number,
+    knownFreshDist?: number,
+  ): {
+    adaptation: VillageAdaptationId;
+    coastDist: number;
+    alpineDepth: number;
+    freshDist: number;
+    aridity: number;
+    prairie: number;
+    moisture: number;
+    h: number;
+  } {
+    const h = knownH ?? this.getHeightAt(x, z);
+    const coastDist = knownCoastDist ?? this.getCoastSignedDistance(x, z);
+    const alpineDepth = knownAlpineDepth ?? this.getAlpineDepthAt(x, z);
+    const freshDist =
+      knownFreshDist ?? this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 56);
+    this.sampleAmorphousBiomesToScratch(x, z, coastDist, alpineDepth, freshDist);
+    const aridity = this.tmpAridity;
+    const prairie = this.tmpPrairie;
+    const moisture = this.computeMoisture(x, z, freshDist, aridity);
+
+    let biome: BiomeType;
+    if (h <= this.waterLevel + 0.05) {
+      biome = 'water';
+    } else if (coastDist < 20.0 && h < this.waterLevel + 2.6) {
+      biome = 'seashore';
+    } else if (aridity > 0.48 && freshDist > 3.4 && h < 19.0 && alpineDepth < 20) {
+      biome = 'desert';
+    } else if (h > 13.5 || alpineDepth > 58) {
+      biome = 'alpine_crag';
+    } else {
+      const slope = knownSlope ?? this.getSlopeAt(x, z);
+      if (h > 9.5 && slope > 0.23) {
+        biome = 'alpine_crag';
+      } else if (h > 7.4 || slope > 0.25 || (alpineDepth > 12 && h > 5.8)) {
+        biome = 'rocky_ridge';
+      } else if (freshDist < 5.5 && h <= this.waterLevel + 1.05) {
+        biome = 'riverbank';
+      } else if (moisture > 0.65 && h < 3.6 && prairie < 0.46) {
+        biome = 'moss_hollow';
+      } else if (prairie > 0.5 && h < 5.0 && slope < 0.14) {
+        biome = 'prairie';
+      } else {
+        const fertility = this.computeFertility(x, z, h, moisture, aridity);
+        biome = fertility > 0.58 && h < 4.6 && prairie > 0.3 ? 'meadow' : 'deep_woods';
+      }
+    }
+
+    const adaptation = resolveVillageAdaptation(biome, h, freshDist, moisture, coastDist);
+    return { adaptation, coastDist, alpineDepth, freshDist, aridity, prairie, moisture, h };
   }
 
   /** Circular outer playable safety boundary complementing the front sea & back mountain bounds. */
@@ -1960,8 +2040,12 @@ export class TerrainMap {
           val = 1;
         } else {
           const h = this.getHeightAt(cx, cz);
-          const slope = this.getSlopeAt(cx, cz);
-          if (h < this.waterLevel - 0.65 || this.isImpassableMountainAt(cx, cz, h, slope)) {
+          if (
+            h < this.waterLevel - 0.65 ||
+            this.getAlpineDepthAt(cx, cz) >= 82.0 ||
+            h >= 29.0 ||
+            this.getSlopeAt(cx, cz) >= 0.36
+          ) {
             val = 1;
           } else if (h < this.waterLevel + 0.12) {
             val = 2;
@@ -1978,14 +2062,12 @@ export class TerrainMap {
     const h = this.getHeightAt(x, z);
     if (!amphibious && h < this.waterLevel + 0.12) return false;
     if (amphibious && h < this.waterLevel - 0.65) return false;
-    const slope = this.getSlopeAt(x, z);
-    return !this.isImpassableMountainAt(x, z, h, slope);
+    return !this.isImpassableMountainAt(x, z, h);
   }
 
   /** Returns true if (x, z) lies inside a playable inland river, tributary, or pond (never deep sea). */
   isSwimmable(x: number, z: number): boolean {
     if (!this.isWithinPlayableArea(x, z)) return false;
-    if (this.isDeepSeaAt(x, z)) return false;
     if (this.getCoastSignedDistance(x, z) <= 8) return false;
     return this.getHeightAt(x, z) <= this.waterLevel - 0.28;
   }
@@ -2432,32 +2514,42 @@ export class TerrainMap {
       }
       if (tooClose) continue;
 
-      if (this.isDeepSeaAt(x, z)) continue;
+      const coastDist = this.getCoastSignedDistance(x, z);
+      if (coastDist < -3.0) continue;
       const h = this.getHeightAt(x, z);
       if (h < this.waterLevel + minH || h > maxH) continue;
+      const alpineDepth = this.getAlpineDepthAt(x, z);
+      if (alpineDepth >= 82.0 || h >= 29.0) continue;
       const slope = this.getSlopeAt(x, z);
-      if (slope > maxSlope) continue;
-      if (this.isImpassableMountainAt(x, z, h, slope)) continue;
-      const waterDist = this.getWaterDistance(x, z);
+      if (slope > maxSlope || slope >= 0.36) continue;
+      const freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 56);
+      const waterDist = smoothMin(freshDist, coastDist, 4.5);
       if (waterDist < minWaterDist) continue;
 
-      const adaptation = this.getSiteAdaptation(x, z);
-      if (adaptation !== target) continue;
+      const siteInfo = this.sampleSiteAdaptation(
+        x,
+        z,
+        h,
+        slope,
+        coastDist,
+        alpineDepth,
+        freshDist,
+      );
+      if (siteInfo.adaptation !== target) continue;
 
       let score = -slope * 18;
       if (target === 'coastal_harbor') {
-        const cd = this.getCoastSignedDistance(x, z);
-        score += Math.max(0, 18 - Math.abs(cd - 8.5)) * 0.7;
+        score += Math.max(0, 18 - Math.abs(coastDist - 8.5)) * 0.7;
       } else if (target === 'riverside_stilts') {
         score += Math.max(0, 14 - waterDist) * 0.65;
       } else if (target === 'mountain_stone') {
-        const alpineDepth = this.getAlpineDepthAt(x, z);
         const slopeBand = Math.max(0, 36 - Math.abs(alpineDepth - 22)) * 0.16;
         score += Math.min(18.0, h) * 0.52 + slopeBand;
       } else if (target === 'desert_oasis') {
-        score += this.getAridityAt(x, z) * 6.5;
+        score += siteInfo.aridity * 6.5;
       } else if (target === 'prairie_pastoral') {
-        score += this.getPrairieWeightAt(x, z) * 5.5 + this.getFertilityAt(x, z) * 2.5;
+        const fertility = this.computeFertility(x, z, h, siteInfo.moisture, siteInfo.aridity);
+        score += siteInfo.prairie * 5.5 + fertility * 2.5;
       }
 
       if (origin) {
@@ -2597,17 +2689,29 @@ export class TerrainMap {
     types: readonly ResourceType[],
     minAmount = 1,
   ): ResourceNode | null {
+    return this.findNearestResourceAt(origin.x, origin.z, types, minAmount);
+  }
+
+  findNearestResourceAt(
+    ox: number,
+    oz: number,
+    types: readonly ResourceType[],
+    minAmount = 1,
+  ): ResourceNode | null {
     let best: ResourceNode | null = null;
     let bestDistSq = Infinity;
-    for (const node of this.resourceNodes) {
-      if (node.amount < minAmount) continue;
-      if (!types.includes(node.type)) continue;
-      const dx = node.position.x - origin.x;
-      const dz = node.position.z - origin.z;
-      const d2 = dx * dx + dz * dz;
-      if (d2 < bestDistSq) {
-        bestDistSq = d2;
-        best = node;
+    for (let t = 0; t < types.length; t++) {
+      const list = this.resourceNodesByType[types[t]];
+      for (let i = 0; i < list.length; i++) {
+        const node = list[i];
+        if (node.amount < minAmount) continue;
+        const dx = node.position.x - ox;
+        const dz = node.position.z - oz;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < bestDistSq) {
+          bestDistSq = d2;
+          best = node;
+        }
       }
     }
     return best;
@@ -2690,6 +2794,7 @@ export class TerrainMap {
         };
         this.resourceNodes.push(node);
         this.resourceNodeById.set(node.id, node);
+        this.resourceNodesByType[node.type].push(node);
         placed++;
       }
     }
@@ -2716,11 +2821,45 @@ export class TerrainMap {
       const h = this.getHeightAt(x, z);
       // Bare snow-crowned alpine peaks above treeline (24m)
       if (h < this.waterLevel + 0.45 || h > 24.0) continue;
+      const coastDist = this.getCoastSignedDistance(x, z);
+      const isSeashore = coastDist < 20.0 && h < this.waterLevel + 2.6;
+      let alpineDepth = 0;
+      let freshDist = 56;
+      let aridity = 0;
+      let prairie = 0;
+      if (!isSeashore) {
+        alpineDepth = this.getAlpineDepthAt(x, z);
+        freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 56);
+        this.sampleAmorphousBiomesToScratch(x, z, coastDist, alpineDepth, freshDist);
+        aridity = this.tmpAridity;
+        prairie = this.tmpPrairie;
+        // Skip 4x getHeightAt slope query for desert sites (always treeless)
+        if (aridity > 0.48 && freshDist > 3.4 && h < 19.0 && alpineDepth < 20) continue;
+      }
       const slope = this.getSlopeAt(x, z);
       if (slope > 0.28) continue;
 
-      const biome = this.getBiomeAtSample(x, z, h, slope);
-      if (biome === 'water' || biome === 'prairie' || biome === 'desert') continue;
+      let biome: BiomeType;
+      if (isSeashore) {
+        biome = 'seashore';
+      } else if (h > 13.5 || (h > 9.5 && slope > 0.23) || alpineDepth > 58) {
+        biome = 'alpine_crag';
+      } else if (h > 7.4 || slope > 0.25 || (alpineDepth > 12 && h > 5.8)) {
+        biome = 'rocky_ridge';
+      } else if (freshDist < 5.5 && h <= this.waterLevel + 1.05) {
+        biome = 'riverbank';
+      } else {
+        const moisture = this.computeMoisture(x, z, freshDist, aridity);
+        if (moisture > 0.65 && h < 3.6 && prairie < 0.46) {
+          biome = 'moss_hollow';
+        } else if (prairie > 0.5 && h < 5.0 && slope < 0.14) {
+          biome = 'prairie';
+        } else {
+          const fertility = this.computeFertility(x, z, h, moisture, aridity);
+          biome = fertility > 0.58 && h < 4.6 && prairie > 0.3 ? 'meadow' : 'deep_woods';
+        }
+      }
+      if (biome === 'prairie') continue;
       if (biome === 'seashore' && rng.chance(0.88)) continue;
       if (biome === 'meadow' && rng.chance(0.76)) continue;
       if (biome === 'rocky_ridge' && rng.chance(0.38)) continue;
@@ -2807,11 +2946,43 @@ export class TerrainMap {
       const z = Math.sin(angle) * r;
       const h = this.getHeightAt(x, z);
       if (h < this.waterLevel + 0.25 || h > 16.5) continue;
+      const coastDist = this.getCoastSignedDistance(x, z);
+      const isSeashore = coastDist < 20.0 && h < this.waterLevel + 2.6;
+      let alpineDepth = 0;
+      let freshDist = 56;
+      let aridity = 0;
+      let prairie = 0;
+      if (!isSeashore) {
+        alpineDepth = this.getAlpineDepthAt(x, z);
+        freshDist = this.getFreshwaterDistanceFast(x, z, coastDist, alpineDepth, 56);
+        this.sampleAmorphousBiomesToScratch(x, z, coastDist, alpineDepth, freshDist);
+        aridity = this.tmpAridity;
+        prairie = this.tmpPrairie;
+        if (aridity > 0.48 && freshDist > 3.4 && h < 19.0 && alpineDepth < 20) continue;
+      }
       const slope = this.getSlopeAt(x, z);
       if (slope > 0.3) continue;
 
-      const biome = this.getBiomeAtSample(x, z, h, slope);
-      if (biome === 'water' || biome === 'desert') continue;
+      let biome: BiomeType;
+      if (isSeashore) {
+        biome = 'seashore';
+      } else if (h > 13.5 || (h > 9.5 && slope > 0.23) || alpineDepth > 58) {
+        biome = 'alpine_crag';
+      } else if (h > 7.4 || slope > 0.25 || (alpineDepth > 12 && h > 5.8)) {
+        biome = 'rocky_ridge';
+      } else if (freshDist < 5.5 && h <= this.waterLevel + 1.05) {
+        biome = 'riverbank';
+      } else {
+        const moisture = this.computeMoisture(x, z, freshDist, aridity);
+        if (moisture > 0.65 && h < 3.6 && prairie < 0.46) {
+          biome = 'moss_hollow';
+        } else if (prairie > 0.5 && h < 5.0 && slope < 0.14) {
+          biome = 'prairie';
+        } else {
+          const fertility = this.computeFertility(x, z, h, moisture, aridity);
+          biome = fertility > 0.58 && h < 4.6 && prairie > 0.3 ? 'meadow' : 'deep_woods';
+        }
+      }
       if (biome === 'prairie' && rng.chance(0.97)) continue;
       if (biome === 'seashore' && rng.chance(0.9)) continue;
       if (biome === 'alpine_crag' && rng.chance(0.92)) continue;
@@ -2855,8 +3026,7 @@ export class TerrainMap {
       const z = Math.sin(angle) * r;
       const h = this.getHeightAt(x, z);
       if (h < this.waterLevel - 0.1) continue;
-      const slope = this.getSlopeAt(x, z);
-      const biome = this.getBiomeAtSample(x, z, h, slope);
+      const biome = this.getBiomeAtKnownHeight(x, z, h);
       if (biome === 'water') continue;
       if (biome === 'prairie' && rng.chance(0.96)) continue;
       if (

@@ -384,11 +384,13 @@ export class WarSystem {
     }
 
     // 2. Ensure every settlement pair at 'war' stance has an active war campaign
-    const warPairs = world.diplomacy.getPairsByStance(world.settlements, 'war');
-    for (let i = 0; i < warPairs.length; i++) {
-      const [sA, sB] = warPairs[i];
-      if (!this.getWarBetween(sA.id, sB.id)) {
-        this.startWar(sA, sB, world);
+    if (world.diplomacy.hasActiveWarRelations()) {
+      const warPairs = world.diplomacy.getPairsByStance(world.settlements, 'war');
+      for (let i = 0; i < warPairs.length; i++) {
+        const [sA, sB] = warPairs[i];
+        if (!this.getWarBetween(sA.id, sB.id)) {
+          this.startWar(sA, sB, world);
+        }
       }
     }
 
@@ -419,7 +421,7 @@ export class WarSystem {
           this.transitionToMarching(war, sA, sB, world);
         }
       } else if (war.phase === 'marching') {
-        const closestEnemyDist = this.measureClosestArmyDistance(war, world);
+        const closestEnemyDist = this.measureClosestArmyDistance(war, world, 22);
         const vanguardsArrived =
           stats.atFieldA >= Math.max(1, Math.ceil(stats.survivingA * 0.35)) &&
           stats.atFieldB >= Math.max(1, Math.ceil(stats.survivingB * 0.35));
@@ -521,7 +523,7 @@ export class WarSystem {
     enemy: Settlement,
     world: WorldState,
   ): string[] {
-    const eligible = world.creatures.filter(
+    const eligible = world.aliveCreatures.filter(
       (c) =>
         c.alive &&
         c.settlementId === home.id &&
@@ -882,19 +884,41 @@ export class WarSystem {
     }
   }
 
-  private measureClosestArmyDistance(war: ActiveWar, world: WorldState): number {
-    let minDist = Infinity;
+  private measureClosestArmyDistance(
+    war: ActiveWar,
+    world: WorldState,
+    earlyStopDist = 0,
+  ): number {
+    const armyB: Creature[] = [];
+    for (let j = 0; j < war.armyBIds.length; j++) {
+      const b = world.getCreature(war.armyBIds[j]);
+      if (b && b.alive && b.activeWarId === war.id) {
+        armyB.push(b);
+      }
+    }
+    if (armyB.length === 0) return Infinity;
+
+    const stopSq = earlyStopDist > 0 ? earlyStopDist * earlyStopDist : -1;
+    let minDistSq = Infinity;
     for (let i = 0; i < war.armyAIds.length; i++) {
       const a = world.getCreature(war.armyAIds[i]);
       if (!a || !a.alive || a.activeWarId !== war.id) continue;
-      for (let j = 0; j < war.armyBIds.length; j++) {
-        const b = world.getCreature(war.armyBIds[j]);
-        if (!b || !b.alive || b.activeWarId !== war.id) continue;
-        const d = Math.hypot(a.x - b.x, a.z - b.z);
-        if (d < minDist) minDist = d;
+      const ax = a.x;
+      const az = a.z;
+      for (let j = 0; j < armyB.length; j++) {
+        const b = armyB[j];
+        const dx = ax - b.x;
+        const dz = az - b.z;
+        const dSq = dx * dx + dz * dz;
+        if (dSq < minDistSq) {
+          minDistSq = dSq;
+          if (stopSq >= 0 && minDistSq <= stopSq) {
+            return Math.sqrt(minDistSq);
+          }
+        }
       }
     }
-    return minDist;
+    return minDistSq === Infinity ? Infinity : Math.sqrt(minDistSq);
   }
 
   private findWalkableBattlefield(

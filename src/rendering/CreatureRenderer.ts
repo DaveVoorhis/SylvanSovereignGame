@@ -9,10 +9,14 @@ import type {
 import type { Creature } from '@simulation/creatures/Creature';
 import { SPECIES_CATALOG } from '@simulation/creatures/SpeciesCatalog';
 import {
-  computeStrideMetrics,
-  sampleFootTrajectory,
-  sampleHopCycle,
-  solveGroundedFootTransform,
+  computeStrideMetricsInto,
+  sampleFootTrajectoryInto,
+  sampleHopCycleInto,
+  solveGroundedFootTransformInto,
+  type MutableFootPose,
+  type MutableFootTrajectorySample,
+  type MutableHopCycleSample,
+  type MutableStrideMetrics,
 } from '@simulation/creatures/StrideKinematics';
 import { VILLAGE_ADAPTATION_CATALOG } from '@simulation/settlements/VillageAdaptation';
 import { getWeaponStats } from '@simulation/society/WarSystem';
@@ -52,7 +56,6 @@ interface CreatureRig {
   readonly leftEar?: THREE.Object3D;
   readonly rightEar?: THREE.Object3D;
   readonly tail?: THREE.Object3D;
-  readonly selectionGroup: THREE.Group;
   readonly workTools: WorkToolKit;
   readonly warGear: WarGearKit;
   readonly guardStaticGear: THREE.Object3D[];
@@ -65,6 +68,7 @@ interface CreatureRig {
   workChipCooldown: number;
   bleedCooldown: number;
   readonly adaptation: VillageAdaptationId;
+  settlementId: string | null;
   readonly swimRipple?: THREE.Mesh;
   readonly baseFootY: number;
   readonly baseFootZ: number;
@@ -84,7 +88,8 @@ interface CreatureRig {
 
 interface SparkVisual {
   readonly mesh: THREE.Mesh;
-  readonly mat: THREE.Material;
+  readonly matSteps: readonly THREE.MeshStandardMaterial[];
+  lastOpacityStep: number;
   readonly createdAt: number;
   readonly duration: number;
   readonly vx: number;
@@ -1256,6 +1261,21 @@ export class CreatureRenderer {
   private readonly disposables: (THREE.BufferGeometry | THREE.Material)[] = [];
   private readonly sharedDisposableSet = new Set<THREE.BufferGeometry | THREE.Material>();
   private readonly primGeoCache = new Map<string, THREE.BufferGeometry>();
+  private readonly sparkMatPool = new Map<string, THREE.MeshStandardMaterial[]>();
+  private readonly sharedSelectionGroup = new THREE.Group();
+  private readonly strideMetricsScratch: MutableStrideMetrics = {
+    pace: 0,
+    runFactor: 0,
+    halfStrideLocal: 0.15,
+    dutyFactor: 0.5,
+    liftHeightLocal: 0.044,
+    cycleLengthWorld: 0.6,
+  };
+  private readonly hopSampleScratch: MutableHopCycleSample = { zRel: 0, yLift: 0, inStance: true, bodyHopLocalY: 0, crouch: 0 };
+  private readonly footSampleLScratch: MutableFootTrajectorySample = { zRel: 0, yLift: 0, inStance: true };
+  private readonly footSampleRScratch: MutableFootTrajectorySample = { zRel: 0, yLift: 0, inStance: true };
+  private readonly footPoseLScratch: MutableFootPose = { rotX: 0, hipY: 0, hipZ: 0 };
+  private readonly footPoseRScratch: MutableFootPose = { rotX: 0, hipY: 0, hipZ: 0 };
 
   // Shared detail materials
   private readonly eyeMat: THREE.MeshPhysicalMaterial;
@@ -1566,6 +1586,19 @@ export class CreatureRenderer {
     this.gore = new CombatGoreSystem(world);
     this.rootGroup.add(this.gore.group);
 
+    // Single shared magical golden fairy-ring selection halo reparented onto the selected creature
+    this.sharedSelectionGroup.position.y = 0.08;
+    const ringMesh = new THREE.Mesh(this.geo.selectionRing, this.selectionMat);
+    this.sharedSelectionGroup.add(ringMesh);
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2;
+      const bead = new THREE.Mesh(this.geo.selectionBead, this.selectionMat);
+      bead.scale.setScalar(2.6);
+      bead.position.set(Math.cos(a) * 0.65, 0.12, Math.sin(a) * 0.65);
+      this.sharedSelectionGroup.add(bead);
+    }
+    this.sharedSelectionGroup.visible = false;
+
     scene.add(this.rootGroup);
     this.syncCreatures(null);
   }
@@ -1575,6 +1608,34 @@ export class CreatureRenderer {
       this.disposables.push(item);
       this.sharedDisposableSet.add(item);
     }
+  }
+
+  /** Returns a pooled 8-step quantized opacity ramp of MeshStandardMaterials to avoid per-particle shader/material churn. */
+  private getSparkMaterialSteps(
+    color: number,
+    roughness: number,
+    metalness: number,
+    emissive: number,
+    emissiveIntensity: number,
+  ): THREE.MeshStandardMaterial[] {
+    const key = `${color}|${roughness}|${metalness}|${emissive}|${emissiveIntensity}`;
+    let steps = this.sparkMatPool.get(key);
+    if (!steps) {
+      steps = new Array<THREE.MeshStandardMaterial>(8);
+      for (let s = 0; s < 8; s++) {
+        steps[s] = new THREE.MeshStandardMaterial({
+          color,
+          roughness,
+          metalness,
+          emissive,
+          emissiveIntensity,
+          transparent: true,
+          opacity: Math.max(0.08, (1 - s / 8) * 0.95),
+        });
+      }
+      this.sparkMatPool.set(key, steps);
+    }
+    return steps;
   }
 
   spawnCombatSpark(spark: CombatSparkVisual): void {
@@ -1624,17 +1685,15 @@ export class CreatureRenderer {
     const fz = c.z + Math.cos(c.heading) * 0.48;
     for (let i = 0; i < 2; i++) {
       const color = palette[Math.floor(Math.random() * palette.length)];
-      const mat = new THREE.MeshStandardMaterial({
+      const matSteps = this.getSparkMaterialSteps(
         color,
-        roughness: isSparkStage ? 0.36 : 0.86,
-        metalness: isSparkStage ? 0.24 : 0.02,
-        emissive: isSparkStage ? color : 0x000000,
-        emissiveIntensity: isSparkStage ? 0.42 : 0,
-        transparent: true,
-        opacity: 0.95,
-      });
+        isSparkStage ? 0.36 : 0.86,
+        isSparkStage ? 0.24 : 0.02,
+        isSparkStage ? color : 0x000000,
+        isSparkStage ? 0.42 : 0,
+      );
       const baseScale = 0.72 + Math.random() * 0.5;
-      const mesh = new THREE.Mesh(this.geo.workChip, mat);
+      const mesh = new THREE.Mesh(this.geo.workChip, matSteps[0]);
       mesh.name = 'work_chip';
       mesh.position.set(
         fx + (Math.random() - 0.5) * 0.24,
@@ -1646,7 +1705,8 @@ export class CreatureRenderer {
       this.rootGroup.add(mesh);
       this.sparks.push({
         mesh,
-        mat,
+        matSteps,
+        lastOpacityStep: 0,
         createdAt: this.world.elapsedSeconds,
         duration: 0.42 + Math.random() * 0.18,
         vx: (Math.random() - 0.5) * 1.25,
@@ -1667,16 +1727,9 @@ export class CreatureRenderer {
       ? [cel.colorHex, cel.secondaryColorHex, 0xffe57f]
       : [0xffc857, 0xff6b9d, 0x4cc9f0];
     const color = palette[Math.floor(Math.random() * palette.length)];
-    const mat = new THREE.MeshStandardMaterial({
-      color,
-      emissive: color,
-      emissiveIntensity: 0.35,
-      roughness: 0.42,
-      transparent: true,
-      opacity: 0.92,
-    });
+    const matSteps = this.getSparkMaterialSteps(color, 0.42, 0, color, 0.35);
     const baseScale = 0.44 + Math.random() * 0.24;
-    const mesh = new THREE.Mesh(this.geo.workChip, mat);
+    const mesh = new THREE.Mesh(this.geo.workChip, matSteps[0]);
     mesh.name = 'festival_confetti';
     mesh.position.set(
       c.x + (Math.random() - 0.5) * 0.36,
@@ -1688,7 +1741,8 @@ export class CreatureRenderer {
     this.rootGroup.add(mesh);
     this.sparks.push({
       mesh,
-      mat,
+      matSteps,
+      lastOpacityStep: 0,
       createdAt: this.world.elapsedSeconds,
       duration: 0.72 + Math.random() * 0.28,
       vx: (Math.random() - 0.5) * 0.85,
@@ -1709,6 +1763,7 @@ export class CreatureRenderer {
     const poseLerp = 1 - Math.exp(-10 * safeDt);
     const limbLerp = 1 - Math.exp(-12 * safeDt);
 
+    let selectedRigAttached = false;
     for (const c of this.world.creatures) {
       const rig = this.rigs.get(c.id);
       if (!rig) continue;
@@ -1772,7 +1827,12 @@ export class CreatureRenderer {
 
       const effectiveScale = c.getSizeScale();
       const preScaleXZ = effectiveScale / Math.sqrt(Math.max(0.5, rig.squashY));
-      const strideMetrics = computeStrideMetrics(c.def.locomotion, rig.gaitBlend, preScaleXZ);
+      const strideMetrics = computeStrideMetricsInto(
+        c.def.locomotion,
+        rig.gaitBlend,
+        preScaleXZ,
+        this.strideMetricsScratch,
+      );
       const { pace, runFactor } = strideMetrics;
 
       // Advance visual stride phase in exact 1:1 lockstep with rendered forward ground displacement
@@ -1806,12 +1866,13 @@ export class CreatureRenderer {
       const strideBounce = THREE.MathUtils.lerp(walkBounce, runBounce, runFactor);
       const hopSample =
         c.def.locomotion === 'hop' && !isSwimmingInWater
-          ? sampleHopCycle(
+          ? sampleHopCycleInto(
               phase,
               strideMetrics.halfStrideLocal,
               strideMetrics.dutyFactor,
               strideMetrics.liftHeightLocal,
               0.14 + pace * 0.2,
+              this.hopSampleScratch,
             )
           : null;
 
@@ -2255,7 +2316,6 @@ export class CreatureRenderer {
         // Full unattenuated stride at all walking/strolling/running speeds; ease feet neatly together only when stopping
         const settleT = THREE.MathUtils.clamp(move / 0.25, 0, 1);
         const strideWeight = settleT * settleT * (3 - 2 * settleT);
-        const groundMetrics = computeStrideMetrics(c.def.locomotion, rig.gaitBlend, scaleXZ);
         // Keep joyful dance/play jumps able to lift feet off the floor while locking walking bob to the ground
         const isJumpingEmote =
           c.activity === 'playing' || (c.activity === 'celebrating' && c.isDancingAtCelebration);
@@ -2265,16 +2325,17 @@ export class CreatureRenderer {
             : rig.bobY;
 
         if (hopSample) {
-          const pose = solveGroundedFootTransform({
-            zRel: hopSample.zRel * strideWeight,
-            yLift: hopSample.yLift * strideWeight,
-            pace: groundMetrics.pace,
-            baseFootZ: rig.baseFootZ,
-            bobY: compBobY,
-            tiltX: rig.tiltX,
+          const pose = solveGroundedFootTransformInto(
+            hopSample.zRel * strideWeight,
+            hopSample.yLift * strideWeight,
+            pace,
+            rig.baseFootZ,
+            compBobY,
+            rig.tiltX,
             scaleY,
             scaleXZ,
-          });
+            this.footPoseLScratch,
+          );
           leftFootX = pose.rotX;
           rightFootX = pose.rotX;
           leftFootY = pose.hipY;
@@ -2282,38 +2343,42 @@ export class CreatureRenderer {
           leftFootZ = pose.hipZ;
           rightFootZ = pose.hipZ;
         } else {
-          const sampleL = sampleFootTrajectory(
+          const sampleL = sampleFootTrajectoryInto(
             phase,
-            groundMetrics.halfStrideLocal,
-            groundMetrics.dutyFactor,
-            groundMetrics.liftHeightLocal,
+            strideMetrics.halfStrideLocal,
+            strideMetrics.dutyFactor,
+            strideMetrics.liftHeightLocal,
+            this.footSampleLScratch,
           );
-          const sampleR = sampleFootTrajectory(
+          const sampleR = sampleFootTrajectoryInto(
             phase + Math.PI,
-            groundMetrics.halfStrideLocal,
-            groundMetrics.dutyFactor,
-            groundMetrics.liftHeightLocal,
+            strideMetrics.halfStrideLocal,
+            strideMetrics.dutyFactor,
+            strideMetrics.liftHeightLocal,
+            this.footSampleRScratch,
           );
-          const poseL = solveGroundedFootTransform({
-            zRel: sampleL.zRel * strideWeight,
-            yLift: sampleL.yLift * strideWeight,
-            pace: groundMetrics.pace,
-            baseFootZ: rig.baseFootZ,
-            bobY: compBobY,
-            tiltX: rig.tiltX,
+          const poseL = solveGroundedFootTransformInto(
+            sampleL.zRel * strideWeight,
+            sampleL.yLift * strideWeight,
+            pace,
+            rig.baseFootZ,
+            compBobY,
+            rig.tiltX,
             scaleY,
             scaleXZ,
-          });
-          const poseR = solveGroundedFootTransform({
-            zRel: sampleR.zRel * strideWeight,
-            yLift: sampleR.yLift * strideWeight,
-            pace: groundMetrics.pace,
-            baseFootZ: rig.baseFootZ,
-            bobY: compBobY,
-            tiltX: rig.tiltX,
+            this.footPoseLScratch,
+          );
+          const poseR = solveGroundedFootTransformInto(
+            sampleR.zRel * strideWeight,
+            sampleR.yLift * strideWeight,
+            pace,
+            rig.baseFootZ,
+            compBobY,
+            rig.tiltX,
             scaleY,
             scaleXZ,
-          });
+            this.footPoseRScratch,
+          );
           leftFootX = poseL.rotX;
           rightFootX = poseR.rotX;
           leftFootY = poseL.hipY;
@@ -2408,13 +2473,21 @@ export class CreatureRenderer {
 
       // Twinkling golden fairy-ring selection halo
       const isSelected = selection?.kind === 'creature' && selection.id === c.id;
-      rig.selectionGroup.visible = isSelected;
       if (isSelected) {
-        rig.selectionGroup.rotation.y += dt * 1.8;
-        rig.selectionGroup.position.y = isFish
+        selectedRigAttached = true;
+        if (this.sharedSelectionGroup.parent !== rig.root) {
+          rig.root.add(this.sharedSelectionGroup);
+        }
+        this.sharedSelectionGroup.visible = true;
+        this.sharedSelectionGroup.rotation.y += dt * 1.8;
+        this.sharedSelectionGroup.position.y = isFish
           ? this.world.terrain.waterLevel - rig.root.position.y + 0.06 + Math.sin(t * 4) * 0.025
           : 0.08 + Math.sin(t * 4) * 0.03;
       }
+    }
+    if (!selectedRigAttached && this.sharedSelectionGroup.parent) {
+      this.sharedSelectionGroup.visible = false;
+      this.sharedSelectionGroup.parent.remove(this.sharedSelectionGroup);
     }
 
     // Update ballistic construction chips and festival confetti
@@ -2423,7 +2496,6 @@ export class CreatureRenderer {
       const pct = (t - sp.createdAt) / sp.duration;
       if (pct >= 1) {
         this.rootGroup.remove(sp.mesh);
-        sp.mat.dispose();
         this.sparks.splice(i, 1);
         continue;
       }
@@ -2436,7 +2508,11 @@ export class CreatureRenderer {
       const spin = sp.spinRate ?? 10;
       sp.mesh.rotation.y += dt * spin;
       sp.mesh.rotation.x += dt * (spin * 0.68);
-      sp.mat.opacity = 1 - pct;
+      const step = Math.min(7, Math.max(0, Math.floor(pct * 8)));
+      if (step !== sp.lastOpacityStep) {
+        sp.lastOpacityStep = step;
+        sp.mesh.material = sp.matSteps[step];
+      }
     }
 
     // Update parabolic flying war arrows
@@ -2683,6 +2759,10 @@ export class CreatureRenderer {
   }
 
   private disposeRig(rig: CreatureRig): void {
+    if (this.sharedSelectionGroup.parent === rig.root) {
+      this.sharedSelectionGroup.visible = false;
+      rig.root.remove(this.sharedSelectionGroup);
+    }
     const shared = this.sharedDisposableSet;
     rig.root.traverse((obj) => {
       if (obj instanceof THREE.Mesh && obj.geometry && !shared.has(obj.geometry)) {
@@ -2702,18 +2782,22 @@ export class CreatureRenderer {
         }
         continue;
       }
-      const currentAdaptation: VillageAdaptationId =
-        this.world.getSettlement(c.settlementId)?.adaptation ?? 'forest_canopy';
       if (!existing) {
         const rig = this.buildRig(c);
         this.rigs.set(c.id, rig);
         this.rootGroup.add(rig.root);
-      } else if (existing.adaptation !== currentAdaptation) {
-        // Pioneer settled into a new biome — refresh attire to match the new village's adaptation!
-        this.disposeRig(existing);
-        const rig = this.buildRig(c);
-        this.rigs.set(c.id, rig);
-        this.rootGroup.add(rig.root);
+      } else if (existing.settlementId !== c.settlementId) {
+        const currentAdaptation: VillageAdaptationId =
+          this.world.getSettlement(c.settlementId)?.adaptation ?? 'forest_canopy';
+        if (existing.adaptation !== currentAdaptation) {
+          // Pioneer settled into a new biome — refresh attire to match the new village's adaptation!
+          this.disposeRig(existing);
+          const rig = this.buildRig(c);
+          this.rigs.set(c.id, rig);
+          this.rootGroup.add(rig.root);
+        } else {
+          existing.settlementId = c.settlementId;
+        }
       }
     }
   }
@@ -4238,21 +4322,6 @@ export class CreatureRenderer {
       sprig.position.set(-0.18, 0.18, 0.12);
     }
 
-    // 7. Magical golden fairy-ring selection halo with 4 orbiting sparkle beads
-    const selectionGroup = new THREE.Group();
-    selectionGroup.position.y = 0.08;
-    const ringMesh = new THREE.Mesh(this.geo.selectionRing, this.selectionMat);
-    selectionGroup.add(ringMesh);
-    for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * Math.PI * 2;
-      const bead = new THREE.Mesh(this.geo.selectionBead, this.selectionMat);
-      bead.scale.setScalar(2.6);
-      bead.position.set(Math.cos(a) * 0.65, 0.12, Math.sin(a) * 0.65);
-      selectionGroup.add(bead);
-    }
-    selectionGroup.visible = false;
-    root.add(selectionGroup);
-
     let swimRipple: THREE.Mesh | undefined;
     if (def.aquatic) {
       swimRipple = new THREE.Mesh(this.geo.swimRipple, this.swimRippleMat);
@@ -4272,7 +4341,6 @@ export class CreatureRenderer {
       leftEar,
       rightEar,
       tail,
-      selectionGroup,
       workTools,
       warGear,
       guardStaticGear,
@@ -4285,6 +4353,7 @@ export class CreatureRenderer {
       workChipCooldown: 0.15,
       bleedCooldown: 0.25 + seed * 0.4,
       adaptation,
+      settlementId: c.settlementId,
       swimRipple,
       baseFootY,
       baseFootZ,
@@ -4306,9 +4375,15 @@ export class CreatureRenderer {
   dispose(): void {
     for (const sp of this.sparks) {
       this.rootGroup.remove(sp.mesh);
-      sp.mat.dispose();
     }
     this.sparks.length = 0;
+    for (const steps of this.sparkMatPool.values()) {
+      for (const m of steps) m.dispose();
+    }
+    this.sparkMatPool.clear();
+    if (this.sharedSelectionGroup.parent) {
+      this.sharedSelectionGroup.parent.remove(this.sharedSelectionGroup);
+    }
     for (const ar of this.arrows) {
       this.rootGroup.remove(ar.mesh);
     }

@@ -323,24 +323,24 @@ export class FestivalSystem {
     const moralAlign = world.deity.getMoralAlignment(world);
     const suppressFestivals =
       moralAlign < -0.55 &&
-      (world.diplomacy.getRealmCounts(world.settlements).wars > 0 ||
+      (world.diplomacy.hasActiveWarRelations() ||
         world.climateHeat > 0.45 ||
         world.miasmaIntensity > 0.45);
     if (suppressFestivals) return;
 
-    const hasNational = this.getNationalHoliday() !== undefined;
+    let hasNational = this.getNationalHoliday() !== undefined;
 
     // 1. Very occasional National Holidays (everyone across the realm celebrates together)
     this.nationalTimer -= dt;
     if (this.nationalTimer <= 0) {
       if (!hasNational) {
-        this.startNationalHoliday(world);
+        hasNational = this.startNationalHoliday(world) !== null;
       }
       this.nationalTimer = world.rng.range(310, 410);
     }
 
     // Do not start smaller festivals while a grand National Holiday is underway
-    if (this.getNationalHoliday()) return;
+    if (hasNational) return;
 
     // 2. Occasional Regional Events (significant proportion of neighboring settlements attend)
     this.regionalTimer -= dt;

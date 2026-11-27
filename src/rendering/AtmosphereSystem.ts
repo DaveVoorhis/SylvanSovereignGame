@@ -828,7 +828,7 @@ const SKY_FRAGMENT_SHADER = /* glsl */ `
 
   void main() {
     vec3 dir = normalize(vWorldDirection);
-    vec3 sunDir = normalize(uSunDirection);
+    vec3 sunDir = uSunDirection;
 
     // Below-horizon matte ground hemisphere for PMREM IBL bounce only;
     // on the visible sky dome, extend exact uHorizonColor downward so far misty seas
@@ -873,7 +873,7 @@ const SKY_FRAGMENT_SHADER = /* glsl */ `
         sky += starTint * uStarIntensity * twinkle * smoothstep(0.05, 0.38, dir.y) * (1.0 - uCloudCoverage * 0.85);
       }
       // Subtle galactic band
-      float mwBand = exp(-pow(dot(dir, normalize(vec3(0.35, 0.55, -0.75))), 2.0) * 14.0);
+      float mwBand = exp(-pow(dot(dir, vec3(0.3522083, 0.5534702, -0.7547321)), 2.0) * 14.0);
       float mwNoise = fbm5(dir.xz * 4.2 + vec2(dir.y * 2.5));
       sky += vec3(0.06, 0.075, 0.11) * mwBand * mwNoise * uStarIntensity * smoothstep(0.08, 0.4, dir.y) * (1.0 - uCloudCoverage * 0.8);
     }
@@ -924,6 +924,77 @@ const SKY_FRAGMENT_SHADER = /* glsl */ `
         float finalCloudAlpha = clamp(density * (0.76 + uCloudCoverage * 0.20) * cloudFade, 0.0, 0.94);
         sky = mix(sky, cloudCol, finalCloudAlpha);
       }
+    }
+
+    gl_FragColor = vec4(sky, 1.0);
+  }
+`;
+
+// Lightweight PMREM environment dome shader: matches SKY_FRAGMENT_SHADER Rayleigh, Mie,
+// ground-bounce, and broad cloud deck luminance without high-frequency stars/5-octave cirrus
+// that PMREM convolution (sigma 0.04) blurs away anyway. Eliminates periodic 6s cubemap stalls.
+const ENV_SKY_FRAGMENT_SHADER = /* glsl */ `
+  uniform vec3 uTopColor;
+  uniform vec3 uHorizonColor;
+  uniform vec3 uGroundColor;
+  uniform vec3 uSunDirection;
+  uniform vec3 uSunColor;
+  uniform float uCloudTime;
+  uniform float uCloudCoverage;
+  uniform float uDaylight;
+  varying vec3 vWorldDirection;
+
+  float envHash21(vec2 p) {
+    p = fract(p * vec2(127.1, 311.7));
+    p += dot(p, p + 34.53);
+    return fract(p.x * p.y);
+  }
+
+  float envNoise2(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(
+      mix(envHash21(i), envHash21(i + vec2(1.0, 0.0)), f.x),
+      mix(envHash21(i + vec2(0.0, 1.0)), envHash21(i + vec2(1.0, 1.0)), f.x),
+      f.y
+    );
+  }
+
+  void main() {
+    vec3 dir = normalize(vWorldDirection);
+    if (dir.y < 0.0) {
+      float gT = smoothstep(0.0, -0.35, dir.y);
+      gl_FragColor = vec4(mix(uHorizonColor, uGroundColor, gT), 1.0);
+      return;
+    }
+
+    float h = clamp(dir.y, 0.0, 1.0);
+    vec3 sky = mix(uHorizonColor, uTopColor, pow(h, 0.52));
+    float horizonBand = exp(-h * 7.5) * smoothstep(0.0, 0.04, h);
+    sky = mix(sky, uHorizonColor * 1.05, horizonBand * 0.35);
+
+    vec3 sunDir = uSunDirection;
+    float sunCos = dot(dir, sunDir);
+    float sunDot = max(sunCos, 0.0);
+    float sunElev = clamp(sunDir.y * 2.2 + 0.2, 0.0, 1.0);
+    float mieWide = pow(sunDot, 5.0) * 0.20 * (0.4 + 0.6 * (1.0 - h));
+    float mieTight = pow(sunDot, 36.0) * 0.32;
+    float sunDisc = smoothstep(0.99945, 0.99982, sunCos) * 2.6 * smoothstep(-0.04, 0.06, sunDir.y);
+    float sunAtten = mix(1.0, 0.22, smoothstep(0.55, 0.92, uCloudCoverage));
+    sky += uSunColor * (mieWide + mieTight) * sunElev * sunAtten * smoothstep(0.0, 0.035, h);
+    sky += uSunColor * sunDisc * sunAtten * smoothstep(0.0, 0.012, h);
+
+    if (dir.y > 0.02) {
+      float cloudFade = smoothstep(0.02, 0.22, dir.y);
+      vec2 cloudUv = (dir.xz / (dir.y + 0.18)) * 0.42 + vec2(uCloudTime * 0.011, uCloudTime * 0.0045);
+      float n = envNoise2(cloudUv) * 0.67 + envNoise2(cloudUv * 2.03 + vec2(13.7, 9.2)) * 0.33;
+      float threshold = mix(0.64, 0.32, clamp(uCloudCoverage, 0.0, 1.0));
+      float density = smoothstep(threshold, threshold + 0.26, n);
+      vec3 dayLit = mix(vec3(0.92, 0.93, 0.95), uSunColor * 1.08, 0.34);
+      vec3 dayShade = mix(uTopColor * 0.52 + vec3(0.18, 0.21, 0.25), vec3(0.24, 0.28, 0.33), uCloudCoverage * 0.65);
+      vec3 cloudCol = mix(mix(vec3(0.08, 0.10, 0.14), mix(dayShade, dayLit, 0.56), uDaylight), uHorizonColor, smoothstep(0.24, 0.02, dir.y) * 0.72);
+      sky = mix(sky, cloudCol, clamp(density * (0.76 + uCloudCoverage * 0.20) * cloudFade, 0.0, 0.94));
     }
 
     gl_FragColor = vec4(sky, 1.0);
@@ -1012,6 +1083,25 @@ export class AtmosphereSystem {
   private currentShadowExtent = 120;
   private lastAppliedShadowExtent = 120;
   // Reusable per-frame scratch math objects (zero GC pressure in update())
+  private readonly skyLightingStateScratch: {
+    sunDirection: THREE.Vector3;
+    sunColor: THREE.Color;
+    skyTopColor: THREE.Color;
+    skyHorizonColor: THREE.Color;
+    fogColor: THREE.Color;
+    fogDensity: number;
+    daylight: number;
+    windStrength: number;
+    isWinter: boolean;
+    cloudTime: number;
+    cloudCoverage: number;
+    rainWetness: number;
+    floodSurge: number;
+    climateHeat: number;
+    climateFreeze: number;
+    miasmaIntensity: number;
+  };
+
   private readonly tmpLightDir = new THREE.Vector3();
   private readonly tmpTopDay = new THREE.Color();
   private readonly tmpTopNight = new THREE.Color(0x060b16);
@@ -1064,19 +1154,20 @@ export class AtmosphereSystem {
     });
     this.skyMesh = new THREE.Mesh(skyGeo, skyMat);
     this.skyMesh.frustumCulled = false;
+    // Render sky dome AFTER opaque terrain/flora/buildings/creatures (renderOrder=0) and BEFORE
+    // transparent water so hardware early-Z rejects 55-85% of occluded screen pixels.
+    this.skyMesh.renderOrder = 100;
     this.scene.add(this.skyMesh);
 
     // PMREM environment generator with true sky + clouds above and earthy matte ground below
     this.pmremGenerator = new THREE.PMREMGenerator(renderer);
-    this.pmremGenerator.compileEquirectangularShader();
     this.envScene = new THREE.Scene();
     this.envDomeGeo = new THREE.SphereGeometry(40, 20, 14);
     this.envSkyMat = new THREE.ShaderMaterial({
       vertexShader: SKY_VERTEX_SHADER,
-      fragmentShader: SKY_FRAGMENT_SHADER,
+      fragmentShader: ENV_SKY_FRAGMENT_SHADER,
       uniforms: {
         ...this.skyUniforms,
-        uGroundHemisphere: { value: 1.0 },
       },
       side: THREE.BackSide,
       depthWrite: false,
@@ -1108,6 +1199,25 @@ export class AtmosphereSystem {
     // Minimal fill ambient so cast shadows retain real natural depth
     this.ambientLight = new THREE.AmbientLight(0x28322c, 0.07);
     this.scene.add(this.ambientLight);
+
+    this.skyLightingStateScratch = {
+      sunDirection: this.lightDirState,
+      sunColor: this.skyUniforms.uSunColor.value,
+      skyTopColor: this.skyUniforms.uTopColor.value,
+      skyHorizonColor: this.skyUniforms.uHorizonColor.value,
+      fogColor: this.fog.color,
+      fogDensity: this.fog.density,
+      daylight: this.currentDaylight,
+      windStrength: this.currentWindStrength,
+      isWinter: this.currentIsWinter,
+      cloudTime: this.currentCloudTime,
+      cloudCoverage: this.currentCloudCoverage,
+      rainWetness: this.currentRainWetness,
+      floodSurge: this.currentFloodSurge,
+      climateHeat: this.currentClimateHeat,
+      climateFreeze: this.currentClimateFreeze,
+      miasmaIntensity: this.currentMiasma,
+    };
 
     // Weather particles distributed in a wide circular canopy
     const weatherCount = 1500;
@@ -1670,24 +1780,19 @@ export class AtmosphereSystem {
   }
 
   getSkyLightingState(): SkyLightingState {
-    return {
-      sunDirection: this.lightDirState,
-      sunColor: this.skyUniforms.uSunColor.value,
-      skyTopColor: this.skyUniforms.uTopColor.value,
-      skyHorizonColor: this.skyUniforms.uHorizonColor.value,
-      fogColor: this.fog.color,
-      fogDensity: this.fog.density,
-      daylight: this.currentDaylight,
-      windStrength: this.currentWindStrength,
-      isWinter: this.currentIsWinter,
-      cloudTime: this.currentCloudTime,
-      cloudCoverage: this.currentCloudCoverage,
-      rainWetness: this.currentRainWetness,
-      floodSurge: this.currentFloodSurge,
-      climateHeat: this.currentClimateHeat,
-      climateFreeze: this.currentClimateFreeze,
-      miasmaIntensity: this.currentMiasma,
-    };
+    const s = this.skyLightingStateScratch;
+    s.fogDensity = this.fog.density;
+    s.daylight = this.currentDaylight;
+    s.windStrength = this.currentWindStrength;
+    s.isWinter = this.currentIsWinter;
+    s.cloudTime = this.currentCloudTime;
+    s.cloudCoverage = this.currentCloudCoverage;
+    s.rainWetness = this.currentRainWetness;
+    s.floodSurge = this.currentFloodSurge;
+    s.climateHeat = this.currentClimateHeat;
+    s.climateFreeze = this.currentClimateFreeze;
+    s.miasmaIntensity = this.currentMiasma;
+    return s;
   }
 
   dispose(): void {

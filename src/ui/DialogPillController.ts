@@ -34,13 +34,20 @@ export interface DialogPillHandle {
  * visual / ARIA state stays consistently synchronized across all pills.
  */
 export function bindDialogPill(binding: DialogPillBinding): DialogPillHandle {
+  let lastOpen: boolean | undefined;
+  let lastTitle: string | undefined;
+
   const sync = (): void => {
     const open = binding.isOpen();
-    binding.button.classList.toggle('active', open);
-    binding.button.setAttribute('aria-pressed', String(open));
+    if (open !== lastOpen) {
+      lastOpen = open;
+      binding.button.classList.toggle('active', open);
+      binding.button.setAttribute('aria-pressed', String(open));
+    }
     if (binding.getTitle) {
       const nextTitle = binding.getTitle(open);
-      if (binding.button.title !== nextTitle) {
+      if (nextTitle !== lastTitle) {
+        lastTitle = nextTitle;
         binding.button.title = nextTitle;
       }
     }

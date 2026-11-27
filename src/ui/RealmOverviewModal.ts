@@ -74,6 +74,9 @@ export class RealmOverviewModal {
 
   private lastWorld: WorldState | null = null;
   private refreshAccumSec = 0;
+  private lastWorldElapsed = -1;
+  private lastRenderedHtml = '';
+  private lastSummaryText = '';
 
   constructor(private readonly callbacks: RealmOverviewCallbacks) {
     this.element = document.createElement('div');
@@ -187,6 +190,9 @@ export class RealmOverviewModal {
     this.refreshAccumSec += dt;
     if (!force && this.refreshAccumSec < 0.75) return;
     this.refreshAccumSec = 0;
+    if (!force && this.lastRenderedHtml !== '' && world.elapsedSeconds === this.lastWorldElapsed) {
+      return;
+    }
     this.render(world);
   }
 
@@ -236,37 +242,49 @@ export class RealmOverviewModal {
     }
   }
 
+  private setSummaryText(text: string): void {
+    if (this.lastSummaryText === text) return;
+    this.lastSummaryText = text;
+    this.summaryEl.textContent = text;
+  }
+
   private render(world: WorldState): void {
-    const prevScroll = this.bodyEl.scrollTop;
+    this.lastWorldElapsed = world.elapsedSeconds;
     this.updateTabBadges(world);
 
+    let nextHtml: string;
     switch (this.activeTab) {
       case 'young':
-        this.renderYoungTab(world);
+        nextHtml = this.renderYoungTab(world);
         break;
       case 'buildings':
-        this.renderBuildingsTab(world);
+        nextHtml = this.renderBuildingsTab(world);
         break;
       case 'trade':
-        this.renderTradeTab(world);
+        nextHtml = this.renderTradeTab(world);
         break;
       case 'pioneers':
-        this.renderPioneersTab(world);
+        nextHtml = this.renderPioneersTab(world);
         break;
     }
 
+    if (nextHtml === this.lastRenderedHtml) return;
+    this.lastRenderedHtml = nextHtml;
+    const prevScroll = this.bodyEl.scrollTop;
+    this.bodyEl.innerHTML = nextHtml;
     this.bodyEl.scrollTop = prevScroll;
   }
 
   /* =========================================================================
      TAB 1: YOUNG & NURSERY
      ========================================================================= */
-  private renderYoungTab(world: WorldState): void {
+  private renderYoungTab(world: WorldState): string {
     const snap = buildYoungSummary(world);
-    this.summaryEl.textContent =
+    this.setSummaryText(
       snap.totalYoung > 0
         ? `${snap.totalYoung} young (${snap.newbornCount} newborn, ${snap.juvenileCount} juvenile) · ${snap.activeLitters} active litters · ${snap.bondedPairsCount} bonded pairs`
-        : `No young currently growing · ${snap.bondedPairsCount} bonded pairs across ${world.settlements.length} villages`;
+        : `No young currently growing · ${snap.bondedPairsCount} bonded pairs across ${world.settlements.length} villages`,
+    );
 
     if (
       this.youngVillageFilter !== 'all' &&
@@ -467,7 +485,7 @@ export class RealmOverviewModal {
         </div>
       `;
 
-    this.bodyEl.innerHTML = `
+    return `
       ${kpiHtml}
       ${nurseryCardsHtml}
       <div class="ro-section">
@@ -483,10 +501,12 @@ export class RealmOverviewModal {
   /* =========================================================================
      TAB 2: BUILDINGS & PUBLIC WORKS
      ========================================================================= */
-  private renderBuildingsTab(world: WorldState): void {
+  private renderBuildingsTab(world: WorldState): string {
     const snap = buildBuildingsSummary(world);
     const totalActive = snap.underConstruction + snap.disassembling + snap.bridgesInProgress;
-    this.summaryEl.textContent = `${snap.completedBuildings} completed buildings · ${totalActive} active works · ${snap.completedBridges} bridges · ${snap.totalPopulation}/${snap.totalHousingCapacity} housing`;
+    this.setSummaryText(
+      `${snap.completedBuildings} completed buildings · ${totalActive} active works · ${snap.completedBridges} bridges · ${snap.totalPopulation}/${snap.totalHousingCapacity} housing`,
+    );
 
     if (
       this.buildingVillageFilter !== 'all' &&
@@ -762,7 +782,7 @@ export class RealmOverviewModal {
         </div>
       `;
 
-    this.bodyEl.innerHTML = `
+    return `
       ${kpiHtml}
       ${settlementCardsHtml}
       ${activeWorksHtml}
@@ -775,9 +795,11 @@ export class RealmOverviewModal {
   /* =========================================================================
      TAB 3: TRADE & CARAVANS
      ========================================================================= */
-  private renderTradeTab(world: WorldState): void {
+  private renderTradeTab(world: WorldState): string {
     const snap = buildTradeSummary(world);
-    this.summaryEl.textContent = `${snap.activeCaravans} active caravan${snap.activeCaravans === 1 ? '' : 's'} on ${snap.activeRoutes} route${snap.activeRoutes === 1 ? '' : 's'} · ${snap.totalTradeVolume} completed trades · ${snap.totalTreasury} realm treasury`;
+    this.setSummaryText(
+      `${snap.activeCaravans} active caravan${snap.activeCaravans === 1 ? '' : 's'} on ${snap.activeRoutes} route${snap.activeRoutes === 1 ? '' : 's'} · ${snap.totalTradeVolume} completed trades · ${snap.totalTreasury} realm treasury`,
+    );
 
     const kpiHtml = `
       <div class="ro-kpi-grid">
@@ -995,7 +1017,7 @@ export class RealmOverviewModal {
         </div>
       `;
 
-    this.bodyEl.innerHTML = `
+    return `
       ${kpiHtml}
       ${caravansHtml}
       ${routesHtml}
@@ -1007,12 +1029,13 @@ export class RealmOverviewModal {
   /* =========================================================================
      TAB 4: PIONEERS & FRONTIER
      ========================================================================= */
-  private renderPioneersTab(world: WorldState): void {
+  private renderPioneersTab(world: WorldState): string {
     const snap = buildPioneersSummary(world);
-    this.summaryEl.textContent =
+    this.setSummaryText(
       snap.activeParties > 0
         ? `${snap.activeParties} active expedition${snap.activeParties === 1 ? '' : 's'} (${snap.totalPioneers} pioneers) · ${snap.settlementCount}/${snap.maxSettlements} settlements`
-        : `No expeditions en route · ${snap.settlementCount}/${snap.maxSettlements} settlements (${snap.canExpandMore ? 'frontier open' : 'realm cap reached'})`;
+        : `No expeditions en route · ${snap.settlementCount}/${snap.maxSettlements} settlements (${snap.canExpandMore ? 'frontier open' : 'realm cap reached'})`,
+    );
 
     const kpiHtml = `
       <div class="ro-kpi-grid">
@@ -1186,7 +1209,7 @@ export class RealmOverviewModal {
         </div>
       `;
 
-    this.bodyEl.innerHTML = `
+    return `
       ${kpiHtml}
       ${partiesHtml}
       ${readinessHtml}

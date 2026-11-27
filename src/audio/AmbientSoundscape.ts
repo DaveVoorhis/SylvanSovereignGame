@@ -60,26 +60,22 @@ function getBiomeTreeWeight(biome: BiomeType): number {
   }
 }
 
-/**
- * Computes continuous ambient soundscape target levels from the current world state
- * and camera listening frame (exported pure function for unit testing).
- */
-export function computeAmbientMix(
+interface SpatialEnvironmentSample {
+  readonly biome: BiomeType;
+  readonly treeDensity: number;
+  readonly alpineFactor: number;
+  readonly freshDist: number;
+  readonly nearestHearthDist: number;
+  readonly nearestFountainDist: number;
+  readonly coastDist: number;
+}
+
+function sampleSpatialEnvironment(
   world: WorldState,
-  listener: AudioListenerFrame,
-): AmbientMixTargets {
-  const anchor = listener.isPov ? listener.cameraPos : listener.focusPos;
-  const biome = world.terrain.getBiomeAt(anchor.x, anchor.z);
-  const weather = world.weather;
-  const season = world.season;
-
-  // Daylight in [0, 1]: 0 at midnight, 1 in full day
-  const sunY = Math.sin((world.timeOfDay - 0.25) * Math.PI * 2);
-  const daylight = smoothstep(-0.14, 0.22, sunY);
-
-  const overviewFactor = listener.isPov ? 0 : smoothstep(70, 260, listener.focusDistance);
-  const closenessFactor = listener.isPov ? 1.0 : 1 - smoothstep(25, 145, listener.focusDistance);
-  const underwaterFactor = listener.isUnderwater ? 1.0 : 0.0;
+  ax: number,
+  az: number,
+): SpatialEnvironmentSample {
+  const biome = world.terrain.getBiomeAt(ax, az);
 
   // Sample nearby tree density cheaply (strided scan if tree list is huge)
   const trees = world.terrain.trees;
@@ -88,8 +84,8 @@ export function computeAmbientMix(
   let nearbyTreeHits = 0;
   for (let i = 0; i < trees.length; i += stride) {
     const t = trees[i];
-    const dx = t.x - anchor.x;
-    const dz = t.z - anchor.z;
+    const dx = t.x - ax;
+    const dz = t.z - az;
     if (dx * dx + dz * dz <= sampleRadiusSq) {
       nearbyTreeHits += stride;
     }
@@ -101,9 +97,69 @@ export function computeAmbientMix(
     1,
   );
 
-  // Wind intensity: weather + alpine exposure + high-altitude overview breeze
-  const alpineDepth = world.terrain.getAlpineDepthAt(anchor.x, anchor.z);
+  const alpineDepth = world.terrain.getAlpineDepthAt(ax, az);
   const alpineFactor = smoothstep(-10, 65, alpineDepth);
+  const freshDist = world.terrain.getFreshwaterDistance(ax, az);
+
+  // Check proximity to settlement hearth fires & fountains
+  let nearestHearthDist = Infinity;
+  let nearestFountainDist = Infinity;
+  for (let i = 0; i < world.settlements.length; i++) {
+    const s = world.settlements[i];
+    const dCenter = Math.hypot(s.center.x - ax, s.center.z - az);
+    if (dCenter < nearestHearthDist) {
+      nearestHearthDist = dCenter;
+    }
+    if (dCenter < 50) {
+      for (let j = 0; j < s.buildings.length; j++) {
+        const b = s.buildings[j];
+        if (b.completed && b.type === 'fountain_plaza') {
+          const df = Math.hypot(b.position.x - ax, b.position.z - az);
+          if (df < nearestFountainDist) nearestFountainDist = df;
+        }
+      }
+    }
+  }
+
+  const coastDist = world.terrain.getCoastSignedDistance(ax, az);
+
+  return {
+    biome,
+    treeDensity,
+    alpineFactor,
+    freshDist,
+    nearestHearthDist,
+    nearestFountainDist,
+    coastDist,
+  };
+}
+
+function buildAmbientMix(
+  world: WorldState,
+  listener: AudioListenerFrame,
+  spatial: SpatialEnvironmentSample,
+): AmbientMixTargets {
+  const {
+    biome,
+    treeDensity,
+    alpineFactor,
+    freshDist,
+    nearestHearthDist,
+    nearestFountainDist,
+    coastDist,
+  } = spatial;
+  const weather = world.weather;
+  const season = world.season;
+
+  // Daylight in [0, 1]: 0 at midnight, 1 in full day
+  const sunY = Math.sin((world.timeOfDay - 0.25) * Math.PI * 2);
+  const daylight = smoothstep(-0.14, 0.22, sunY);
+
+  const overviewFactor = listener.isPov ? 0 : smoothstep(70, 260, listener.focusDistance);
+  const closenessFactor = listener.isPov ? 1.0 : 1 - smoothstep(25, 145, listener.focusDistance);
+  const underwaterFactor = listener.isUnderwater ? 1.0 : 0.0;
+
+  // Wind intensity: weather + alpine exposure + high-altitude overview breeze
   const weatherWind = getWeatherWindStrength(weather);
   const baseWind = clamp(weatherWind * 0.72 + alpineFactor * 0.28 + overviewFactor * 0.26, 0.14, 1.0);
 
@@ -137,35 +193,13 @@ export function computeAmbientMix(
     season === 'autumn' ? 2350 : season === 'winter' ? 1450 : 1900 + weatherWind * 550;
 
   // River / stream / pond & plaza fountain babble
-  const freshDist = world.terrain.getFreshwaterDistance(anchor.x, anchor.z);
   let riverProx = 1 - smoothstep(1.5, 42, Math.max(0, freshDist));
-
-  // Check proximity to settlement hearth fires & fountains
-  let nearestHearthDist = Infinity;
-  let nearestFountainDist = Infinity;
-  for (let i = 0; i < world.settlements.length; i++) {
-    const s = world.settlements[i];
-    const dCenter = Math.hypot(s.center.x - anchor.x, s.center.z - anchor.z);
-    if (dCenter < nearestHearthDist) {
-      nearestHearthDist = dCenter;
-    }
-    if (dCenter < 50) {
-      for (let j = 0; j < s.buildings.length; j++) {
-        const b = s.buildings[j];
-        if (b.completed && b.type === 'fountain_plaza') {
-          const df = Math.hypot(b.position.x - anchor.x, b.position.z - anchor.z);
-          if (df < nearestFountainDist) nearestFountainDist = df;
-        }
-      }
-    }
-  }
   const fountainProx = 1 - smoothstep(2, 26, nearestFountainDist);
   riverProx = Math.max(riverProx, fountainProx * 0.85);
   const riverGain =
     riverProx * (0.045 + 0.145 * closenessFactor) * (1 - underwaterFactor * 0.55);
 
   // Ocean waves near the front seashore
-  const coastDist = world.terrain.getCoastSignedDistance(anchor.x, anchor.z);
   const oceanProx = coastDist <= 0 ? 1.0 : 1 - smoothstep(0, 88, coastDist);
   const oceanGain =
     oceanProx *
@@ -207,6 +241,18 @@ export function computeAmbientMix(
 }
 
 /**
+ * Computes continuous ambient soundscape target levels from the current world state
+ * and camera listening frame (exported pure function for unit testing).
+ */
+export function computeAmbientMix(
+  world: WorldState,
+  listener: AudioListenerFrame,
+): AmbientMixTargets {
+  const anchor = listener.isPov ? listener.cameraPos : listener.focusPos;
+  return buildAmbientMix(world, listener, sampleSpatialEnvironment(world, anchor.x, anchor.z));
+}
+
+/**
  * Continuous procedural outdoor soundscape:
  * - Organic gusting wind & high alpine breeze
  * - Dynamic tree/leaf rustling responding to forest density, wind gusts, and season
@@ -243,6 +289,18 @@ export class AmbientSoundscape {
   private wildBirdTimer = 4.2;
   private lastMix: AmbientMixTargets | null = null;
   private sampleAccum = 0.25;
+  private paramAccum = 0.1;
+  private paramsInitialized = false;
+  private cachedSpatial: SpatialEnvironmentSample | null = null;
+  private cachedAnchorX = NaN;
+  private cachedAnchorZ = NaN;
+  private cachedSettlementCount = -1;
+  private cachedCompletedBuildings = -1;
+  private cachedTreeCount = -1;
+  private lastMasterCutoff = -1;
+  private lastRainTarget = -1;
+  private lastHearthTarget = -1;
+  private lastUnderwaterTarget = -1;
 
   constructor(
     private readonly ctx: AudioContext,
@@ -385,7 +443,31 @@ export class AmbientSoundscape {
     this.sampleAccum += dt;
     if (!this.lastMix || this.sampleAccum >= 0.24) {
       this.sampleAccum = 0;
-      this.lastMix = computeAmbientMix(world, listener);
+      const anchor = listener.isPov ? listener.cameraPos : listener.focusPos;
+      let completedBuildings = 0;
+      for (let i = 0; i < world.settlements.length; i++) {
+        const bld = world.settlements[i].buildings;
+        for (let j = 0; j < bld.length; j++) {
+          if (bld[j].completed) completedBuildings++;
+        }
+      }
+      const adx = anchor.x - this.cachedAnchorX;
+      const adz = anchor.z - this.cachedAnchorZ;
+      if (
+        !this.cachedSpatial ||
+        adx * adx + adz * adz > 0.25 ||
+        this.cachedSettlementCount !== world.settlements.length ||
+        this.cachedCompletedBuildings !== completedBuildings ||
+        this.cachedTreeCount !== world.terrain.trees.length
+      ) {
+        this.cachedAnchorX = anchor.x;
+        this.cachedAnchorZ = anchor.z;
+        this.cachedSettlementCount = world.settlements.length;
+        this.cachedCompletedBuildings = completedBuildings;
+        this.cachedTreeCount = world.terrain.trees.length;
+        this.cachedSpatial = sampleSpatialEnvironment(world, anchor.x, anchor.z);
+      }
+      this.lastMix = buildAmbientMix(world, listener, this.cachedSpatial);
     }
     const mix = this.lastMix;
 
@@ -395,73 +477,88 @@ export class AmbientSoundscape {
     this.gustPhaseB += dt * 0.73 * timeScale;
     this.wavePhase += dt * 0.72 * timeScale;
 
-    const gustRaw =
-      0.5 + 0.32 * Math.sin(this.gustPhaseA) + 0.18 * Math.sin(this.gustPhaseB + 1.1);
-    // Foliage rustle swells slightly behind wind gusts for lifelike canopy motion
-    const leafGust =
-      0.45 +
-      0.35 * Math.sin(this.gustPhaseA - 0.55) +
-      0.2 * Math.sin(this.gustPhaseB - 0.4 + 0.8);
-    const waveSwell = 0.48 + 0.52 * Math.pow(0.5 + 0.5 * Math.sin(this.wavePhase), 1.6);
-    const babbleMod = 0.84 + 0.16 * Math.sin(this.gustPhaseB * 3.1);
+    // Update AudioParam smoothing targets at ~10 Hz (time constants are 0.18-0.35s)
+    this.paramAccum += dt;
+    if (!this.paramsInitialized || this.paramAccum >= 0.095) {
+      this.paramsInitialized = true;
+      this.paramAccum = 0;
 
-    const now = this.ctx.currentTime;
-    const tc = 0.28;
-    const pauseDuck = paused ? 0.45 : 1.0;
+      const gustRaw =
+        0.5 + 0.32 * Math.sin(this.gustPhaseA) + 0.18 * Math.sin(this.gustPhaseB + 1.1);
+      // Foliage rustle swells slightly behind wind gusts for lifelike canopy motion
+      const leafGust =
+        0.45 +
+        0.35 * Math.sin(this.gustPhaseA - 0.55) +
+        0.2 * Math.sin(this.gustPhaseB - 0.4 + 0.8);
+      const waveSwell = 0.48 + 0.52 * Math.pow(0.5 + 0.5 * Math.sin(this.wavePhase), 1.6);
+      const babbleMod = 0.84 + 0.16 * Math.sin(this.gustPhaseB * 3.1);
 
-    this.masterFilter.frequency.setTargetAtTime(
-      mix.underwaterFactor > 0.5 ? 460 : 15500,
-      now,
-      0.18,
-    );
+      const now = this.ctx.currentTime;
+      const tc = 0.28;
+      const pauseDuck = paused ? 0.45 : 1.0;
 
-    this.windGain.gain.setTargetAtTime(
-      mix.windGain * (0.68 + 0.62 * gustRaw) * pauseDuck,
-      now,
-      tc,
-    );
-    this.windFilter.frequency.setTargetAtTime(
-      mix.windCutoffHz * (0.78 + 0.48 * gustRaw),
-      now,
-      tc,
-    );
+      const masterCutoff = mix.underwaterFactor > 0.5 ? 460 : 15500;
+      if (masterCutoff !== this.lastMasterCutoff) {
+        this.lastMasterCutoff = masterCutoff;
+        this.masterFilter.frequency.setTargetAtTime(masterCutoff, now, 0.18);
+      }
 
-    this.highWindGain.gain.setTargetAtTime(
-      mix.highWindGain * (0.45 + 0.85 * gustRaw) * pauseDuck,
-      now,
-      tc,
-    );
-    this.highWindFilter.frequency.setTargetAtTime(640 + gustRaw * 460, now, tc);
+      this.windGain.gain.setTargetAtTime(
+        mix.windGain * (0.68 + 0.62 * gustRaw) * pauseDuck,
+        now,
+        tc,
+      );
+      this.windFilter.frequency.setTargetAtTime(
+        mix.windCutoffHz * (0.78 + 0.48 * gustRaw),
+        now,
+        tc,
+      );
 
-    this.rustleGain.gain.setTargetAtTime(
-      mix.treeRustleGain * (0.52 + 0.88 * leafGust) * pauseDuck,
-      now,
-      tc,
-    );
-    this.rustleFilter1.frequency.setTargetAtTime(
-      mix.treeRustleCutoffHz * (0.82 + 0.36 * leafGust),
-      now,
-      tc,
-    );
-    this.rustleFilter2.frequency.setTargetAtTime(
-      (mix.treeRustleCutoffHz + 1250) * (0.85 + 0.3 * leafGust),
-      now,
-      tc,
-    );
+      this.highWindGain.gain.setTargetAtTime(
+        mix.highWindGain * (0.45 + 0.85 * gustRaw) * pauseDuck,
+        now,
+        tc,
+      );
+      this.highWindFilter.frequency.setTargetAtTime(640 + gustRaw * 460, now, tc);
 
-    this.riverGain.gain.setTargetAtTime(mix.riverGain * babbleMod * pauseDuck, now, tc);
-    this.riverFilter.frequency.setTargetAtTime(880 + 360 * babbleMod, now, tc);
+      this.rustleGain.gain.setTargetAtTime(
+        mix.treeRustleGain * (0.52 + 0.88 * leafGust) * pauseDuck,
+        now,
+        tc,
+      );
+      this.rustleFilter1.frequency.setTargetAtTime(
+        mix.treeRustleCutoffHz * (0.82 + 0.36 * leafGust),
+        now,
+        tc,
+      );
+      this.rustleFilter2.frequency.setTargetAtTime(
+        (mix.treeRustleCutoffHz + 1250) * (0.85 + 0.3 * leafGust),
+        now,
+        tc,
+      );
 
-    this.oceanGain.gain.setTargetAtTime(mix.oceanGain * waveSwell * pauseDuck, now, 0.35);
-    this.oceanFilter.frequency.setTargetAtTime(170 + 390 * waveSwell, now, 0.35);
+      this.riverGain.gain.setTargetAtTime(mix.riverGain * babbleMod * pauseDuck, now, tc);
+      this.riverFilter.frequency.setTargetAtTime(880 + 360 * babbleMod, now, tc);
 
-    this.rainGain.gain.setTargetAtTime(mix.rainGain * pauseDuck, now, tc);
-    this.hearthGain.gain.setTargetAtTime(mix.hearthGain * pauseDuck, now, tc);
-    this.underwaterGain.gain.setTargetAtTime(
-      mix.underwaterFactor * 0.24 * pauseDuck,
-      now,
-      0.22,
-    );
+      this.oceanGain.gain.setTargetAtTime(mix.oceanGain * waveSwell * pauseDuck, now, 0.35);
+      this.oceanFilter.frequency.setTargetAtTime(170 + 390 * waveSwell, now, 0.35);
+
+      const rainTarget = mix.rainGain * pauseDuck;
+      if (Math.abs(rainTarget - this.lastRainTarget) > 1e-4) {
+        this.lastRainTarget = rainTarget;
+        this.rainGain.gain.setTargetAtTime(rainTarget, now, tc);
+      }
+      const hearthTarget = mix.hearthGain * pauseDuck;
+      if (Math.abs(hearthTarget - this.lastHearthTarget) > 1e-4) {
+        this.lastHearthTarget = hearthTarget;
+        this.hearthGain.gain.setTargetAtTime(hearthTarget, now, tc);
+      }
+      const underwaterTarget = mix.underwaterFactor * 0.24 * pauseDuck;
+      if (Math.abs(underwaterTarget - this.lastUnderwaterTarget) > 1e-4) {
+        this.lastUnderwaterTarget = underwaterTarget;
+        this.underwaterGain.gain.setTargetAtTime(underwaterTarget, now, 0.22);
+      }
+    }
 
     if (paused || mix.underwaterFactor > 0.5) return;
 

@@ -37,6 +37,7 @@ interface TelemetrySlotNodes {
   readonly root: HTMLButtonElement;
   readonly valueEl: HTMLElement;
   readonly pillHandle: DialogPillHandle;
+  lastEmpty: boolean | null;
 }
 
 interface SettlementPillNodes {
@@ -48,6 +49,10 @@ interface SettlementPillNodes {
   readonly popEl: HTMLElement;
   readonly pillHandle: DialogPillHandle;
   readonly tooltipState: { base: string };
+  lastBannerHex: string;
+  lastWar: boolean;
+  lastCel: boolean;
+  lastScope: string | null;
 }
 
 const SEASON_ICONS: Record<Season, string> = {
@@ -119,6 +124,13 @@ export class TopBar {
   private activeEventSettlementIds: string[] = [];
   private eventTooltipClosed = '';
   private eventTooltipOpen = '';
+  private lastInCreaturePov = false;
+  private lastDeityBadgeClass = 'is-hidden';
+  private lastDeityBadgeDisabled = true;
+  private lastEventBadgeClass = 'is-idle';
+  private lastEventBadgeDisabled = true;
+  private readonly activeSettlementIds = new Set<string>();
+  private readonly settlementPopCounts = new Map<string, number>();
 
   constructor(private readonly callbacks: TopBarCallbacks) {
     this.element = document.createElement('header');
@@ -522,7 +534,10 @@ export class TopBar {
     if (this.povToggleBtn.textContent !== nextPovText) {
       this.povToggleBtn.textContent = nextPovText;
     }
-    this.povToggleBtn.classList.toggle('active', inCreaturePov);
+    if (inCreaturePov !== this.lastInCreaturePov) {
+      this.lastInCreaturePov = inCreaturePov;
+      this.povToggleBtn.classList.toggle('active', inCreaturePov);
+    }
 
     // 2. Temporal Capsule (in-place text updates)
     const hours = Math.floor(world.timeOfDay * 24);
@@ -553,10 +568,13 @@ export class TopBar {
     let caravans = 0;
     let pioneerCount = 0;
     let celebratingCount = 0;
+    this.settlementPopCounts.clear();
 
-    for (const c of world.creatures) {
+    for (let i = 0; i < world.creatures.length; i++) {
+      const c = world.creatures[i];
       if (!c.alive) continue;
       aliveCount++;
+      this.settlementPopCounts.set(c.settlementId, (this.settlementPopCounts.get(c.settlementId) ?? 0) + 1);
       if (c.lifeStage === 'young' || c.lifeStage === 'juvenile') youngCount++;
       if (c.activity === 'trading') caravans++;
       else if (c.activity === 'emigrating') pioneerCount++;
@@ -573,21 +591,36 @@ export class TopBar {
 
     // 3b. Active Deity Ecological Influence Pill (only visible during rare active epochs)
     const activeInf = world.activeInfluences[0] ?? null;
-    this.deityEventBadgeEl.classList.remove('polarity-disruptive', 'polarity-restorative', 'is-hidden');
     if (activeInf) {
       this.activeInfluencePos = { ...activeInf.position };
-      this.deityEventBadgeEl.disabled = false;
-      this.deityEventBadgeEl.classList.add(`polarity-${activeInf.polarity}`);
+      if (this.lastDeityBadgeDisabled) {
+        this.lastDeityBadgeDisabled = false;
+        this.deityEventBadgeEl.disabled = false;
+      }
+      const nextClass = `polarity-${activeInf.polarity}`;
+      if (this.lastDeityBadgeClass !== nextClass) {
+        this.deityEventBadgeEl.classList.remove(this.lastDeityBadgeClass);
+        this.deityEventBadgeEl.classList.add(nextClass);
+        this.lastDeityBadgeClass = nextClass;
+      }
       const rem = Math.max(0, Math.ceil(activeInf.startedAt + activeInf.duration - world.elapsedSeconds));
       const meta = DIVINE_EVENT_CATALOG[activeInf.type];
       this.setTextIfChanged(this.deityEventIconEl, activeInf.icon);
       this.setTextIfChanged(this.deityEventTextEl, `${activeInf.label} (${rem}s)`);
-      this.deityEventBadgeEl.title = `${meta.ecologicalReflection} — Click to fly to epicenter`;
+      const nextTitle = `${meta.ecologicalReflection} — Click to fly to epicenter`;
+      if (this.deityEventBadgeEl.title !== nextTitle) this.deityEventBadgeEl.title = nextTitle;
     } else {
       this.activeInfluencePos = null;
-      this.deityEventBadgeEl.disabled = true;
-      this.deityEventBadgeEl.classList.add('is-hidden');
-      this.deityEventBadgeEl.title = '';
+      if (!this.lastDeityBadgeDisabled) {
+        this.lastDeityBadgeDisabled = true;
+        this.deityEventBadgeEl.disabled = true;
+      }
+      if (this.lastDeityBadgeClass !== 'is-hidden') {
+        this.deityEventBadgeEl.classList.remove(this.lastDeityBadgeClass);
+        this.deityEventBadgeEl.classList.add('is-hidden');
+        this.lastDeityBadgeClass = 'is-hidden';
+      }
+      if (this.deityEventBadgeEl.title !== '') this.deityEventBadgeEl.title = '';
     }
 
     // 4. Right-anchored Celebration Event Slot (never nudges Band 1 or settlement pills)
@@ -596,15 +629,15 @@ export class TopBar {
     const activeLocals = world.festivals.activeCelebrations.filter((c) => c.scope === 'local');
 
     let nextTargets: string[] = [];
+    let nextEventBadgeClass = 'is-idle';
 
-    this.eventBadgeEl.classList.remove('scope-national', 'scope-regional', 'scope-local', 'is-idle');
     if (nationalHoliday) {
       nextTargets = [
         nationalHoliday.hostSettlementId,
         ...nationalHoliday.participatingSettlementIds.filter((id) => id !== nationalHoliday.hostSettlementId),
       ];
       const hostName = world.getSettlement(nationalHoliday.hostSettlementId)?.name;
-      this.eventBadgeEl.classList.add('scope-national');
+      nextEventBadgeClass = 'scope-national';
       this.eventTooltipClosed = hostName
         ? `${nationalHoliday.theme} — Click to go to ${hostName}`
         : `${nationalHoliday.theme} — Click to visit celebration`;
@@ -614,7 +647,7 @@ export class TopBar {
     } else if (activeRegional) {
       nextTargets = [activeRegional.hostSettlementId];
       const hostName = world.getSettlement(activeRegional.hostSettlementId)?.name;
-      this.eventBadgeEl.classList.add('scope-regional');
+      nextEventBadgeClass = 'scope-regional';
       this.eventTooltipClosed = hostName
         ? `${activeRegional.theme} — Click to go to ${hostName}`
         : `${activeRegional.theme} — Click to visit celebration`;
@@ -635,7 +668,7 @@ export class TopBar {
       }
       const primaryLocal = activeLocals[0];
       const hostName = nextTargets[0] ? world.getSettlement(nextTargets[0])?.name : undefined;
-      this.eventBadgeEl.classList.add('scope-local');
+      nextEventBadgeClass = 'scope-local';
       this.eventTooltipClosed = primaryLocal
         ? `${primaryLocal.name}: ${primaryLocal.theme} — Click to go to ${hostName ?? 'celebration'}`
         : hostName
@@ -647,16 +680,27 @@ export class TopBar {
       this.setTextIfChanged(this.eventIconEl, primaryLocal?.icon ?? '🎉');
       this.setTextIfChanged(this.eventTextEl, `${celebratingCount} Celebrating`);
     } else {
-      this.eventBadgeEl.classList.add('is-idle');
+      nextEventBadgeClass = 'is-idle';
       this.eventTooltipClosed = '';
       this.eventTooltipOpen = '';
     }
 
+    if (this.lastEventBadgeClass !== nextEventBadgeClass) {
+      this.eventBadgeEl.classList.remove(this.lastEventBadgeClass);
+      this.eventBadgeEl.classList.add(nextEventBadgeClass);
+      this.lastEventBadgeClass = nextEventBadgeClass;
+    }
+
     this.activeEventSettlementIds = nextTargets;
-    this.eventBadgeEl.disabled = nextTargets.length === 0;
+    const nextEventDisabled = nextTargets.length === 0;
+    if (this.lastEventBadgeDisabled !== nextEventDisabled) {
+      this.lastEventBadgeDisabled = nextEventDisabled;
+      this.eventBadgeEl.disabled = nextEventDisabled;
+    }
 
     // 5. Reconcile settlement pills in-place by settlement.id (preserves hover & DOM stability)
-    const activeIds = new Set<string>();
+    const activeIds = this.activeSettlementIds;
+    activeIds.clear();
     for (const s of world.settlements) {
       activeIds.add(s.id);
       let nodes = this.settlementPills.get(s.id);
@@ -669,16 +713,32 @@ export class TopBar {
       const cel = world.festivals.getCelebrationForSettlement(s.id);
       const war = world.wars.getWarForSettlement(s.id);
       const hex = `#${s.bannerColor.toString(16).padStart(6, '0')}`;
-      const pop = world.getSettlementPopulation(s.id);
+      const pop = this.settlementPopCounts.get(s.id) ?? 0;
       const profile = s.getAdaptationProfile();
 
-      nodes.button.classList.toggle('at-war', Boolean(war));
-      nodes.button.classList.toggle('celebrating', Boolean(cel));
-      nodes.button.classList.toggle('scope-national', cel?.scope === 'national');
-      nodes.button.classList.toggle('scope-regional', cel?.scope === 'regional');
-      nodes.button.classList.toggle('scope-local', cel?.scope === 'local');
+      const isWar = Boolean(war);
+      if (nodes.lastWar !== isWar) {
+        nodes.lastWar = isWar;
+        nodes.button.classList.toggle('at-war', isWar);
+      }
+      const isCel = Boolean(cel);
+      if (nodes.lastCel !== isCel) {
+        nodes.lastCel = isCel;
+        nodes.button.classList.toggle('celebrating', isCel);
+      }
+      const scope = cel?.scope ?? null;
+      if (nodes.lastScope !== scope) {
+        if (nodes.lastScope) {
+          nodes.button.classList.remove(`scope-${nodes.lastScope}`);
+        }
+        if (scope) {
+          nodes.button.classList.add(`scope-${scope}`);
+        }
+        nodes.lastScope = scope;
+      }
 
-      if (nodes.dotEl.style.background !== hex) {
+      if (nodes.lastBannerHex !== hex) {
+        nodes.lastBannerHex = hex;
         nodes.dotEl.style.background = hex;
       }
 
@@ -760,7 +820,7 @@ export class TopBar {
       getTitle: (open) => (open ? `Close ${summaryTitle}` : `Open ${summaryTitle}`),
     });
 
-    return { root, valueEl, pillHandle };
+    return { root, valueEl, pillHandle, lastEmpty: null };
   }
 
   private createSettlementPill(settlementId: string): SettlementPillNodes {
@@ -813,12 +873,20 @@ export class TopBar {
       popEl,
       pillHandle,
       tooltipState,
+      lastBannerHex: '',
+      lastWar: false,
+      lastCel: false,
+      lastScope: null,
     };
   }
 
   private updateSlot(slot: TelemetrySlotNodes, count: number): void {
     this.setTextIfChanged(slot.valueEl, String(count));
-    slot.root.classList.toggle('is-empty', count === 0);
+    const isEmpty = count === 0;
+    if (slot.lastEmpty !== isEmpty) {
+      slot.lastEmpty = isEmpty;
+      slot.root.classList.toggle('is-empty', isEmpty);
+    }
   }
 
   private setTextIfChanged(el: HTMLElement, text: string): void {

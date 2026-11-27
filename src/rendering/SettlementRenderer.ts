@@ -52,11 +52,12 @@ function applyArchitecturalWeathering(
   const snowAmt = opts.snow ?? 0.45;
   const mottleAmt = opts.mottle ?? 0.15;
   const rainDarken = opts.rainDarken ?? 0.24;
-  const cacheKey = `arch_weather_${mossAmt.toFixed(2)}_${snowAmt.toFixed(2)}_${mottleAmt.toFixed(2)}`;
-  mat.customProgramCacheKey = () => cacheKey;
+  const archParams = { value: new THREE.Vector4(mossAmt, snowAmt, mottleAmt, rainDarken) };
+  mat.customProgramCacheKey = () => 'arch_weather_v1';
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uRainWetness = uniforms.uRainWetness;
     shader.uniforms.uWinter = uniforms.uWinter;
+    shader.uniforms.uArchParams = archParams;
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -79,10 +80,13 @@ function applyArchitecturalWeathering(
         /* glsl */ `#include <common>
         uniform float uRainWetness;
         uniform float uWinter;
+        uniform vec4 uArchParams;
         varying vec3 vArchWorldPos;
         varying vec3 vArchWorldNormal;
         float archHash2(vec2 p) {
-          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+          p = fract(p * vec2(127.1, 311.7));
+          p += dot(p, p + 34.53);
+          return fract(p.x * p.y);
         }
         float archNoise2(vec2 p) {
           vec2 i = floor(p);
@@ -103,19 +107,25 @@ function applyArchitecturalWeathering(
         float archFbm = archN1 * 0.65 + archN2 * 0.35;
         float archUp = vArchWorldNormal.y;
         float archEaveShade = mix(1.0, 0.80, smoothstep(0.15, -0.55, archUp));
-        diffuseColor.rgb *= (1.0 - ${(mottleAmt * 0.5).toFixed(3)} + archFbm * ${mottleAmt.toFixed(3)}) * archEaveShade;
-        float archMossMask = smoothstep(0.42, 0.88, archUp) * smoothstep(0.42, 0.82, archFbm) * ${mossAmt.toFixed(3)} * (1.0 - uWinter * 0.75);
+        diffuseColor.rgb *= (1.0 - uArchParams.z * 0.5 + archFbm * uArchParams.z) * archEaveShade;
+        float archMossMask = smoothstep(0.42, 0.88, archUp) * smoothstep(0.42, 0.82, archFbm) * uArchParams.x * (1.0 - uWinter * 0.75);
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.18, 0.24, 0.11), archMossMask);
-        float archWet = uRainWetness * smoothstep(-0.25, 0.55, archUp);
-        diffuseColor.rgb *= (1.0 - archWet * ${rainDarken.toFixed(3)});
-        float archSnowMask = uWinter * smoothstep(0.46, 0.86, archUp) * smoothstep(0.28, 0.72, archFbm + 0.18) * ${snowAmt.toFixed(3)};
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.89, 0.93), archSnowMask);`,
+        float archWet = 0.0;
+        if (uRainWetness > 0.001) {
+          archWet = uRainWetness * smoothstep(-0.25, 0.55, archUp);
+          diffuseColor.rgb *= (1.0 - archWet * uArchParams.w);
+        }
+        if (uWinter > 0.001) {
+          float archSnowMask = uWinter * smoothstep(0.46, 0.86, archUp) * smoothstep(0.28, 0.72, archFbm + 0.18) * uArchParams.y;
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.89, 0.93), archSnowMask);
+        }`,
       )
       .replace(
         '#include <roughnessmap_fragment>',
         /* glsl */ `#include <roughnessmap_fragment>
-        float archWetR = uRainWetness * smoothstep(-0.25, 0.55, vArchWorldNormal.y);
-        roughnessFactor = mix(roughnessFactor, min(roughnessFactor, 0.24), archWetR * 0.78);`,
+        if (archWet > 0.001) {
+          roughnessFactor = mix(roughnessFactor, min(roughnessFactor, 0.24), archWet * 0.78);
+        }`,
       );
   };
 }
@@ -127,6 +137,8 @@ interface StagedPart {
 
 interface RenderedBuilding {
   readonly group: THREE.Group;
+  readonly constructionKitGroup: THREE.Group;
+  constructionKitAttached: boolean;
   readonly clearingGroup: THREE.Group;
   readonly levelingPad: THREE.Object3D;
   readonly levelingExtras: THREE.Group;
@@ -146,6 +158,7 @@ interface RenderedBuilding {
   readonly swayPart?: THREE.Object3D;
   readonly floatGroup?: THREE.Object3D;
   readonly chimneySmokes?: THREE.Points[];
+  readonly hasAnimation: boolean;
   lastAppliedProgress: number;
   lastAppliedCompleted: boolean;
   lastAppliedDisassembling: boolean;
@@ -327,6 +340,8 @@ export class SettlementRenderer {
   private readonly hearthSortScratch: { hearth: RenderedHearth; distSq: number }[] = [];
   private readonly settlementFlags = new Set<string>();
   private readonly extraDisposables: (THREE.BufferGeometry | THREE.Material)[] = [];
+  private readonly bannerMatCache = new Map<number, THREE.MeshStandardMaterial>();
+  private readonly activeWarIdsScratch = new Set<string>();
   private readonly archUniforms: ArchWeatheringUniforms = {
     uRainWetness: { value: 0 },
     uWinter: { value: 0 },
@@ -812,6 +827,7 @@ export class SettlementRenderer {
         if (!entry) continue;
 
         this.applyConstructionStageVisuals(entry, b);
+        if (!entry.hasAnimation) continue;
 
         if (entry.crystalMesh) {
           entry.crystalMesh.rotation.y += dt * 1.1;
@@ -841,19 +857,8 @@ export class SettlementRenderer {
           const shimmerR = 0.996 + Math.cos(t * 4.6 + b.position.z) * 0.01;
           entry.fountainJet.scale.set(shimmerR, shimmerY, shimmerR);
         }
-        if (entry.fountainMist) {
-          entry.fountainMist.visible = b.completed;
-        }
-        if (entry.fountainSpray) {
-          entry.fountainSpray.visible = b.completed;
-        }
         if (entry.swayPart) {
           entry.swayPart.rotation.z = Math.sin(t * 2.1 + b.position.x) * 0.11;
-        }
-        if (entry.chimneySmokes) {
-          for (const plume of entry.chimneySmokes) {
-            plume.visible = b.completed;
-          }
         }
       }
     }
@@ -878,8 +883,11 @@ export class SettlementRenderer {
   }
 
   private syncWarBanners(t: number, windStrength: number): void {
-    const activeIds = new Set<string>();
-    for (const war of this.world.wars.activeWars) {
+    const activeWars = this.world.wars.activeWars;
+    if (activeWars.length === 0 && this.warBanners.size === 0) return;
+    const activeIds = this.activeWarIdsScratch;
+    activeIds.clear();
+    for (const war of activeWars) {
       activeIds.add(war.id);
       let marker = this.warBanners.get(war.id);
       if (!marker) {
@@ -1127,6 +1135,36 @@ export class SettlementRenderer {
     entry.lastAppliedCompleted = b.completed;
     entry.lastAppliedDisassembling = disassembling;
     const stage = getBuildingStage(b);
+    const needsConstructionKit = !b.completed || disassembling;
+
+    if (entry.fountainMist) {
+      entry.fountainMist.visible = b.completed;
+    }
+    if (entry.fountainSpray) {
+      entry.fountainSpray.visible = b.completed;
+    }
+    if (entry.chimneySmokes) {
+      for (const plume of entry.chimneySmokes) {
+        plume.visible = b.completed;
+      }
+    }
+
+    if (needsConstructionKit && !entry.constructionKitAttached) {
+      entry.group.add(entry.constructionKitGroup);
+      entry.constructionKitAttached = true;
+    } else if (!needsConstructionKit && entry.constructionKitAttached) {
+      entry.group.remove(entry.constructionKitGroup);
+      entry.constructionKitAttached = false;
+    }
+
+    if (!needsConstructionKit) {
+      entry.levelingPad.visible = true;
+      entry.levelingPad.scale.set(1, 1, 1);
+      for (const part of entry.finishedParts) {
+        part.obj.visible = true;
+      }
+      return;
+    }
 
     // Stage 1: Clearing land (0-18%, and kept lightly visible at low leveling)
     entry.clearingGroup.visible = !b.completed && p < 24;
@@ -1216,6 +1254,13 @@ export class SettlementRenderer {
             obj.geometry.dispose();
           }
         });
+        if (!entry.constructionKitAttached) {
+          entry.constructionKitGroup.traverse((obj) => {
+            if ((obj instanceof THREE.Mesh || obj instanceof THREE.Points) && obj.geometry && !sharedGeos.has(obj.geometry)) {
+              obj.geometry.dispose();
+            }
+          });
+        }
         for (const mat of entry.ownedMaterials) {
           mat.dispose();
         }
@@ -1320,12 +1365,7 @@ export class SettlementRenderer {
     crossArm.rotation.z = Math.PI / 2;
     crossArm.position.set(1.82, 4.15, 0.8);
 
-    const bannerMat = new THREE.MeshStandardMaterial({
-      color: settlement.bannerColor,
-      roughness: 0.76,
-      side: THREE.DoubleSide,
-    });
-    this.extraDisposables.push(bannerMat);
+    const bannerMat = this.getBannerMaterial(settlement.bannerColor);
 
     const bShape = new THREE.Shape();
     bShape.moveTo(0, 0);
@@ -1745,6 +1785,19 @@ export class SettlementRenderer {
     ];
   }
 
+  private getBannerMaterial(bannerColor: number): THREE.MeshStandardMaterial {
+    let mat = this.bannerMatCache.get(bannerColor);
+    if (!mat) {
+      mat = new THREE.MeshStandardMaterial({
+        color: bannerColor,
+        roughness: 0.75,
+        side: THREE.DoubleSide,
+      });
+      this.bannerMatCache.set(bannerColor, mat);
+    }
+    return mat;
+  }
+
   private createBuildingMesh(
     b: BuildingInstance,
     bannerColor: number,
@@ -1760,12 +1813,8 @@ export class SettlementRenderer {
     group.userData.selectionTarget = { kind: 'building', id: b.id };
 
     const blueprint = BUILDING_CATALOG[b.type];
-    const bannerMat = new THREE.MeshStandardMaterial({
-      color: bannerColor,
-      roughness: 0.74,
-      side: THREE.DoubleSide,
-    });
-    const ownedMaterials: THREE.Material[] = [bannerMat];
+    const bannerMat = this.getBannerMaterial(bannerColor);
+    const ownedMaterials: THREE.Material[] = [];
 
     // Dedicated group holding the final finished architecture so we can cleanly separate construction kit & exterior stages
     const finishedGroup = new THREE.Group();
@@ -3061,10 +3110,30 @@ export class SettlementRenderer {
     // Build dedicated 5-stage construction site kit (clearing, leveling, foundation, timber/masonry frame, scaffolding)
     const isWaterwaySite = Boolean(blueprint.waterwayOnly) || adaptation === 'waterway_haven';
     const kit = this.buildConstructionKit(b, blueprint.footprintRadius, blueprint.frameStyle, isWaterwaySite);
-    group.add(kit.clearingGroup, kit.levelingPad, kit.levelingExtras, kit.foundationGroup, kit.framingGroup, kit.scaffoldingGroup);
+    const constructionKitGroup = new THREE.Group();
+    constructionKitGroup.userData.selectionTarget = { kind: 'building', id: b.id };
+    constructionKitGroup.add(kit.clearingGroup, kit.levelingExtras, kit.foundationGroup, kit.framingGroup, kit.scaffoldingGroup);
+    group.add(kit.levelingPad);
+    const constructionKitAttached = !b.completed || Boolean(b.disassembling);
+    if (constructionKitAttached) {
+      group.add(constructionKitGroup);
+    }
+
+    const hasAnimation = Boolean(
+      crystalMesh ||
+      runeRingA ||
+      runeRingB ||
+      wheelMesh ||
+      rotorMesh ||
+      fountainJet ||
+      swayPart ||
+      floatGroup,
+    );
 
     return {
       group,
+      constructionKitGroup,
+      constructionKitAttached,
       clearingGroup: kit.clearingGroup,
       levelingPad: kit.levelingPad,
       levelingExtras: kit.levelingExtras,
@@ -3084,6 +3153,7 @@ export class SettlementRenderer {
       swayPart,
       floatGroup,
       chimneySmokes: chimneySmokes.length > 0 ? chimneySmokes : undefined,
+      hasAnimation,
       lastAppliedProgress: -1,
       lastAppliedCompleted: false,
       lastAppliedDisassembling: false,
@@ -3550,7 +3620,16 @@ export class SettlementRenderer {
     this.fountainWater.dispose();
     for (const d of this.extraDisposables) d.dispose();
     this.extraDisposables.length = 0;
+    for (const mat of this.bannerMatCache.values()) mat.dispose();
+    this.bannerMatCache.clear();
     for (const entry of this.buildingMeshes.values()) {
+      if (!entry.constructionKitAttached) {
+        entry.constructionKitGroup.traverse((obj) => {
+          if ((obj instanceof THREE.Mesh || obj instanceof THREE.Points) && obj.geometry && !sharedGeos.has(obj.geometry)) {
+            obj.geometry.dispose();
+          }
+        });
+      }
       for (const mat of entry.ownedMaterials) {
         mat.dispose();
       }

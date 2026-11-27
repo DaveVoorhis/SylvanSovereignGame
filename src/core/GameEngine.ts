@@ -16,7 +16,7 @@ import type { SelectionTarget } from './Types';
 import type { CreaturePovPose } from '@rendering/CameraController';
 import { SceneManager } from '@rendering/SceneManager';
 import type { Creature } from '@simulation/creatures/Creature';
-import { computeStrideMetrics } from '@simulation/creatures/StrideKinematics';
+import { computeStrideCycleLengthWorld } from '@simulation/creatures/StrideKinematics';
 import { WorldState } from '@simulation/WorldState';
 import { HudManager } from '@ui/HudManager';
 import { nextPaintFrame, type SplashScreen } from '@ui/SplashScreen';
@@ -86,6 +86,19 @@ export class GameEngine {
   private lastFrameMs = 0;
   private autosaveAccumSec = 0;
   private autosaveInFlight = false;
+  private autosaveScheduled = false;
+  private pendingAutosaveIdleId: number | null = null;
+  private pendingAutosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly povPoseScratch = {
+    x: 0,
+    y: 0,
+    z: 0,
+    heading: 0,
+    eyeHeight: 0,
+    bobOffset: 0,
+    swayOffset: 0,
+    alive: true,
+  };
 
   private readonly onKeyDownBound: (e: KeyboardEvent) => void;
   private readonly onFullscreenChangeBound: () => void;
@@ -608,9 +621,10 @@ export class GameEngine {
     // Double-frequency smooth cosine step arc (two gentle footfalls per left+right stride cycle)
     const smoothStep = 0.5 - 0.5 * Math.cos(phase * 2);
     const lateralShift = Math.sin(phase);
+    const groundY =
+      c.def.strictlyAquatic || c.def.aquatic ? this.world.terrain.getHeightAt(c.x, c.z) : 0;
     const isSwimmingInWater =
-      Boolean(c.def.aquatic) &&
-      this.world.terrain.getHeightAt(c.x, c.z) < waterLevel - 0.02;
+      !c.def.strictlyAquatic && Boolean(c.def.aquatic) && groundY < waterLevel - 0.02;
 
     let bobOffset = 0;
     let swayOffset = 0;
@@ -647,7 +661,6 @@ export class GameEngine {
     let eyeHeight: number;
     if (c.def.strictlyAquatic) {
       // River Koi eyes sit inside the water column — keep Eye View cleanly submerged below effective waterLevel
-      const groundY = this.world.terrain.getHeightAt(c.x, c.z);
       const desiredEyeY = Math.min(waterLevel - 0.24, c.y + 0.04 * c.getSizeScale());
       const safeEyeY = Math.max(groundY + 0.12, desiredEyeY);
       eyeHeight = safeEyeY - c.y;
@@ -659,16 +672,16 @@ export class GameEngine {
       eyeHeight = safeEyeY - c.y;
     }
 
-    return {
-      x: c.x,
-      y: c.y,
-      z: c.z,
-      heading: c.heading,
-      eyeHeight,
-      bobOffset,
-      swayOffset,
-      alive: c.alive,
-    };
+    const pose = this.povPoseScratch;
+    pose.x = c.x;
+    pose.y = c.y;
+    pose.z = c.z;
+    pose.heading = c.heading;
+    pose.eyeHeight = eyeHeight;
+    pose.bobOffset = bobOffset;
+    pose.swayOffset = swayOffset;
+    pose.alive = c.alive;
+    return pose;
   }
 
   start(): void {
@@ -678,6 +691,7 @@ export class GameEngine {
       const realDt = Math.min(0.05, Math.max(0.001, (now - this.lastFrameMs) / 1000));
       this.lastFrameMs = now;
 
+      let triggerPeriodicAutosave = false;
       if (!this.isRebuilding && this.simSpeed > 0) {
         const simDt = realDt * this.simSpeed;
         const steps = Math.max(1, Math.ceil(simDt / 0.05));
@@ -688,7 +702,7 @@ export class GameEngine {
         this.autosaveAccumSec += realDt;
         if (this.autosaveAccumSec >= AUTOSAVE_INTERVAL_SEC) {
           this.autosaveAccumSec = 0;
-          void this.persistAutosaveQuietly();
+          triggerPeriodicAutosave = true;
         }
       }
 
@@ -714,12 +728,12 @@ export class GameEngine {
             } else if (host.def.strictlyAquatic) {
               omega = (1.8 + host.moveIntensity * 2.2);
             } else {
-              const metrics = computeStrideMetrics(
+              const cycleLengthWorld = computeStrideCycleLengthWorld(
                 host.def.locomotion,
                 host.gaitEffort,
                 host.getSizeScale(),
               );
-              const rawStrideOmega = (host.currentSpeed / metrics.cycleLengthWorld) * Math.PI * 2;
+              const rawStrideOmega = (host.currentSpeed / cycleLengthWorld) * Math.PI * 2;
               omega = Math.min(18, rawStrideOmega);
             }
           }
@@ -729,12 +743,14 @@ export class GameEngine {
 
       if (!this.isRebuilding) {
         this.sceneManager.renderFrame(realDt);
-        this.audio.update(
-          realDt,
-          this.world,
-          this.sceneManager.getAudioListenerFrame(),
-          this.simSpeed,
-        );
+        if (this.audio.isRunning()) {
+          this.audio.update(
+            realDt,
+            this.world,
+            this.sceneManager.getAudioListenerFrame(),
+            this.simSpeed,
+          );
+        }
         this.hud.update(
           realDt,
           this.world,
@@ -742,6 +758,9 @@ export class GameEngine {
           this.sceneManager.cameraController.isFollowing(),
           this.povCreatureId,
         );
+        if (triggerPeriodicAutosave) {
+          this.schedulePeriodicAutosave();
+        }
       }
 
       this.rafId = requestAnimationFrame(loop);
@@ -765,6 +784,7 @@ export class GameEngine {
   async resetWorldAsync(seed: number): Promise<void> {
     if (this.isRebuilding) return;
     this.isRebuilding = true;
+    this.cancelScheduledAutosave();
     try {
       this.splash?.show('Dreaming up a brand-new valley…');
       this.splash?.setProgress(10, 'Carving alpine peaks, watersheds & sunlit shores…');
@@ -858,6 +878,44 @@ export class GameEngine {
     return record.meta;
   }
 
+  private cancelScheduledAutosave(): void {
+    this.autosaveScheduled = false;
+    if (this.pendingAutosaveIdleId !== null && typeof window !== 'undefined') {
+      const cancelIdle = (window as unknown as { cancelIdleCallback?: (id: number) => void })
+        .cancelIdleCallback;
+      cancelIdle?.(this.pendingAutosaveIdleId);
+      this.pendingAutosaveIdleId = null;
+    }
+    if (this.pendingAutosaveTimer !== null) {
+      clearTimeout(this.pendingAutosaveTimer);
+      this.pendingAutosaveTimer = null;
+    }
+  }
+
+  private schedulePeriodicAutosave(): void {
+    if (this.isRebuilding || this.autosaveInFlight || this.autosaveScheduled || !this.saveStore.isAvailable()) {
+      return;
+    }
+    this.autosaveScheduled = true;
+    const run = () => {
+      this.autosaveScheduled = false;
+      this.pendingAutosaveIdleId = null;
+      this.pendingAutosaveTimer = null;
+      void this.persistAutosaveQuietly();
+    };
+    const ric =
+      typeof window !== 'undefined'
+        ? (window as unknown as {
+            requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+          }).requestIdleCallback
+        : undefined;
+    if (typeof ric === 'function') {
+      this.pendingAutosaveIdleId = ric(run, { timeout: 2000 });
+    } else {
+      this.pendingAutosaveTimer = setTimeout(run, 0);
+    }
+  }
+
   private async persistAutosaveQuietly(allowDuringRebuild = false): Promise<void> {
     if ((!allowDuringRebuild && this.isRebuilding) || this.autosaveInFlight || !this.saveStore.isAvailable()) {
       return;
@@ -881,6 +939,7 @@ export class GameEngine {
   async loadSaveRecordAsync(record: SaveGameRecord): Promise<boolean> {
     if (this.isRebuilding) return false;
     this.isRebuilding = true;
+    this.cancelScheduledAutosave();
     try {
       this.splash?.show(`Restoring "${record.name}"…`);
       this.splash?.setProgress(12, `Reconstructing Day ${record.meta.day} terrain & villages…`);
@@ -955,6 +1014,7 @@ export class GameEngine {
   }
 
   dispose(): void {
+    this.cancelScheduledAutosave();
     window.removeEventListener('keydown', this.onKeyDownBound);
     document.removeEventListener('fullscreenchange', this.onFullscreenChangeBound);
     document.removeEventListener('webkitfullscreenchange', this.onFullscreenChangeBound);

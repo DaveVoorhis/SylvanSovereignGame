@@ -2,7 +2,11 @@ import type { ResourceType } from '@core/Types';
 import { BUILDING_CATALOG } from '@simulation/settlements/BuildingCatalog';
 import { getBuildingStage, getConstructionStageLabel } from '@simulation/settlements/Settlement';
 import { getBiomeDisplayName } from '@simulation/settlements/VillageAdaptation';
-import { getBridgeApproach, getBridgeDeckHeightAt } from '@simulation/terrain/Bridge';
+import {
+  getBridgeApproachInto,
+  getBridgeDeckHeightAt,
+  type MutableBridgeApproach,
+} from '@simulation/terrain/Bridge';
 import {
   HEARTH_FIRE_KEEP_OUT_RADIUS,
   getBuildingCollisionRadius,
@@ -11,7 +15,7 @@ import {
 import { getWeaponStats } from '@simulation/society/WarSystem';
 import type { WorldState } from '@simulation/WorldState';
 import { resolveLifeStage, type Creature } from './Creature';
-import { computeStrideMetrics } from './StrideKinematics';
+import { computeStrideCycleLengthWorld } from './StrideKinematics';
 
 export { HEARTH_FIRE_KEEP_OUT_RADIUS };
 
@@ -39,6 +43,16 @@ const STEER_ZERO_INDEX = 10;
 const STEER_COS = Float64Array.from(STEER_OFFSETS, (a) => Math.cos(a));
 const STEER_SIN = Float64Array.from(STEER_OFFSETS, (a) => Math.sin(a));
 const FALLBACK_DETOUR_MAGS = [0.48, 0.92, 1.42, 2.05, Math.PI];
+const TARGET_RING_RADII = [1.4, 2.8, 4.4];
+const TARGET_ANGLE_OFFSETS = [0, 0.55, -0.55, 1.15, -1.15, 1.85, -1.85, Math.PI];
+const ESCAPE_DISTS = [4.8, 3.2];
+const ALL_FALLBACK_RESOURCES: readonly ResourceType[] = [
+  'timber',
+  'stone',
+  'berries',
+  'acorns',
+  'herbs',
+];
 
 function normalizeAngle(angle: number): number {
   let a = angle;
@@ -71,13 +85,7 @@ function getCreatureTurnRate(creature: Creature): number {
 
 const CREATURE_CELL_SIZE = 4.0;
 const INV_CREATURE_CELL_SIZE = 1 / CREATURE_CELL_SIZE;
-const CREATURE_GRID_OFFSET = 512;
-const CREATURE_GRID_STRIDE = 1024;
 const VERTICAL_SEPARATION_BAND = 1.15;
-
-function creatureCellKey(cx: number, cz: number): number {
-  return (cx + CREATURE_GRID_OFFSET) * CREATURE_GRID_STRIDE + (cz + CREATURE_GRID_OFFSET);
-}
 
 /**
  * Autonomous utility-driven AI for anthropomorphic woodland creatures:
@@ -101,10 +109,20 @@ export class CreatureAI {
   private readonly activeCrDSq: number[] = [];
   private readonly activeCrPairR: number[] = [];
   private readonly nearbyCreatures: Creature[] = [];
-  private readonly creatureCells = new Map<number, Creature[]>();
+  private creatureGrid: (Creature[] | null)[] = [];
+  private readonly activeCreatureCellIndices: number[] = [];
+  private creatureGridHalf = 0;
+  private creatureGridDim = 0;
   private readonly movedCreatures = new Set<Creature>();
   private readonly steerScores = new Float64Array(STEER_OFFSETS.length);
   private readonly steerHazards = new Float64Array(STEER_OFFSETS.length);
+  private readonly bridgeApproachScratch: MutableBridgeApproach = {
+    nearX: 0,
+    nearZ: 0,
+    farX: 0,
+    farZ: 0,
+    nearDist: 0,
+  };
   private creatureGridStep = -1;
   private hasMultipleSettlementCreatures = false;
   private dispApplied = false;
@@ -154,25 +172,50 @@ export class CreatureAI {
   }
 
   private rebuildCreatureGrid(world: WorldState): void {
-    for (const bucket of this.creatureCells.values()) {
-      bucket.length = 0;
+    const neededHalf = Math.ceil((world.terrain.halfSize + 32) * INV_CREATURE_CELL_SIZE) + 2;
+    if (neededHalf !== this.creatureGridHalf) {
+      this.creatureGridHalf = neededHalf;
+      this.creatureGridDim = neededHalf * 2;
+      this.creatureGrid = new Array<Creature[] | null>(this.creatureGridDim * this.creatureGridDim).fill(null);
+      this.activeCreatureCellIndices.length = 0;
+    } else {
+      const active = this.activeCreatureCellIndices;
+      for (let i = 0; i < active.length; i++) {
+        const bucket = this.creatureGrid[active[i]];
+        if (bucket) bucket.length = 0;
+      }
+      active.length = 0;
     }
+
+    const grid = this.creatureGrid;
+    const gridHalf = this.creatureGridHalf;
+    const gridDim = this.creatureGridDim;
+    const active = this.activeCreatureCellIndices;
+    const alive = world.aliveCreatures;
     let firstSettlementId: string | null = null;
     let multiSettlement = false;
-    for (const c of world.creatures) {
+    for (let i = 0; i < alive.length; i++) {
+      const c = alive[i];
       if (!c.alive) continue;
       if (firstSettlementId === null) {
         firstSettlementId = c.settlementId;
       } else if (!multiSettlement && c.settlementId !== firstSettlementId) {
         multiSettlement = true;
       }
-      const cx = Math.floor(c.x * INV_CREATURE_CELL_SIZE);
-      const cz = Math.floor(c.z * INV_CREATURE_CELL_SIZE);
-      const key = creatureCellKey(cx, cz);
-      let bucket = this.creatureCells.get(key);
+      let cx = Math.floor(c.x * INV_CREATURE_CELL_SIZE) + gridHalf;
+      let cz = Math.floor(c.z * INV_CREATURE_CELL_SIZE) + gridHalf;
+      if (cx < 0) cx = 0;
+      else if (cx >= gridDim) cx = gridDim - 1;
+      if (cz < 0) cz = 0;
+      else if (cz >= gridDim) cz = gridDim - 1;
+      const idx = cx * gridDim + cz;
+      let bucket = grid[idx];
       if (!bucket) {
         bucket = [];
-        this.creatureCells.set(key, bucket);
+        grid[idx] = bucket;
+      }
+      if (bucket.length === 0) {
+        active.push(idx);
       }
       bucket.push(c);
     }
@@ -191,17 +234,26 @@ export class CreatureAI {
       this.prepareStep(world);
     }
     out.length = 0;
+    const gridDim = this.creatureGridDim;
+    if (gridDim === 0) return;
+    const gridHalf = this.creatureGridHalf;
+    const grid = this.creatureGrid;
     const selfAlt = self.def.aerial ? self.flightAltitude : 0;
     const rSq = searchRadius * searchRadius;
-    const minCx = Math.floor((x - searchRadius) * INV_CREATURE_CELL_SIZE);
-    const maxCx = Math.floor((x + searchRadius) * INV_CREATURE_CELL_SIZE);
-    const minCz = Math.floor((z - searchRadius) * INV_CREATURE_CELL_SIZE);
-    const maxCz = Math.floor((z + searchRadius) * INV_CREATURE_CELL_SIZE);
+    let minCx = Math.floor((x - searchRadius) * INV_CREATURE_CELL_SIZE) + gridHalf;
+    let maxCx = Math.floor((x + searchRadius) * INV_CREATURE_CELL_SIZE) + gridHalf;
+    let minCz = Math.floor((z - searchRadius) * INV_CREATURE_CELL_SIZE) + gridHalf;
+    let maxCz = Math.floor((z + searchRadius) * INV_CREATURE_CELL_SIZE) + gridHalf;
+    if (minCx < 0) minCx = 0;
+    if (minCz < 0) minCz = 0;
+    if (maxCx >= gridDim) maxCx = gridDim - 1;
+    if (maxCz >= gridDim) maxCz = gridDim - 1;
 
     for (let cx = minCx; cx <= maxCx; cx++) {
+      const rowOffset = cx * gridDim;
       for (let cz = minCz; cz <= maxCz; cz++) {
-        const bucket = this.creatureCells.get(creatureCellKey(cx, cz));
-        if (!bucket) continue;
+        const bucket = grid[rowOffset + cz];
+        if (!bucket || bucket.length === 0) continue;
         for (let i = 0; i < bucket.length; i++) {
           const other = bucket[i];
           if (!other.alive || other.id === self.id) continue;
@@ -256,7 +308,7 @@ export class CreatureAI {
     }
 
     if (creature.ageDays >= creature.lifespanDays) {
-      creature.alive = false;
+      world.markCreatureDead(creature);
       creature.health = 0;
       if (creature.mateId) {
         const mate = world.getCreature(creature.mateId);
@@ -429,13 +481,21 @@ export class CreatureAI {
       this.prepareStep(world);
     }
     if (!this.hasMultipleSettlementCreatures) return;
+    const gridDim = this.creatureGridDim;
+    if (gridDim === 0) return;
+    const gridHalf = this.creatureGridHalf;
+    const grid = this.creatureGrid;
 
     const sightRange = creature.role === 'guard' ? 16 : 9.5;
     const sightRangeSq = sightRange * sightRange;
-    const minCx = Math.floor((creature.x - sightRange) * INV_CREATURE_CELL_SIZE);
-    const maxCx = Math.floor((creature.x + sightRange) * INV_CREATURE_CELL_SIZE);
-    const minCz = Math.floor((creature.z - sightRange) * INV_CREATURE_CELL_SIZE);
-    const maxCz = Math.floor((creature.z + sightRange) * INV_CREATURE_CELL_SIZE);
+    let minCx = Math.floor((creature.x - sightRange) * INV_CREATURE_CELL_SIZE) + gridHalf;
+    let maxCx = Math.floor((creature.x + sightRange) * INV_CREATURE_CELL_SIZE) + gridHalf;
+    let minCz = Math.floor((creature.z - sightRange) * INV_CREATURE_CELL_SIZE) + gridHalf;
+    let maxCz = Math.floor((creature.z + sightRange) * INV_CREATURE_CELL_SIZE) + gridHalf;
+    if (minCx < 0) minCx = 0;
+    if (minCz < 0) minCz = 0;
+    if (maxCx >= gridDim) maxCx = gridDim - 1;
+    if (maxCz >= gridDim) maxCz = gridDim - 1;
 
     const moralAlign = world.deity.getMoralAlignment(world);
     const allowLocalClash = moralAlign < -0.42 && creature.isAdult();
@@ -443,9 +503,10 @@ export class CreatureAI {
     const braveryThreshold = Math.max(0.45, 0.78 + moralAlign * 0.28);
 
     for (let cx = minCx; cx <= maxCx; cx++) {
+      const rowOffset = cx * gridDim;
       for (let cz = minCz; cz <= maxCz; cz++) {
-        const bucket = this.creatureCells.get(creatureCellKey(cx, cz));
-        if (!bucket) continue;
+        const bucket = grid[rowOffset + cz];
+        if (!bucket || bucket.length === 0) continue;
         for (let i = 0; i < bucket.length; i++) {
           const other = bucket[i];
           if (!other.alive || other.id === creature.id) continue;
@@ -568,7 +629,7 @@ export class CreatureAI {
       const existingMate = creature.mateId ? world.getCreature(creature.mateId) : undefined;
       if (!existingMate || !existingMate.alive) {
         creature.mateId = null;
-        const suitor = world.creatures.find(
+        const suitor = world.aliveCreatures.find(
           (other) =>
             other.alive &&
             other.id !== creature.id &&
@@ -882,11 +943,12 @@ export class CreatureAI {
 
     let node = creature.def.strictlyAquatic
       ? undefined
-      : world.terrain.findNearestResource(creature.position2D, desiredTypes, 1.2);
+      : world.terrain.findNearestResourceAt(creature.x, creature.z, desiredTypes, 1.2);
     if (!node && !creature.def.strictlyAquatic) {
-      node = world.terrain.findNearestResource(
-        creature.position2D,
-        ['timber', 'stone', 'berries', 'acorns', 'herbs'],
+      node = world.terrain.findNearestResourceAt(
+        creature.x,
+        creature.z,
+        ALL_FALLBACK_RESOURCES,
         1.0,
       );
     }
@@ -1798,7 +1860,7 @@ export class CreatureAI {
       if (target.health <= 0) {
         const fatalChance = war ? 0.78 : sameSettlementClash ? 0 : 0.24;
         if (!sameSettlementClash && world.rng.chance(fatalChance)) {
-          target.alive = false;
+          world.markCreatureDead(target);
           target.health = 0;
           if (target.mateId) {
             const mate = world.getCreature(target.mateId);
@@ -2050,9 +2112,7 @@ export class CreatureAI {
    */
   private ensureReachableTarget(creature: Creature, world: WorldState): void {
     this.pushTargetOutsideObstacles(creature, world);
-    const isTargetOk = (tx: number, tz: number): boolean =>
-      world.terrain.canCreatureTraverse(tx, tz, creature.def);
-    if (isTargetOk(creature.targetX, creature.targetZ)) {
+    if (world.terrain.canCreatureTraverse(creature.targetX, creature.targetZ, creature.def)) {
       return;
     }
 
@@ -2060,15 +2120,14 @@ export class CreatureAI {
     const towardSelf = Math.atan2(creature.z - creature.targetZ, creature.x - creature.targetX);
     const baseX = creature.targetX;
     const baseZ = creature.targetZ;
-    const ringRadii = [1.4, 2.8, 4.4];
-    const angleOffsets = [0, 0.55, -0.55, 1.15, -1.15, 1.85, -1.85, Math.PI];
 
-    for (const r of ringRadii) {
-      for (const off of angleOffsets) {
-        const ang = towardSelf + off;
+    for (let ri = 0; ri < TARGET_RING_RADII.length; ri++) {
+      const r = TARGET_RING_RADII[ri];
+      for (let ai = 0; ai < TARGET_ANGLE_OFFSETS.length; ai++) {
+        const ang = towardSelf + TARGET_ANGLE_OFFSETS[ai];
         const cx = baseX + Math.cos(ang) * r;
         const cz = baseZ + Math.sin(ang) * r;
-        const safe = world.obstacles.pushPointOutsideObstacles(
+        world.obstacles.pushPointOutsideObstaclesInto(
           cx,
           cz,
           creature.x,
@@ -2078,9 +2137,9 @@ export class CreatureAI {
           0.2,
           ang,
         );
-        if (isTargetOk(safe.x, safe.z)) {
-          creature.targetX = safe.x;
-          creature.targetZ = safe.z;
+        if (world.terrain.canCreatureTraverse(world.obstacles.resX, world.obstacles.resZ, creature.def)) {
+          creature.targetX = world.obstacles.resX;
+          creature.targetZ = world.obstacles.resZ;
           return;
         }
       }
@@ -2090,7 +2149,7 @@ export class CreatureAI {
     for (let t = 0.25; t <= 1.0; t += 0.25) {
       const px = baseX + (creature.x - baseX) * t;
       const pz = baseZ + (creature.z - baseZ) * t;
-      if (isTargetOk(px, pz)) {
+      if (world.terrain.canCreatureTraverse(px, pz, creature.def)) {
         creature.targetX = px;
         creature.targetZ = pz;
         return;
@@ -2143,14 +2202,14 @@ export class CreatureAI {
     let bestX = creature.x;
     let bestZ = creature.z;
     let bestScore = -Infinity;
-    const escapeDists = [4.8, 3.2];
 
     for (let k = 0; k < 12; k++) {
       const ang = baseAng + (k * Math.PI * 2) / 12;
       const dx = Math.cos(ang);
       const dz = Math.sin(ang);
 
-      for (const dist of escapeDists) {
+      for (let ei = 0; ei < ESCAPE_DISTS.length; ei++) {
+        const dist = ESCAPE_DISTS[ei];
         const cx = creature.x + dx * dist;
         const cz = creature.z + dz * dist;
         if (Math.hypot(cx, cz) > world.terrain.playableRadius - 1.5) continue;
@@ -2169,11 +2228,11 @@ export class CreatureAI {
             : world.terrain.canCreatureTraverse(midX, midZ, creature.def);
         if (!midOk) continue;
 
-        const sep = world.obstacles.resolveCollisions(cx, cz, creatureR, 0, ang);
-        if (sep.collided) continue;
+        world.obstacles.resolveCollisionsInto(cx, cz, creatureR, 0, ang);
+        if (world.obstacles.resCollided) continue;
 
-        const midSep = world.obstacles.resolveCollisions(midX, midZ, creatureR, 0, ang);
-        const score = (midSep.collided ? -2.0 : 2.0) + dist * 0.35 + (k === 0 ? 0.5 : 0);
+        world.obstacles.resolveCollisionsInto(midX, midZ, creatureR, 0, ang);
+        const score = (world.obstacles.resCollided ? -2.0 : 2.0) + dist * 0.35 + (k === 0 ? 0.5 : 0);
         if (score > bestScore) {
           bestScore = score;
           bestX = cx;
@@ -2419,7 +2478,12 @@ export class CreatureAI {
             for (let i = 0; i < world.bridges.length; i++) {
               const br = world.bridges[i];
               if (!br.completed) continue;
-              const approach = getBridgeApproach(br, creature.x, creature.z);
+              const approach = getBridgeApproachInto(
+                br,
+                creature.x,
+                creature.z,
+                this.bridgeApproachScratch,
+              );
               if (approach.nearDist > maxBridgeSearch) continue;
               const nearToTarget = Math.hypot(approach.nearX - creature.targetX, approach.nearZ - creature.targetZ);
               const farToTarget = Math.hypot(approach.farX - creature.targetX, approach.farZ - creature.targetZ);
@@ -2783,25 +2847,26 @@ export class CreatureAI {
       }
 
       // Hard multi-pass separation so grounded/low-flying creatures never clip any solid world feature
-      const sep = world.obstacles.resolveCollisions(
+      world.obstacles.resolveCollisionsInto(
         nx,
         nz,
         creatureR,
         altitude,
         creature.heading,
       );
-      nx = sep.x;
-      nz = sep.z;
+      nx = world.obstacles.resX;
+      nz = world.obstacles.resZ;
+      const primaryCollided = world.obstacles.resCollided;
 
-      const canStep = (px: number, pz: number): boolean =>
-        canFordWater && !creature.def.aerial && !creature.def.strictlyAquatic
-          ? terrain.canEmigrantTraverse(px, pz)
-          : terrain.canCreatureTraverse(px, pz, creature.def);
-      const primaryOk = canStep(nx, nz);
+      const useEmigrantTraverse =
+        canFordWater && !creature.def.aerial && !creature.def.strictlyAquatic;
+      const primaryOk = useEmigrantTraverse
+        ? terrain.canEmigrantTraverse(nx, nz)
+        : terrain.canCreatureTraverse(nx, nz, creature.def);
       if (primaryOk) {
         // If mid-turn into a hard obstacle that pushes us backward, pivot cleanly instead of vibrating
         const forwardProgress = (nx - prevX) * moveDirX + (nz - prevZ) * moveDirZ;
-        if (sep.collided && Math.abs(headingErr) > 0.45 && forwardProgress < step * 0.1) {
+        if (primaryCollided && Math.abs(headingErr) > 0.45 && forwardProgress < step * 0.1) {
           creature.currentSpeed *= Math.exp(-6 * dt);
         } else {
           creature.x = nx;
@@ -2819,26 +2884,36 @@ export class CreatureAI {
         const fallbackStep = Math.max(step, Math.min(dist, creature.def.baseSpeed * 0.45 * dt));
         outerFallback: for (let fi = 0; fi < FALLBACK_DETOUR_MAGS.length; fi++) {
           const mag = FALLBACK_DETOUR_MAGS[fi];
-          const signs = mag >= Math.PI - 0.01 ? [1] : [prefSign, -prefSign];
-          for (let si = 0; si < signs.length; si++) {
-            const signedOff = signs[si] * mag;
+          const isReverse = mag >= Math.PI - 0.01;
+          const signCount = isReverse ? 1 : 2;
+          for (let si = 0; si < signCount; si++) {
+            const curSign: -1 | 1 = isReverse ? 1 : si === 0 ? prefSign : (-prefSign as -1 | 1);
+            const signedOff = curSign * mag;
             const candHeading = normalizeAngle(creature.heading + signedOff);
             const detourX = creature.x + Math.sin(candHeading) * fallbackStep;
             const detourZ = creature.z + Math.cos(candHeading) * fallbackStep;
-            if (!canStep(detourX, detourZ)) continue;
-            const altSep = world.obstacles.resolveCollisions(
+            const detourOk = useEmigrantTraverse
+              ? terrain.canEmigrantTraverse(detourX, detourZ)
+              : terrain.canCreatureTraverse(detourX, detourZ, creature.def);
+            if (!detourOk) continue;
+            world.obstacles.resolveCollisionsInto(
               detourX,
               detourZ,
               creatureR,
               altitude,
               candHeading,
             );
-            if (canStep(altSep.x, altSep.z)) {
-              creature.x = altSep.x;
-              creature.z = altSep.z;
+            const altX = world.obstacles.resX;
+            const altZ = world.obstacles.resZ;
+            const altOk = useEmigrantTraverse
+              ? terrain.canEmigrantTraverse(altX, altZ)
+              : terrain.canCreatureTraverse(altX, altZ, creature.def);
+            if (altOk) {
+              creature.x = altX;
+              creature.z = altZ;
               creature.steerHeading = candHeading;
-              if (mag < Math.PI - 0.01) {
-                creature.detourSign = signs[si] as -1 | 1;
+              if (!isReverse) {
+                creature.detourSign = curSign;
                 creature.detourTimer = Math.max(creature.detourTimer, 1.8);
               }
               moved = true;
@@ -2878,15 +2953,15 @@ export class CreatureAI {
       } else {
         const fwdDist = Math.max(
           0,
-          movedX * Math.sin(creature.heading) + movedZ * Math.cos(creature.heading),
+          movedX * moveDirX + movedZ * moveDirZ,
         );
-        const strideMetrics = computeStrideMetrics(
+        const cycleLengthWorld = computeStrideCycleLengthWorld(
           creature.def.locomotion,
           creature.gaitEffort,
           creature.getSizeScale(),
         );
         // Advance stride cycle in exact 1:1 lockstep with forward ground displacement
-        creature.animPhase += (fwdDist / strideMetrics.cycleLengthWorld) * Math.PI * 2;
+        creature.animPhase += (fwdDist / cycleLengthWorld) * Math.PI * 2;
       }
 
       if (creature.def.aerial) {
@@ -2973,21 +3048,78 @@ export class CreatureAI {
 
     // Keep stationary/just-landed creatures outside newly placed buildings & obstacles
     if (dist <= stopDist && (obstaclesChanged || creature.def.aerial)) {
-      const finalSep = world.obstacles.resolveCollisions(
+      world.obstacles.resolveCollisionsInto(
         creature.x,
         creature.z,
         creatureR,
         creature.def.aerial ? creature.flightAltitude : 0,
         creature.heading,
       );
-      if (finalSep.collided) {
-        creature.x = finalSep.x;
-        creature.z = finalSep.z;
+      if (world.obstacles.resCollided) {
+        creature.x = world.obstacles.resX;
+        creature.z = world.obstacles.resZ;
       }
     }
 
     if (creature.x !== startX || creature.z !== startZ || creature.def.aerial) {
       this.updateCreatureElevation(creature, world);
+    }
+  }
+
+  private tryDisplaceCreature(
+    world: WorldState,
+    maxR: number,
+    maxRSq: number,
+    c: Creature,
+    dx: number,
+    dz: number,
+  ): boolean {
+    let nx = c.x + dx;
+    let nz = c.z + dz;
+    const nrSq = nx * nx + nz * nz;
+    if (nrSq > maxRSq && nrSq > 1e-6) {
+      const nr = Math.sqrt(nrSq);
+      nx = (nx / nr) * maxR;
+      nz = (nz / nr) * maxR;
+    }
+    const alt = c.def.aerial ? c.flightAltitude : 0;
+    world.obstacles.resolveCollisionsInto(
+      nx,
+      nz,
+      getCreatureObstacleRadius(c),
+      alt,
+      c.heading,
+    );
+    const sx = world.obstacles.resX;
+    const sz = world.obstacles.resZ;
+    if (!world.terrain.canCreatureTraverse(sx, sz, c.def)) {
+      this.dispApplied = false;
+      this.dispX = c.x;
+      this.dispZ = c.z;
+      return false;
+    }
+    const movedSq = (sx - c.x) * (sx - c.x) + (sz - c.z) * (sz - c.z);
+    this.dispApplied = movedSq > 1e-6;
+    this.dispX = sx;
+    this.dispZ = sz;
+    return this.dispApplied;
+  }
+
+  private syncSettledTarget(c: Creature, oldX: number, oldZ: number): void {
+    if (
+      c.currentSpeed < 0.2 &&
+      c.activity !== 'fighting' &&
+      c.activity !== 'marching' &&
+      c.activity !== 'fleeing' &&
+      c.activity !== 'trading' &&
+      c.activity !== 'emigrating'
+    ) {
+      const tdx = c.targetX - oldX;
+      const tdz = c.targetZ - oldZ;
+      if (tdx * tdx + tdz * tdz < 0.65 * 0.65) {
+        c.targetX = c.x;
+        c.targetZ = c.z;
+      }
     }
   }
 
@@ -2999,77 +3131,35 @@ export class CreatureAI {
   resolveCreatureCollisions(world: WorldState): void {
     const maxR = world.terrain.playableRadius;
     const maxRSq = maxR * maxR;
-    const tryDisplace = (
-      c: Creature,
-      dx: number,
-      dz: number,
-    ): boolean => {
-      let nx = c.x + dx;
-      let nz = c.z + dz;
-      const nrSq = nx * nx + nz * nz;
-      if (nrSq > maxRSq && nrSq > 1e-6) {
-        const nr = Math.sqrt(nrSq);
-        nx = (nx / nr) * maxR;
-        nz = (nz / nr) * maxR;
-      }
-      const alt = c.def.aerial ? c.flightAltitude : 0;
-      const sep = world.obstacles.resolveCollisions(
-        nx,
-        nz,
-        getCreatureObstacleRadius(c),
-        alt,
-        c.heading,
-      );
-      if (!world.terrain.canCreatureTraverse(sep.x, sep.z, c.def)) {
-        this.dispApplied = false;
-        this.dispX = c.x;
-        this.dispZ = c.z;
-        return false;
-      }
-      const movedSq = (sep.x - c.x) * (sep.x - c.x) + (sep.z - c.z) * (sep.z - c.z);
-      this.dispApplied = movedSq > 1e-6;
-      this.dispX = sep.x;
-      this.dispZ = sep.z;
-      return this.dispApplied;
-    };
-
     const movedSet = this.movedCreatures;
     movedSet.clear();
-
-    const syncSettledTarget = (c: Creature, oldX: number, oldZ: number): void => {
-      if (
-        c.currentSpeed < 0.2 &&
-        c.activity !== 'fighting' &&
-        c.activity !== 'marching' &&
-        c.activity !== 'fleeing' &&
-        c.activity !== 'trading' &&
-        c.activity !== 'emigrating'
-      ) {
-        const tdx = c.targetX - oldX;
-        const tdz = c.targetZ - oldZ;
-        if (tdx * tdx + tdz * tdz < 0.65 * 0.65) {
-          c.targetX = c.x;
-          c.targetZ = c.z;
-        }
-      }
-    };
+    const alive = world.aliveCreatures;
 
     for (let pass = 0; pass < 4; pass++) {
       this.rebuildCreatureGrid(world);
+      const grid = this.creatureGrid;
+      const gridHalf = this.creatureGridHalf;
+      const gridDim = this.creatureGridDim;
+      if (gridDim === 0) break;
       let anySeparated = false;
 
-      for (let i = 0; i < world.creatures.length; i++) {
-        const a = world.creatures[i];
+      for (let i = 0; i < alive.length; i++) {
+        const a = alive[i];
         if (!a.alive) continue;
         const aR = getCreaturePersonalRadius(a);
         const aAlt = a.def.aerial ? a.flightAltitude : 0;
-        const cx = Math.floor(a.x * INV_CREATURE_CELL_SIZE);
-        const cz = Math.floor(a.z * INV_CREATURE_CELL_SIZE);
+        const cx = Math.floor(a.x * INV_CREATURE_CELL_SIZE) + gridHalf;
+        const cz = Math.floor(a.z * INV_CREATURE_CELL_SIZE) + gridHalf;
+        const minGx = cx - 1 < 0 ? 0 : cx - 1;
+        const maxGx = cx + 1 >= gridDim ? gridDim - 1 : cx + 1;
+        const minGz = cz - 1 < 0 ? 0 : cz - 1;
+        const maxGz = cz + 1 >= gridDim ? gridDim - 1 : cz + 1;
 
-        for (let gx = cx - 1; gx <= cx + 1; gx++) {
-          for (let gz = cz - 1; gz <= cz + 1; gz++) {
-            const bucket = this.creatureCells.get(creatureCellKey(gx, gz));
-            if (!bucket) continue;
+        for (let gx = minGx; gx <= maxGx; gx++) {
+          const rowOffset = gx * gridDim;
+          for (let gz = minGz; gz <= maxGz; gz++) {
+            const bucket = grid[rowOffset + gz];
+            if (!bucket || bucket.length === 0) continue;
 
             for (let j = 0; j < bucket.length; j++) {
               const b = bucket[j];
@@ -3103,10 +3193,10 @@ export class CreatureAI {
               const pen = minDist - dist + 0.002;
               const half = pen * 0.5;
 
-              const appliedA = tryDisplace(a, -ux * half, -uz * half);
+              const appliedA = this.tryDisplaceCreature(world, maxR, maxRSq, a, -ux * half, -uz * half);
               const ax = this.dispX;
               const az = this.dispZ;
-              const appliedB = tryDisplace(b, ux * half, uz * half);
+              const appliedB = this.tryDisplaceCreature(world, maxR, maxRSq, b, ux * half, uz * half);
               const bx = this.dispX;
               const bz = this.dispZ;
 
@@ -3119,27 +3209,27 @@ export class CreatureAI {
                 a.z = az;
                 b.x = bx;
                 b.z = bz;
-                syncSettledTarget(a, prevAX, prevAZ);
-                syncSettledTarget(b, prevBX, prevBZ);
+                this.syncSettledTarget(a, prevAX, prevAZ);
+                this.syncSettledTarget(b, prevBX, prevBZ);
                 movedSet.add(a);
                 movedSet.add(b);
                 anySeparated = true;
               } else if (appliedA && !appliedB) {
                 const prevAX = a.x;
                 const prevAZ = a.z;
-                const fullA = tryDisplace(a, -ux * pen, -uz * pen);
+                const fullA = this.tryDisplaceCreature(world, maxR, maxRSq, a, -ux * pen, -uz * pen);
                 a.x = fullA ? this.dispX : ax;
                 a.z = fullA ? this.dispZ : az;
-                syncSettledTarget(a, prevAX, prevAZ);
+                this.syncSettledTarget(a, prevAX, prevAZ);
                 movedSet.add(a);
                 anySeparated = true;
               } else if (!appliedA && appliedB) {
                 const prevBX = b.x;
                 const prevBZ = b.z;
-                const fullB = tryDisplace(b, ux * pen, uz * pen);
+                const fullB = this.tryDisplaceCreature(world, maxR, maxRSq, b, ux * pen, uz * pen);
                 b.x = fullB ? this.dispX : bx;
                 b.z = fullB ? this.dispZ : bz;
-                syncSettledTarget(b, prevBX, prevBZ);
+                this.syncSettledTarget(b, prevBX, prevBZ);
                 movedSet.add(b);
                 anySeparated = true;
               }

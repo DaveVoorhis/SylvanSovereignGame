@@ -21,11 +21,16 @@ export class DeityPanel {
   private readonly feedbackEl: HTMLElement;
   private readonly whisperButtons: HTMLButtonElement[] = [];
   private readonly stanceButtons = new Map<DeityStance, HTMLButtonElement>();
-  private readonly chipTargets = new Map<string, Vec2[]>();
   private readonly chipCycleIndex = new Map<string, number>();
   private readonly lastConditionPositions = new Map<string, Vec2>();
   private open = true;
   private activeInfluencePos: Vec2 | null = null;
+  private lastWorld: WorldState | null = null;
+  private lastSocialTone: 'good' | 'calm' | 'warn' | 'bad' = 'calm';
+  private lastBodyHtml = '';
+  private lastStatusHtml = '';
+  private lastCooling: boolean | null = null;
+  private lastStance: DeityStance | null = null;
 
   constructor(
     private readonly onWhisper: (intent: PrayerIntent) => string,
@@ -129,8 +134,8 @@ export class DeityPanel {
       const chipEl = target?.closest('.eco-chip[data-eco-key]') as HTMLElement | null;
       if (chipEl && this.onFocusPosition) {
         const key = chipEl.dataset?.ecoKey ?? chipEl.getAttribute?.('data-eco-key');
-        if (key) {
-          const targets = this.chipTargets.get(key);
+        if (key && this.lastWorld) {
+          const targets = this.resolveStatusTargets(key, this.lastWorld, this.lastSocialTone);
           if (targets && targets.length > 0) {
             const idx = this.chipCycleIndex.get(key) ?? 0;
             const chosen = targets[idx % targets.length];
@@ -376,6 +381,7 @@ export class DeityPanel {
 
   update(world: WorldState): void {
     if (!this.open) return;
+    this.lastWorld = world;
     const d = world.deity;
     const favored = d.favoredSettlementId ? world.getSettlement(d.favoredSettlementId)?.name : 'None yet';
 
@@ -432,15 +438,19 @@ export class DeityPanel {
 
     // Live Realm Ecology & social status pills (each clickable to focus the map on where it's happening)
     const social = d.getSocialClimate(world);
-    this.chipTargets.clear();
+    this.lastSocialTone = social.tone;
+    const canFocusAny =
+      Boolean(this.onFocusPosition) &&
+      (world.settlements.length > 0 ||
+        world.activeInfluences.length > 0 ||
+        world.activeDivineEffects.length > 0 ||
+        world.habitatScars.length > 0 ||
+        this.lastConditionPositions.size > 0);
     const ecoChips: string[] = [];
     const pushChip = (key: string, toneClass: string, label: string) => {
-      const targets = this.resolveStatusTargets(key, world, social.tone);
-      if (targets.length > 0 && this.onFocusPosition) {
-        this.chipTargets.set(key, targets);
-        const cycleHint = targets.length > 1 ? ` (${targets.length} sites — click to cycle)` : '';
+      if (canFocusAny) {
         ecoChips.push(
-          `<button type="button" class="eco-chip ${toneClass} clickable" data-eco-key="${key}" title="Click to view on map${cycleHint}">${label}</button>`,
+          `<button type="button" class="eco-chip ${toneClass} clickable" data-eco-key="${key}" title="Click to view on map (click again to cycle sites)">${label}</button>`,
         );
       } else {
         ecoChips.push(`<span class="eco-chip ${toneClass}">${label}</span>`);
@@ -513,7 +523,7 @@ export class DeityPanel {
       </div>
     `;
 
-    this.bodyEl.innerHTML = `
+    const nextBodyHtml = `
       <div class="deity-name">${d.name} <small>${d.epithet}</small></div>
       <div class="deity-aspect">${d.aspect}</div>
       <div class="deity-meta">
@@ -528,21 +538,35 @@ export class DeityPanel {
         ${bar('Wrath', d.traits.wrath, '#e06258')}
       </div>
     `;
+    if (nextBodyHtml !== this.lastBodyHtml) {
+      this.lastBodyHtml = nextBodyHtml;
+      this.bodyEl.innerHTML = nextBodyHtml;
+    }
 
-    this.statusEl.innerHTML = `
+    const nextStatusHtml = `
       <div class="deity-ecology-strip">${ecoChips.join('')}</div>
       ${epochHtml}
       <div class="deity-omen">“${d.lastOmen}”</div>
     `;
+    if (nextStatusHtml !== this.lastStatusHtml) {
+      this.lastStatusHtml = nextStatusHtml;
+      this.statusEl.innerHTML = nextStatusHtml;
+    }
 
     const cooling = d.whisperCooldown > 0.5;
-    for (const btn of this.whisperButtons) {
-      btn.disabled = cooling;
+    if (cooling !== this.lastCooling) {
+      this.lastCooling = cooling;
+      for (const btn of this.whisperButtons) {
+        btn.disabled = cooling;
+      }
     }
-    for (const [stance, btn] of this.stanceButtons.entries()) {
-      const active = d.stance === stance;
-      btn.classList.toggle('active', active);
-      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    if (d.stance !== this.lastStance) {
+      this.lastStance = d.stance;
+      for (const [stance, btn] of this.stanceButtons.entries()) {
+        const active = d.stance === stance;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      }
     }
     if (!cooling && this.feedbackEl.textContent === '') {
       this.feedbackEl.textContent = 'Steer the unseen hand or invoke an act...';

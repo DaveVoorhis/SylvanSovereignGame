@@ -6,8 +6,9 @@ export const DEFAULT_AUTOSAVE_SLOT_ID = 'autosave';
 export const SAVE_FORMAT_VERSION = 1 as const;
 
 const DB_NAME = 'sylvan-sovereign-db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = 'saves';
+const META_STORE_NAME = 'saves_meta';
 
 export function isQualityPreset(value: unknown): value is QualityPreset {
   return value === 'balanced' || value === 'high' || value === 'ultra';
@@ -112,6 +113,18 @@ export function isValidSaveRecord(value: unknown): value is SaveGameRecord {
   return true;
 }
 
+function isValidSaveSlotMeta(value: unknown): value is SaveSlotMeta {
+  if (!value || typeof value !== 'object') return false;
+  const m = value as Partial<SaveSlotMeta>;
+  return (
+    typeof m.slotId === 'string' &&
+    m.slotId.length > 0 &&
+    typeof m.name === 'string' &&
+    typeof m.savedAt === 'number' &&
+    typeof m.day === 'number'
+  );
+}
+
 export function makeManualSlotId(name: string): string {
   const slug = name
     .toLowerCase()
@@ -158,6 +171,23 @@ export class SaveStore {
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           db.createObjectStore(STORE_NAME, { keyPath: 'slotId' });
         }
+        if (!db.objectStoreNames.contains(META_STORE_NAME)) {
+          const metaStore = db.createObjectStore(META_STORE_NAME, { keyPath: 'slotId' });
+          // Backfill lightweight metadata store when upgrading an existing v1 database
+          const upgradeTx = req.transaction;
+          if (upgradeTx && db.objectStoreNames.contains(STORE_NAME)) {
+            const saveStore = upgradeTx.objectStore(STORE_NAME);
+            const getAllReq = saveStore.getAll();
+            getAllReq.onsuccess = () => {
+              const existing = Array.isArray(getAllReq.result) ? getAllReq.result : [];
+              for (const item of existing) {
+                if (isValidSaveRecord(item)) {
+                  metaStore.put(item.meta);
+                }
+              }
+            };
+          }
+        }
       };
       req.onsuccess = () => {
         const db = req.result;
@@ -186,6 +216,17 @@ export class SaveStore {
       tx.onerror = () => reject(tx.error ?? new Error('Failed to write save record.'));
       tx.onabort = () => reject(tx.error ?? new Error('Save transaction aborted.'));
     });
+
+    if (db.objectStoreNames.contains(META_STORE_NAME)) {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(META_STORE_NAME, 'readwrite');
+        const metaStore = tx.objectStore(META_STORE_NAME);
+        metaStore.put(record.meta);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error ?? new Error('Failed to write save metadata.'));
+        tx.onabort = () => reject(tx.error ?? new Error('Save metadata transaction aborted.'));
+      });
+    }
   }
 
   async load(slotId: string): Promise<SaveGameRecord | null> {
@@ -213,18 +254,36 @@ export class SaveStore {
     if (!this.isAvailable()) return [];
     try {
       const db = await this.openDb();
-      const all = await new Promise<unknown[]>((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readonly');
-        const store = tx.objectStore(STORE_NAME);
-        const req = store.getAll();
-        req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
-        req.onerror = () => reject(req.error ?? new Error('Failed to list save slots.'));
-      });
-
       const metas: SaveSlotMeta[] = [];
-      for (const item of all) {
-        if (isValidSaveRecord(item)) {
-          metas.push(item.meta);
+
+      // Prefer lightweight metadata store to avoid deserializing multi-MB world snapshots
+      if (db.objectStoreNames.contains(META_STORE_NAME)) {
+        const rawMetas = await new Promise<unknown[]>((resolve, reject) => {
+          const tx = db.transaction(META_STORE_NAME, 'readonly');
+          const store = tx.objectStore(META_STORE_NAME);
+          const req = store.getAll();
+          req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+          req.onerror = () => reject(req.error ?? new Error('Failed to list save slot metadata.'));
+        });
+        for (const item of rawMetas) {
+          if (isValidSaveSlotMeta(item)) {
+            metas.push(item);
+          }
+        }
+      }
+
+      if (metas.length === 0) {
+        const all = await new Promise<unknown[]>((resolve, reject) => {
+          const tx = db.transaction(STORE_NAME, 'readonly');
+          const store = tx.objectStore(STORE_NAME);
+          const req = store.getAll();
+          req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+          req.onerror = () => reject(req.error ?? new Error('Failed to list save slots.'));
+        });
+        for (const item of all) {
+          if (isValidSaveRecord(item)) {
+            metas.push(item.meta);
+          }
         }
       }
 
@@ -247,5 +306,15 @@ export class SaveStore {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error ?? new Error('Failed to delete save slot.'));
     });
+
+    if (db.objectStoreNames.contains(META_STORE_NAME)) {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(META_STORE_NAME, 'readwrite');
+        const metaStore = tx.objectStore(META_STORE_NAME);
+        metaStore.delete(slotId);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error ?? new Error('Failed to delete save metadata.'));
+      });
+    }
   }
 }

@@ -318,58 +318,55 @@ const FOUNTAIN_SURFACE_FRAG = /* glsl */ `
 
   ${SHARED_FOUNTAIN_NOISE_GLSL}
 
-  float surfaceHeightField(vec2 p, float tier, float t) {
-    float h = 0.0;
+  // Single-pass analytical wave gradient + impact splash mask (replaces 4 redundant source loops)
+  vec3 surfaceGradAndSplash(vec2 p, float tier, float t) {
+    vec2 grad = vec2(0.0);
+    float splash = 0.0;
     if (tier > 0.5) {
       for (int i = 0; i < 6; i++) {
-        float a = float(i) * 1.04719755;
+        float fi = float(i);
+        float a = fi * 1.04719755;
         vec2 src = vec2(cos(a), sin(a)) * 0.54;
-        float d = length(p - src);
-        h += sin(d * 34.0 - t * 11.2 + float(i) * 0.7) * exp(-d * 3.4) * 0.014;
+        vec2 diff = p - src;
+        float d2 = dot(diff, diff);
+        float d = sqrt(max(d2, 1e-6));
+        float phase = d * 34.0 - t * 11.2 + fi * 0.7;
+        float env = exp(-d * 3.4) * 0.014;
+        float dhdd = (34.0 * cos(phase) - 3.4 * sin(phase)) * env;
+        grad += (diff / d) * dhdd;
+        splash = max(splash, exp(-d2 * 42.0));
       }
     } else {
       for (int i = 0; i < 8; i++) {
-        float a = float(i) * 0.78539816 + 0.39269908;
+        float fi = float(i);
+        float a = fi * 0.78539816 + 0.39269908;
         vec2 src = vec2(cos(a), sin(a)) * 1.14;
-        float d = length(p - src);
-        h += sin(d * 25.0 - t * 9.0 + float(i) * 0.9) * exp(-d * 2.3) * 0.016;
+        vec2 diff = p - src;
+        float d2 = dot(diff, diff);
+        float d = sqrt(max(d2, 1e-6));
+        float phase = d * 25.0 - t * 9.0 + fi * 0.9;
+        float env = exp(-d * 2.3) * 0.016;
+        float dhdd = (25.0 * cos(phase) - 2.3 * sin(phase)) * env;
+        grad += (diff / d) * dhdd;
+        splash = max(splash, exp(-d2 * 22.0));
       }
     }
     // Fine multi-directional capillary ripples
-    float cap1 = fNoise2(p * 9.5 + vec2(t * 1.35, -t * 0.95));
-    float cap2 = fNoise2(p * 17.0 + vec2(-t * 1.65, t * 1.25));
-    h += (cap1 - 0.5) * 0.011 + (cap2 - 0.5) * 0.0055;
-    return h;
-  }
-
-  float impactSplashMask(vec2 p, float tier) {
-    float m = 0.0;
-    if (tier > 0.5) {
-      for (int i = 0; i < 6; i++) {
-        float a = float(i) * 1.04719755;
-        vec2 src = vec2(cos(a), sin(a)) * 0.54;
-        float d = length(p - src);
-        m = max(m, exp(-d * d * 42.0));
-      }
-    } else {
-      for (int i = 0; i < 8; i++) {
-        float a = float(i) * 0.78539816 + 0.39269908;
-        vec2 src = vec2(cos(a), sin(a)) * 1.14;
-        float d = length(p - src);
-        m = max(m, exp(-d * d * 22.0));
-      }
-    }
-    return m;
+    float eps = 0.018;
+    vec2 uv1 = p * 9.5 + vec2(t * 1.35, -t * 0.95);
+    vec2 uv2 = p * 17.0 + vec2(-t * 1.65, t * 1.25);
+    float capC = fNoise2(uv1) * 0.011 + fNoise2(uv2) * 0.0055;
+    float capX = fNoise2(uv1 + vec2(eps * 9.5, 0.0)) * 0.011 + fNoise2(uv2 + vec2(eps * 17.0, 0.0)) * 0.0055;
+    float capZ = fNoise2(uv1 + vec2(0.0, eps * 9.5)) * 0.011 + fNoise2(uv2 + vec2(0.0, eps * 17.0)) * 0.0055;
+    grad += vec2((capX - capC) / eps, (capZ - capC) / eps);
+    return vec3(grad, splash);
   }
 
   void main() {
     vec2 p = vLocalPos.xz;
-    float eps = 0.018;
-    float hC = surfaceHeightField(p, vTier, uTime);
-    float hX = surfaceHeightField(p + vec2(eps, 0.0), vTier, uTime);
-    float hZ = surfaceHeightField(p + vec2(0.0, eps), vTier, uTime);
+    vec3 gs = surfaceGradAndSplash(p, vTier, uTime);
 
-    vec3 localN = normalize(vec3(-(hX - hC) / eps, 1.0, -(hZ - hC) / eps));
+    vec3 localN = normalize(vec3(-gs.x, 1.0, -gs.y));
     vec3 N = normalize(mat3(modelMatrix) * localN);
     vec3 V = normalize(cameraPosition - vWorldPos);
     vec3 L = normalize(uSunDirection);
@@ -419,7 +416,7 @@ const FOUNTAIN_SURFACE_FRAG = /* glsl */ `
     vec3 bodyTint = mix(vec3(0.024, 0.125, 0.155), vec3(0.068, 0.24, 0.26), shallow) * lightLevel;
 
     // Aerated cellular whitewater foam at each waterfall impact point + subtle rim meniscus
-    float splash = impactSplashMask(p, vTier);
+    float splash = gs.z;
     float foamNoise = fFbm2(p * 11.5 - vec2(uTime * 1.4, uTime * 1.1));
     float rippleFoam = smoothstep(0.18, 0.78, splash * (0.72 + foamNoise * 0.75));
     float meniscus = (1.0 - smoothstep(0.0, 0.16, vEdgeMask)) * (0.28 + 0.32 * foamNoise);
@@ -679,6 +676,8 @@ const VOLUMETRIC_MIST_FRAG = /* glsl */ `
   }
 
   void main() {
+    // Early distance cutoff BEFORE the 12-step 3D volumetric ray-march (matches fade at line 745)
+    if (vViewDist >= 68.0) discard;
     vec3 ro = vLocalCamPos;
     vec3 rd = normalize(vLocalPos - vLocalCamPos);
 

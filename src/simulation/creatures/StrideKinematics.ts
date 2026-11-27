@@ -18,6 +18,15 @@ export interface StrideMetrics {
   readonly cycleLengthWorld: number;
 }
 
+export interface MutableStrideMetrics {
+  pace: number;
+  runFactor: number;
+  halfStrideLocal: number;
+  dutyFactor: number;
+  liftHeightLocal: number;
+  cycleLengthWorld: number;
+}
+
 export interface FootTrajectorySample {
   /** Sole fore-aft offset relative to baseFootZ in local bodyGroup units (+Z = forward, -Z = back). */
   readonly zRel: number;
@@ -27,6 +36,12 @@ export interface FootTrajectorySample {
   readonly inStance: boolean;
 }
 
+export interface MutableFootTrajectorySample {
+  zRel: number;
+  yLift: number;
+  inStance: boolean;
+}
+
 export interface HopCycleSample extends FootTrajectorySample {
   /** Ballistic vertical hop arc offset for bodyGroup in local units (0 during ground push-off). */
   readonly bodyHopLocalY: number;
@@ -34,10 +49,21 @@ export interface HopCycleSample extends FootTrajectorySample {
   readonly crouch: number;
 }
 
+export interface MutableHopCycleSample extends MutableFootTrajectorySample {
+  bodyHopLocalY: number;
+  crouch: number;
+}
+
 export interface FootPose {
   readonly rotX: number;
   readonly hipY: number;
   readonly hipZ: number;
+}
+
+export interface MutableFootPose {
+  rotX: number;
+  hipY: number;
+  hipZ: number;
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -47,6 +73,65 @@ function clamp(v: number, lo: number, hi: number): number {
 function positiveMod(v: number, m: number): number {
   const r = v % m;
   return r < 0 ? r + m : r;
+}
+
+/**
+ * Computes physically reconciled stride parameters so that during stance phase,
+ * a planted foot sweeps backward at the exact same speed the creature moves forward.
+ */
+export function computeStrideMetricsInto(
+  locomotion: LocomotionKind,
+  gaitEffort: number,
+  scaleXZ: number,
+  out: MutableStrideMetrics,
+): MutableStrideMetrics {
+  const pace = clamp((gaitEffort - 0.32) / 0.96, 0, 1);
+  const runFactor = clamp((gaitEffort - 0.95) / 0.4, 0, 1);
+  const safeScale = Math.max(0.25, scaleXZ);
+
+  out.pace = pace;
+  out.runFactor = runFactor;
+  if (locomotion === 'hop') {
+    const halfStrideLocal = 0.19 + pace * 0.12;
+    const dutyFactor = 0.36 - runFactor * 0.05;
+    out.halfStrideLocal = halfStrideLocal;
+    out.dutyFactor = dutyFactor;
+    out.liftHeightLocal = 0.055 + pace * 0.055;
+    out.cycleLengthWorld = (2 * halfStrideLocal * safeScale) / dutyFactor;
+    return out;
+  }
+  if (locomotion === 'slither') {
+    out.halfStrideLocal = 0.18 + pace * 0.08;
+    out.dutyFactor = 0.5;
+    out.liftHeightLocal = 0;
+    out.cycleLengthWorld = (0.78 + pace * 0.22) * safeScale;
+    return out;
+  }
+  const halfStrideLocal = 0.15 + pace * 0.15;
+  const dutyFactor = 0.5 - runFactor * 0.04;
+  out.halfStrideLocal = halfStrideLocal;
+  out.dutyFactor = dutyFactor;
+  out.liftHeightLocal = 0.044 + pace * 0.062;
+  out.cycleLengthWorld = (2 * halfStrideLocal * safeScale) / dutyFactor;
+  return out;
+}
+
+/** Allocation-free scalar helper returning exact world-space distance per 2π stride cycle. */
+export function computeStrideCycleLengthWorld(
+  locomotion: LocomotionKind,
+  gaitEffort: number,
+  scaleXZ: number,
+): number {
+  const pace = clamp((gaitEffort - 0.32) / 0.96, 0, 1);
+  const runFactor = clamp((gaitEffort - 0.95) / 0.4, 0, 1);
+  const safeScale = Math.max(0.25, scaleXZ);
+  if (locomotion === 'hop') {
+    return (2 * (0.19 + pace * 0.12) * safeScale) / (0.36 - runFactor * 0.05);
+  }
+  if (locomotion === 'slither') {
+    return (0.78 + pace * 0.22) * safeScale;
+  }
+  return (2 * (0.15 + pace * 0.15) * safeScale) / (0.5 - runFactor * 0.04);
 }
 
 /**
@@ -112,6 +197,30 @@ export function computeStrideMetrics(
  * - stance [0, dutyFactor): linear backward sweep at constant velocity matching ground motion
  * - swing [dutyFactor, 1): smooth elevated return arc back to +halfStride
  */
+export function sampleFootTrajectoryInto(
+  phaseRad: number,
+  halfStrideLocal: number,
+  dutyFactor: number,
+  liftHeightLocal: number,
+  out: MutableFootTrajectorySample,
+): MutableFootTrajectorySample {
+  const u = positiveMod((phaseRad - Math.PI * 0.5) / (Math.PI * 2), 1);
+
+  if (u < dutyFactor) {
+    const s = u / dutyFactor;
+    out.zRel = halfStrideLocal * (1 - 2 * s);
+    out.yLift = 0;
+    out.inStance = true;
+    return out;
+  }
+
+  const w = (u - dutyFactor) / (1 - dutyFactor);
+  out.zRel = -halfStrideLocal * Math.cos(Math.PI * w);
+  out.yLift = liftHeightLocal * Math.pow(Math.sin(Math.PI * w), 1.15);
+  out.inStance = false;
+  return out;
+}
+
 export function sampleFootTrajectory(
   phaseRad: number,
   halfStrideLocal: number,
@@ -142,6 +251,36 @@ export function sampleFootTrajectory(
  * - Ground contact [0, dutyFactor): hind feet locked 1:1 to ground while crouching to spring
  * - Airborne arc [dutyFactor, 1): parabolic ballistic hop while hind feet reach forward for landing
  */
+export function sampleHopCycleInto(
+  phaseRad: number,
+  halfStrideLocal: number,
+  dutyFactor: number,
+  liftHeightLocal: number,
+  hopBodyHeightLocal: number,
+  out: MutableHopCycleSample,
+): MutableHopCycleSample {
+  const u = positiveMod((phaseRad - Math.PI * 0.5) / (Math.PI * 2), 1);
+
+  if (u < dutyFactor) {
+    const s = u / dutyFactor;
+    out.zRel = halfStrideLocal * (1 - 2 * s);
+    out.yLift = 0;
+    out.bodyHopLocalY = 0;
+    out.crouch = Math.sin(Math.PI * s);
+    out.inStance = true;
+    return out;
+  }
+
+  const w = (u - dutyFactor) / (1 - dutyFactor);
+  const bodyHopLocalY = 4 * w * (1 - w) * hopBodyHeightLocal;
+  out.zRel = -halfStrideLocal * Math.cos(Math.PI * w);
+  out.yLift = bodyHopLocalY + Math.sin(Math.PI * w) * liftHeightLocal;
+  out.bodyHopLocalY = bodyHopLocalY;
+  out.crouch = 0;
+  out.inStance = false;
+  return out;
+}
+
 export function sampleHopCycle(
   phaseRad: number,
   halfStrideLocal: number,
@@ -178,6 +317,44 @@ export function sampleHopCycle(
  * (0, -CREATURE_LEG_LENGTH, 0) lands at exact rig.root-space coordinates (z = baseFootZ + zRel, y = yLift),
  * compensating identically for torso vertical bob (bobY), forward lean (tiltX), and squash/stretch scale.
  */
+export function solveGroundedFootTransformInto(
+  zRel: number,
+  yLift: number,
+  pace: number,
+  baseFootZ: number,
+  bobY: number,
+  tiltX: number,
+  scaleY: number,
+  scaleXZ: number,
+  out: MutableFootPose,
+): MutableFootPose {
+  const safeScaleY = Math.max(0.2, scaleY);
+  const safeScaleXZ = Math.max(0.2, scaleXZ);
+
+  const zRootTarget = safeScaleXZ * (baseFootZ + zRel);
+  const yRootTarget = safeScaleY * yLift;
+
+  const dy = yRootTarget - bobY;
+  const dz = zRootTarget;
+  const cosT = Math.cos(tiltX);
+  const sinT = Math.sin(tiltX);
+  const yScaled = dy * cosT + dz * sinT;
+  const zScaled = -dy * sinT + dz * cosT;
+
+  const yBg = yScaled / safeScaleY;
+  const zBg = zScaled / safeScaleXZ;
+
+  const rotFraction = 0.72 + pace * 0.1;
+  const sinTheta = clamp((zRel * rotFraction) / CREATURE_LEG_LENGTH, -0.78, 0.78);
+  const rotX = -Math.asin(sinTheta);
+
+  const toeOffClearance = Math.max(0, Math.sin(rotX)) * 0.04;
+  out.rotX = rotX;
+  out.hipZ = zBg + CREATURE_LEG_LENGTH * Math.sin(rotX);
+  out.hipY = yBg + CREATURE_LEG_LENGTH * Math.cos(rotX) + toeOffClearance;
+  return out;
+}
+
 export function solveGroundedFootTransform(params: {
   readonly zRel: number;
   readonly yLift: number;

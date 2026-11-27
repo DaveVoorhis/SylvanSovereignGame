@@ -106,9 +106,12 @@ export function buildYoungSummary(world: WorldState): YoungSummarySnapshot {
   let juvenileCount = 0;
   let moodSum = 0;
 
-  const nurseryCounts = new Map<string, { newborn: number; juvenile: number; pairs: number }>();
+  const nurseryCounts = new Map<
+    string,
+    { newborn: number; juvenile: number; pairs: number; pop: number }
+  >();
   for (const s of world.settlements) {
-    nurseryCounts.set(s.id, { newborn: 0, juvenile: 0, pairs: 0 });
+    nurseryCounts.set(s.id, { newborn: 0, juvenile: 0, pairs: 0, pop: 0 });
   }
 
   const seenPairs = new Set<string>();
@@ -117,6 +120,8 @@ export function buildYoungSummary(world: WorldState): YoungSummarySnapshot {
   for (const c of world.creatures) {
     if (!c.alive) continue;
     const settlement = settlementById.get(c.settlementId);
+    const settlementBucket = nurseryCounts.get(c.settlementId);
+    if (settlementBucket) settlementBucket.pop++;
 
     if (c.lifeStage === 'young' || c.lifeStage === 'juvenile') {
       if (c.lifeStage === 'young') {
@@ -200,7 +205,7 @@ export function buildYoungSummary(world: WorldState): YoungSummarySnapshot {
   );
 
   const settlements: SettlementNurserySummary[] = world.settlements.map((s) => {
-    const bucket = nurseryCounts.get(s.id) ?? { newborn: 0, juvenile: 0, pairs: 0 };
+    const bucket = nurseryCounts.get(s.id) ?? { newborn: 0, juvenile: 0, pairs: 0, pop: 0 };
     return {
       settlementId: s.id,
       settlementName: s.name,
@@ -209,7 +214,7 @@ export function buildYoungSummary(world: WorldState): YoungSummarySnapshot {
       newbornCount: bucket.newborn,
       juvenileCount: bucket.juvenile,
       bondedPairs: bucket.pairs,
-      population: world.getSettlementPopulation(s.id),
+      population: bucket.pop,
       housingCapacity: s.getHousingCapacity(),
     };
   });
@@ -311,8 +316,11 @@ export function buildBuildingsSummary(world: WorldState): BuildingsSummarySnapsh
   // Map active builders to their target building or bridge
   const buildingBuilders = new Map<string, { id: string; name: string }[]>();
   const bridgeBuilders = new Map<string, { id: string; name: string }[]>();
+  const popBySettlement = new Map<string, number>();
   for (const c of world.creatures) {
-    if (!c.alive || c.activity !== 'building') continue;
+    if (!c.alive) continue;
+    popBySettlement.set(c.settlementId, (popBySettlement.get(c.settlementId) ?? 0) + 1);
+    if (c.activity !== 'building') continue;
     if (c.targetBuildingId) {
       const list = buildingBuilders.get(c.targetBuildingId) ?? [];
       list.push({ id: c.id, name: c.name });
@@ -339,7 +347,7 @@ export function buildBuildingsSummary(world: WorldState): BuildingsSummarySnapsh
 
   for (const s of world.settlements) {
     const profile = s.getAdaptationProfile();
-    const pop = world.getSettlementPopulation(s.id);
+    const pop = popBySettlement.get(s.id) ?? 0;
     const cap = s.getHousingCapacity();
     totalHousingCapacity += cap;
     totalPopulation += pop;
@@ -631,10 +639,16 @@ export function buildTradeSummary(world: WorldState): TradeSummarySnapshot {
     const profile = s.getAdaptationProfile();
     totalTradeVolume += s.tradeVolume;
     totalTreasury += Math.round(s.treasury);
-    const marketCount =
-      s.getCompletedCount('market_stall') +
-      s.getCompletedCount('lily_market') +
-      s.getCompletedCount('guildhall');
+    let marketCount = 0;
+    for (let i = 0; i < s.buildings.length; i++) {
+      const b = s.buildings[i];
+      if (
+        b.completed &&
+        (b.type === 'market_stall' || b.type === 'lily_market' || b.type === 'guildhall')
+      ) {
+        marketCount++;
+      }
+    }
     return {
       settlementId: s.id,
       settlementName: s.name,
@@ -751,10 +765,29 @@ export function buildPioneersSummary(world: WorldState): PioneersSummarySnapshot
 
   const membersByParty = new Map<string, PioneerMemberRow[]>();
   const coordsByParty = new Map<string, { sumX: number; sumZ: number; count: number }>();
+  const popBySettlement = new Map<string, number>();
+  const eligibleAdultsBySettlement = new Map<string, number>();
 
   let totalPioneers = 0;
   for (const c of world.creatures) {
-    if (!c.alive || c.activity !== 'emigrating') continue;
+    if (!c.alive) continue;
+    popBySettlement.set(c.settlementId, (popBySettlement.get(c.settlementId) ?? 0) + 1);
+    if (
+      c.lifeStage === 'adult' &&
+      !c.def.strictlyAquatic &&
+      c.activity !== 'fighting' &&
+      c.activity !== 'marching' &&
+      c.activity !== 'fleeing' &&
+      c.activity !== 'nesting' &&
+      c.activity !== 'emigrating' &&
+      c.activeWarId === null
+    ) {
+      eligibleAdultsBySettlement.set(
+        c.settlementId,
+        (eligibleAdultsBySettlement.get(c.settlementId) ?? 0) + 1,
+      );
+    }
+    if (c.activity !== 'emigrating') continue;
     totalPioneers++;
     if (!c.emigrationPartyId) continue;
 
@@ -826,28 +859,11 @@ export function buildPioneersSummary(world: WorldState): PioneersSummarySnapshot
     world.settlements.length + rawParties.length < world.config.maxSettlements;
 
   const readiness: SettlementExpansionReadiness[] = world.settlements.map((s) => {
-    const population = world.getSettlementPopulation(s.id);
+    const population = popBySettlement.get(s.id) ?? 0;
     const completedBuildings = s.getCompletedCount();
     const timber = Math.round(s.stockpile.timber);
     const food = Math.round(s.stockpile.berries + s.stockpile.acorns);
-
-    let eligibleAdults = 0;
-    for (const c of world.creatures) {
-      if (
-        c.alive &&
-        c.lifeStage === 'adult' &&
-        !c.def.strictlyAquatic &&
-        c.settlementId === s.id &&
-        c.activity !== 'fighting' &&
-        c.activity !== 'marching' &&
-        c.activity !== 'fleeing' &&
-        c.activity !== 'nesting' &&
-        c.activity !== 'emigrating' &&
-        c.activeWarId === null
-      ) {
-        eligibleAdults++;
-      }
-    }
+    const eligibleAdults = eligibleAdultsBySettlement.get(s.id) ?? 0;
 
     const blockers: string[] = [];
     if (!canExpandMore) blockers.push('Realm settlement cap reached');

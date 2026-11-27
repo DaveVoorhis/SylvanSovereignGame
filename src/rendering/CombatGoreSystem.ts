@@ -22,7 +22,8 @@ interface BloodDropletVisual {
 
 interface BloodMistVisual {
   readonly mesh: THREE.Mesh;
-  readonly mat: THREE.MeshBasicMaterial;
+  readonly shadeIdx: 0 | 1;
+  lastOpStep: number;
   readonly createdAt: number;
   readonly duration: number;
   vx: number;
@@ -63,7 +64,8 @@ interface GoreGibVisual {
 
 interface BloodStainVisual {
   readonly mesh: THREE.Mesh;
-  readonly mat: THREE.MeshPhysicalMaterial;
+  lastMatKey: number;
+  spreadDone: boolean;
   readonly createdAt: number;
   readonly duration: number;
   readonly spreadDuration: number;
@@ -71,8 +73,6 @@ interface BloodStainVisual {
   readonly targetRadius: number;
   readonly maxOpacity: number;
   readonly isWaterSlick: boolean;
-  readonly freshColor: THREE.Color;
-  readonly dryColor: THREE.Color;
 }
 
 interface CarrionFlyData {
@@ -325,6 +325,8 @@ export class CombatGoreSystem {
   private readonly carrionFlyMat: THREE.MeshStandardMaterial;
   private readonly steelGlintMat: THREE.MeshStandardMaterial;
   private readonly peltGibMats = new Map<number, THREE.MeshPhysicalMaterial>();
+  private readonly mistMatPool = new Map<number, THREE.MeshBasicMaterial>();
+  private readonly stainMatPool = new Map<number, THREE.MeshPhysicalMaterial>();
 
   private readonly scratchLook = new THREE.Vector3();
   private readonly scratchNormal = new THREE.Vector3();
@@ -612,18 +614,17 @@ export class CombatGoreSystem {
     }
 
     // 2. Brief non-additive dark crimson blood aerosol mist
+    const mistDrag = this.mists.length > 0 ? Math.exp(-3.4 * safeDt) : 1;
     for (let i = this.mists.length - 1; i >= 0; i--) {
       const m = this.mists[i];
       const pct = (now - m.createdAt) / m.duration;
       if (pct >= 1) {
         this.group.remove(m.mesh);
-        m.mat.dispose();
         this.mists.splice(i, 1);
         continue;
       }
-      const drag = Math.exp(-3.4 * safeDt);
-      m.vx *= drag;
-      m.vz *= drag;
+      m.vx *= mistDrag;
+      m.vz *= mistDrag;
       m.vy -= 1.8 * safeDt;
       m.mesh.position.x += m.vx * safeDt;
       m.mesh.position.y += m.vy * safeDt;
@@ -632,7 +633,12 @@ export class CombatGoreSystem {
       m.mesh.scale.setScalar(sc);
       m.mesh.rotation.y += safeDt * m.spinRate;
       m.mesh.rotation.x += safeDt * m.spinRate * 0.6;
-      m.mat.opacity = m.baseOpacity * (1 - pct) * (1 - pct);
+      const opacity = m.baseOpacity * (1 - pct) * (1 - pct);
+      const opStep = Math.max(0, Math.min(9, Math.round((opacity / 0.6) * 9)));
+      if (opStep !== m.lastOpStep) {
+        m.lastOpStep = opStep;
+        m.mesh.material = this.getMistMat(m.shadeIdx, opStep);
+      }
     }
 
     // 3. Restrained metallic weapon-parry slivers
@@ -734,25 +740,30 @@ export class CombatGoreSystem {
       const pct = age / st.duration;
       if (pct >= 1) {
         this.group.remove(st.mesh);
-        st.mat.dispose();
         this.stains.splice(i, 1);
         continue;
       }
 
-      const spreadT = st.spreadDuration > 0 ? Math.min(1, age / st.spreadDuration) : 1;
-      const easeSpread = 1 - Math.pow(1 - spreadT, 2.4);
-      const radius = THREE.MathUtils.lerp(st.startRadius, st.targetRadius, easeSpread);
-      st.mesh.scale.set(radius, 1, radius);
+      if (!st.spreadDone) {
+        const spreadT = st.spreadDuration > 0 ? Math.min(1, age / st.spreadDuration) : 1;
+        const easeSpread = 1 - Math.pow(1 - spreadT, 2.4);
+        const radius = THREE.MathUtils.lerp(st.startRadius, st.targetRadius, easeSpread);
+        st.mesh.scale.set(radius, 1, radius);
+        if (spreadT >= 1) st.spreadDone = true;
+      }
 
       // Coagulate from glossy arterial crimson into darker dried rust-black blood over time
       const dryT = Math.min(1, pct * 1.45);
-      st.mat.color.copy(st.freshColor).lerp(st.dryColor, dryT);
-      st.mat.clearcoat = st.isWaterSlick ? 0.5 : THREE.MathUtils.lerp(0.98, 0.22, dryT);
-      st.mat.roughness = st.isWaterSlick ? 0.22 : THREE.MathUtils.lerp(0.14, 0.72, dryT);
-
       const fadeIn = Math.min(1, age / 0.14);
       const fadeOut = pct > 0.75 ? 1 - (pct - 0.75) / 0.25 : 1;
-      st.mat.opacity = st.maxOpacity * fadeIn * fadeOut;
+      const opacity = st.maxOpacity * fadeIn * fadeOut;
+      const dryStep = Math.max(0, Math.min(9, Math.round(dryT * 9)));
+      const opStep = Math.max(0, Math.min(7, Math.round(opacity * 7)));
+      const matKey = ((st.isWaterSlick ? 1 : 0) << 8) | (dryStep << 4) | opStep;
+      if (matKey !== st.lastMatKey) {
+        st.lastMatKey = matKey;
+        st.mesh.material = this.getStainMat(st.isWaterSlick, dryStep, opStep);
+      }
     }
 
     // 6. Twitching carrion flies hovering over fatal gore sites
@@ -798,6 +809,48 @@ export class CombatGoreSystem {
       clearcoatRoughness: 0.28,
     });
     this.peltGibMats.set(colorHex, mat);
+    return mat;
+  }
+
+  private getMistMat(shadeIdx: 0 | 1, opStep: number): THREE.MeshBasicMaterial {
+    const key = (shadeIdx << 4) | opStep;
+    let mat = this.mistMatPool.get(key);
+    if (!mat) {
+      mat = new THREE.MeshBasicMaterial({
+        color: shadeIdx === 0 ? 0x5c0508 : 0x380305,
+        transparent: true,
+        opacity: Math.max(0.03, (opStep / 9) * 0.58),
+        depthWrite: false,
+      });
+      this.mistMatPool.set(key, mat);
+    }
+    return mat;
+  }
+
+  private getStainMat(isWaterSlick: boolean, dryStep: number, opStep: number): THREE.MeshPhysicalMaterial {
+    const key = ((isWaterSlick ? 1 : 0) << 8) | (dryStep << 4) | opStep;
+    let mat = this.stainMatPool.get(key);
+    if (!mat) {
+      const dryT = dryStep / 9;
+      const color = new THREE.Color(isWaterSlick ? 0x6b070c : 0x7a0509).lerp(
+        new THREE.Color(isWaterSlick ? 0x3d080c : 0x220405),
+        dryT,
+      );
+      mat = new THREE.MeshPhysicalMaterial({
+        color,
+        roughness: isWaterSlick ? 0.22 : THREE.MathUtils.lerp(0.14, 0.72, dryT),
+        metalness: 0.02,
+        clearcoat: isWaterSlick ? 0.5 : THREE.MathUtils.lerp(0.98, 0.22, dryT),
+        clearcoatRoughness: 0.08,
+        transparent: true,
+        opacity: Math.max(0.06, opStep / 7),
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      });
+      this.stainMatPool.set(key, mat);
+    }
     return mat;
   }
 
@@ -897,18 +950,12 @@ export class CombatGoreSystem {
         const oldest = this.mists.shift();
         if (oldest) {
           this.group.remove(oldest.mesh);
-          oldest.mat.dispose();
         }
       }
-      const shade = i % 2 === 0 ? 0x5c0508 : 0x380305;
+      const shadeIdx: 0 | 1 = i % 2 === 0 ? 0 : 1;
       const baseOpacity = 0.42 + Math.random() * 0.16;
-      const mat = new THREE.MeshBasicMaterial({
-        color: shade,
-        transparent: true,
-        opacity: baseOpacity,
-        depthWrite: false,
-      });
-      const mesh = new THREE.Mesh(this.geo.bloodMist, mat);
+      const opStep = Math.max(0, Math.min(9, Math.round((baseOpacity / 0.6) * 9)));
+      const mesh = new THREE.Mesh(this.geo.bloodMist, this.getMistMat(shadeIdx, opStep));
       mesh.name = 'blood_mist';
       mesh.position.set(
         x + (Math.random() - 0.5) * 0.25,
@@ -920,7 +967,8 @@ export class CombatGoreSystem {
       this.group.add(mesh);
       this.mists.push({
         mesh,
-        mat,
+        shadeIdx,
+        lastOpStep: opStep,
         createdAt: now,
         duration: duration * (0.8 + Math.random() * 0.4),
         vx: dirX * (0.9 + Math.random() * 1.4) + (Math.random() - 0.5) * 1.1,
@@ -1088,7 +1136,6 @@ export class CombatGoreSystem {
       const oldest = this.stains.shift();
       if (oldest) {
         this.group.remove(oldest.mesh);
-        oldest.mat.dispose();
       }
     }
 
@@ -1096,21 +1143,10 @@ export class CombatGoreSystem {
     const waterY = this.world.getEffectiveWaterLevel();
     const isWaterSlick = terrainY < waterY + 0.03;
 
-    const freshColor = new THREE.Color(isWaterSlick ? 0x6b070c : 0x7a0509);
-    const dryColor = new THREE.Color(isWaterSlick ? 0x3d080c : 0x220405);
-    const mat = new THREE.MeshPhysicalMaterial({
-      color: freshColor.clone(),
-      roughness: isWaterSlick ? 0.22 : 0.14,
-      metalness: 0.02,
-      clearcoat: isWaterSlick ? 0.5 : 0.98,
-      clearcoatRoughness: 0.08,
-      transparent: true,
-      opacity: maxOpacity * 0.5,
-      depthWrite: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
-    });
+    const effectiveMaxOpacity = isWaterSlick ? maxOpacity * 0.65 : maxOpacity;
+    const initOpStep = Math.max(0, Math.min(7, Math.round(effectiveMaxOpacity * 0.5 * 7)));
+    const initMatKey = ((isWaterSlick ? 1 : 0) << 8) | initOpStep;
+    const mat = this.getStainMat(isWaterSlick, 0, initOpStep);
 
     const variantGeo =
       this.geo.bloodSplatters[this.stainLayerCounter % this.geo.bloodSplatters.length];
@@ -1142,16 +1178,15 @@ export class CombatGoreSystem {
 
     this.stains.push({
       mesh,
-      mat,
+      lastMatKey: initMatKey,
+      spreadDone: false,
       createdAt: now,
       duration: isWaterSlick ? Math.min(duration, 26) : duration,
       spreadDuration,
       startRadius,
       targetRadius,
-      maxOpacity: isWaterSlick ? maxOpacity * 0.65 : maxOpacity,
+      maxOpacity: effectiveMaxOpacity,
       isWaterSlick,
-      freshColor,
-      dryColor,
     });
   }
 
@@ -1197,7 +1232,6 @@ export class CombatGoreSystem {
 
     for (const m of this.mists) {
       this.group.remove(m.mesh);
-      m.mat.dispose();
     }
     this.mists.length = 0;
 
@@ -1209,7 +1243,6 @@ export class CombatGoreSystem {
 
     for (const st of this.stains) {
       this.group.remove(st.mesh);
-      st.mat.dispose();
     }
     this.stains.length = 0;
 
@@ -1239,5 +1272,9 @@ export class CombatGoreSystem {
       mat.dispose();
     }
     this.peltGibMats.clear();
+    for (const mat of this.mistMatPool.values()) mat.dispose();
+    this.mistMatPool.clear();
+    for (const mat of this.stainMatPool.values()) mat.dispose();
+    this.stainMatPool.clear();
   }
 }

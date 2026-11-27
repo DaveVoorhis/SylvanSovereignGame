@@ -121,6 +121,14 @@ export class SceneManager {
   private readonly focusTargetScratch = new THREE.Vector3();
   private readonly audioFocusScratch = new THREE.Vector3();
   private readonly audioRightScratch = new THREE.Vector3(1, 0, 0);
+  private readonly audioFrameScratch: AudioListenerFrame = {
+    cameraPos: { x: 0, y: 0, z: 0 },
+    focusPos: { x: 0, y: 0, z: 0 },
+    right: { x: 1, y: 0, z: 0 },
+    focusDistance: 30,
+    isPov: false,
+    isUnderwater: false,
+  };
   private readonly raycaster = new THREE.Raycaster();
   private readonly unsubscribes: (() => void)[] = [];
 
@@ -139,7 +147,9 @@ export class SceneManager {
 
     this.renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true,
+      // EffectComposer renders into offscreen HalfFloat render targets and OutputPass blits a quad,
+      // so a default MSAA backbuffer wastes VRAM & resolve bandwidth without affecting output.
+      antialias: false,
       powerPreference: 'high-performance',
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.pixelRatioCap));
@@ -218,26 +228,23 @@ export class SceneManager {
     this.audioRightScratch.setFromMatrixColumn(this.camera.matrixWorld, 0).normalize();
     const focus = this.cameraController.getFocusTarget(this.audioFocusScratch);
     const isPov = this.cameraController.isInCreaturePov();
-    return {
-      cameraPos: {
-        x: this.camera.position.x,
-        y: this.camera.position.y,
-        z: this.camera.position.z,
-      },
-      focusPos: {
-        x: focus.x,
-        y: focus.y,
-        z: focus.z,
-      },
-      right: {
-        x: this.audioRightScratch.x,
-        y: this.audioRightScratch.y,
-        z: this.audioRightScratch.z,
-      },
-      focusDistance: this.cameraController.getFocusDistance(),
-      isPov,
-      isUnderwater: isPov && this.povUnderwaterNear,
-    };
+    const frame = this.audioFrameScratch;
+    const camPos = frame.cameraPos as { x: number; y: number; z: number };
+    camPos.x = this.camera.position.x;
+    camPos.y = this.camera.position.y;
+    camPos.z = this.camera.position.z;
+    const fPos = frame.focusPos as { x: number; y: number; z: number };
+    fPos.x = focus.x;
+    fPos.y = focus.y;
+    fPos.z = focus.z;
+    const rVec = frame.right as { x: number; y: number; z: number };
+    rVec.x = this.audioRightScratch.x;
+    rVec.y = this.audioRightScratch.y;
+    rVec.z = this.audioRightScratch.z;
+    (frame as { focusDistance: number }).focusDistance = this.cameraController.getFocusDistance();
+    (frame as { isPov: boolean }).isPov = isPov;
+    (frame as { isUnderwater: boolean }).isUnderwater = isPov && this.povUnderwaterNear;
+    return frame;
   }
 
   /** Synchronizes renderer, camera aspect, and post-processing targets with current viewport dimensions. */
@@ -493,6 +500,7 @@ export class SceneManager {
 
   private setupPostProcessing(): void {
     this.dofPass?.dispose();
+    this.bloomPass?.dispose();
     this.composer?.dispose();
     const q = QUALITY_PRESETS[this.quality];
 
@@ -583,9 +591,8 @@ export class SceneManager {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+    // composer.setSize already resizes all passes (dofPass, bloomPass) using renderer pixelRatio
     this.composer?.setSize(w, h);
-    this.dofPass?.setSize(w, h);
-    this.bloomPass?.setSize(w, h);
   }
 
   private disposeWorldScene(preserveTextures = false): void {
@@ -614,6 +621,7 @@ export class SceneManager {
     this.canvas.removeEventListener('pointerup', this.onPointerUpBound);
     this.disposeWorldScene();
     this.dofPass?.dispose();
+    this.bloomPass?.dispose();
     this.composer?.dispose();
     this.cameraController.dispose();
     this.renderer.dispose();

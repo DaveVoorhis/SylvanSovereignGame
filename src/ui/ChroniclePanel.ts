@@ -4,7 +4,9 @@ export class ChroniclePanel {
   readonly element: HTMLElement;
   private readonly listEl: HTMLElement;
   private lastHeadId = -1;
+  private lastEntryCount = -1;
   private open = true;
+  private visiblePositions: (Vec2 | undefined)[] = [];
 
   constructor(
     private readonly onFocusPosition: (pos: Vec2) => void,
@@ -39,6 +41,17 @@ export class ChroniclePanel {
 
     this.listEl = document.createElement('div');
     this.listEl.className = 'chronicle-list';
+    this.listEl.addEventListener('click', (ev) => {
+      const target = ev.target as HTMLElement | null;
+      const rowEl = target?.closest?.('.chronicle-item[data-entry-idx]') as HTMLElement | null;
+      if (!rowEl) return;
+      const rawIdx = rowEl.dataset?.entryIdx ?? rowEl.getAttribute?.('data-entry-idx');
+      if (rawIdx === null || rawIdx === undefined) return;
+      const pos = this.visiblePositions[Number(rawIdx)];
+      if (pos) {
+        this.onFocusPosition(pos);
+      }
+    });
 
     this.element.append(header, this.listEl);
   }
@@ -55,25 +68,36 @@ export class ChroniclePanel {
   update(entries: readonly ChronicleEntry[], force = false): void {
     if (!this.open) return;
     const headId = entries[0]?.id ?? -1;
-    if (!force && headId === this.lastHeadId) return;
+    const entryCount = entries.length;
+    if (!force && headId === this.lastHeadId && entryCount === this.lastEntryCount) return;
     this.lastHeadId = headId;
+    this.lastEntryCount = entryCount;
 
     this.listEl.innerHTML = '';
-    const visible = entries.slice(0, 26);
+    const count = Math.min(26, entryCount);
+    this.visiblePositions.length = count;
+    const container: DocumentFragment | HTMLElement =
+      typeof document.createDocumentFragment === 'function'
+        ? document.createDocumentFragment()
+        : this.listEl;
 
-    for (const entry of visible) {
+    for (let i = 0; i < count; i++) {
+      const entry = entries[i];
+      this.visiblePositions[i] = entry.position;
       const row = document.createElement('div');
       row.className = `chronicle-item cat-${entry.category}${entry.position ? ' clickable' : ''}`;
+      if (entry.position) {
+        row.dataset.entryIdx = String(i);
+      }
       row.innerHTML = `
         <div class="chronicle-meta">Day ${entry.timestampDay} · ${entry.season}</div>
         <div class="chronicle-title">${entry.title}</div>
         <div class="chronicle-detail">${entry.detail}</div>
       `;
-      if (entry.position) {
-        const targetPos = entry.position;
-        row.addEventListener('click', () => this.onFocusPosition(targetPos));
-      }
-      this.listEl.appendChild(row);
+      container.appendChild(row);
+    }
+    if (container !== this.listEl) {
+      this.listEl.appendChild(container);
     }
   }
 }

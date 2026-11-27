@@ -16,6 +16,8 @@ export class CreaturePovBar {
   readonly element: HTMLElement;
   private readonly infoEl: HTMLElement;
   private currentCreatureId: string | null = null;
+  private visible = false;
+  private lastInfoHtml = '';
 
   constructor(private readonly callbacks: CreaturePovBarCallbacks) {
     this.element = document.createElement('div');
@@ -87,26 +89,47 @@ export class CreaturePovBar {
   update(world: WorldState, povCreatureId: string | null): void {
     if (!povCreatureId) {
       this.currentCreatureId = null;
-      this.element.classList.add('hidden');
+      if (this.visible) {
+        this.visible = false;
+        this.element.classList.add('hidden');
+      }
       return;
     }
 
     const c = world.getCreature(povCreatureId);
     if (!c || !c.alive) {
       this.currentCreatureId = null;
-      this.element.classList.add('hidden');
+      if (this.visible) {
+        this.visible = false;
+        this.element.classList.add('hidden');
+      }
       return;
     }
 
     this.currentCreatureId = c.id;
-    this.element.classList.remove('hidden');
+    if (!this.visible) {
+      this.visible = true;
+      this.element.classList.remove('hidden');
+    }
     const home = world.getSettlement(c.settlementId);
-    const aliveList = world.creatures.filter((item) => item.alive);
-    const idx = aliveList.findIndex((item) => item.id === c.id);
+    let aliveCount = 0;
+    let idx = -1;
+    for (let i = 0; i < world.creatures.length; i++) {
+      const item = world.creatures[i];
+      if (!item.alive) continue;
+      if (item.id === c.id) {
+        idx = aliveCount;
+      }
+      aliveCount++;
+    }
 
-    this.infoEl.innerHTML = `
-      <div class="pov-name">${c.name} <small>(${idx + 1}/${aliveList.length})</small></div>
+    const nextHtml = `
+      <div class="pov-name">${c.name} <small>(${idx + 1}/${aliveCount})</small></div>
       <div class="pov-meta">${c.def.displayName} ${c.role} · ${home?.name ?? 'Wanderer'} · <em>“${c.thought}”</em></div>
     `;
+    if (nextHtml !== this.lastInfoHtml) {
+      this.lastInfoHtml = nextHtml;
+      this.infoEl.innerHTML = nextHtml;
+    }
   }
 }

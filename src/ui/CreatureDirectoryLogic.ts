@@ -132,6 +132,12 @@ const LIFE_STAGE_ORDER: Record<LifeStage, number> = {
   elder: 3,
 };
 
+const TEXT_COLLATOR = new Intl.Collator(undefined, { usage: 'sort' });
+
+function compareText(a: string, b: string): number {
+  return TEXT_COLLATOR.compare(a, b);
+}
+
 function toHexColor(color: number): string {
   return `#${(color & 0xffffff).toString(16).padStart(6, '0')}`;
 }
@@ -179,10 +185,17 @@ interface FounderGroup {
 export function buildCreatureDirectorySnapshot(
   creatures: readonly Creature[],
   settlements: readonly Settlement[],
+  options?: { readonly includeTrees?: boolean },
 ): CreatureDirectorySnapshot {
+  const includeTrees = options?.includeTrees ?? true;
   const byId = new Map<string, Creature>();
+  const firstNameById = new Map<string, string>();
+  const surnameById = new Map<string, string>();
   for (const c of creatures) {
     byId.set(c.id, c);
+    const parts = c.name.trim().split(/\s+/);
+    firstNameById.set(c.id, parts[0] || c.name);
+    surnameById.set(c.id, parts.length > 1 ? parts[parts.length - 1] : c.name.trim());
   }
 
   // Build bidirectional offspring lookup merging explicit offspringIds with reverse parentIds links
@@ -226,7 +239,7 @@ export function buildCreatureDirectorySnapshot(
       return b.offspringIds.length - a.offspringIds.length;
     }
     if (b.ageDays !== a.ageDays) return b.ageDays - a.ageDays;
-    return a.id.localeCompare(b.id);
+    return compareText(a.id, b.id);
   });
 
   const findRootCoParent = (founder: Creature): Creature | null => {
@@ -257,27 +270,27 @@ export function buildCreatureDirectorySnapshot(
 
     if (secondary) {
       // Pick the primary founder whose surname matches the most shared offspring, else older/id
-      const founderSurname = extractFamilySurname(founder.name);
-      const partnerSurname = extractFamilySurname(secondary.name);
+      const founderSurname = surnameById.get(founder.id) ?? extractFamilySurname(founder.name);
+      const partnerSurname = surnameById.get(secondary.id) ?? extractFamilySurname(secondary.name);
       let founderMatches = 0;
       let partnerMatches = 0;
       for (const oid of founder.offspringIds) {
         const child = byId.get(oid);
         if (!child) continue;
-        const cs = extractFamilySurname(child.name);
+        const cs = surnameById.get(child.id) ?? extractFamilySurname(child.name);
         if (cs === founderSurname) founderMatches++;
         if (cs === partnerSurname) partnerMatches++;
       }
       if (
         partnerMatches > founderMatches ||
-        (partnerMatches === founderMatches && secondary.id.localeCompare(founder.id) < 0)
+        (partnerMatches === founderMatches && compareText(secondary.id, founder.id) < 0)
       ) {
         primary = secondary;
         secondary = founder;
       }
     }
 
-    const baseSurname = extractFamilySurname(primary.name);
+    const baseSurname = surnameById.get(primary.id) ?? extractFamilySurname(primary.name);
     const group: FounderGroup = {
       primaryId: primary.id,
       partnerId: secondary ? secondary.id : null,
@@ -295,7 +308,7 @@ export function buildCreatureDirectorySnapshot(
   for (const group of founderGroups) {
     const primary = byId.get(group.primaryId);
     if (!primary) continue;
-    const surname = extractFamilySurname(primary.name);
+    const surname = surnameById.get(primary.id) ?? extractFamilySurname(primary.name);
     const list = surnameUsage.get(surname) ?? [];
     list.push(group);
     surnameUsage.set(surname, list);
@@ -305,7 +318,7 @@ export function buildCreatureDirectorySnapshot(
     for (const group of groups) {
       const primary = byId.get(group.primaryId);
       if (!primary) continue;
-      group.lineageName = `${surname} (${extractFirstName(primary.name)})`;
+      group.lineageName = `${surname} (${firstNameById.get(primary.id) ?? extractFirstName(primary.name)})`;
     }
   }
 
@@ -339,8 +352,10 @@ export function buildCreatureDirectorySnapshot(
     }
 
     // Prefer the parent whose surname matches this creature's inherited surname
-    const mySurname = extractFamilySurname(creature.name);
-    const surnameParent = validParents.find((p) => extractFamilySurname(p.name) === mySurname);
+    const mySurname = surnameById.get(creature.id) ?? extractFamilySurname(creature.name);
+    const surnameParent = validParents.find(
+      (p) => (surnameById.get(p.id) ?? extractFamilySurname(p.name)) === mySurname,
+    );
     const chosenParent = surnameParent ?? validParents[0];
     const resolved = resolveLineageId(chosenParent.id, visiting);
 
@@ -349,8 +364,10 @@ export function buildCreatureDirectorySnapshot(
     return resolved;
   };
 
+  const visiting = new Set<string>();
   for (const c of creatures) {
-    resolveLineageId(c.id, new Set());
+    visiting.clear();
+    resolveLineageId(c.id, visiting);
   }
 
   // Ensure every lineageId has a FounderGroup entry (defensive fallback for cyclic/synthetic data)
@@ -365,7 +382,7 @@ export function buildCreatureDirectorySnapshot(
       const fallback: FounderGroup = {
         primaryId: lid,
         partnerId: null,
-        lineageName: `${extractFamilySurname(rootCreature.name)} Line`,
+        lineageName: `${surnameById.get(rootCreature.id) ?? extractFamilySurname(rootCreature.name)} Line`,
       };
       founderGroups.push(fallback);
       founderGroupById.set(lid, fallback);
@@ -428,8 +445,8 @@ export function buildCreatureDirectorySnapshot(
     const entry: CreatureDirectoryEntry = {
       id: c.id,
       name: c.name,
-      firstName: extractFirstName(c.name),
-      surname: extractFamilySurname(c.name),
+      firstName: firstNameById.get(c.id) ?? extractFirstName(c.name),
+      surname: surnameById.get(c.id) ?? extractFamilySurname(c.name),
       species: c.species,
       speciesName: c.def.displayName,
       speciesColorHex: toHexColor(c.def.primaryColor),
@@ -475,16 +492,37 @@ export function buildCreatureDirectorySnapshot(
     entriesById.set(entry.id, entry);
   }
 
-  // 5. Build genealogical Family Trees per founding lineage
+  // 5. Build genealogical Family Trees per founding lineage (skipped in table-only mode)
   const trees: LineageFamilyTree[] = [];
   const treesByLineageId = new Map<string, LineageFamilyTree>();
+
+  if (!includeTrees) {
+    let familyLineCount = 0;
+    for (const group of founderGroups) {
+      const members = lineageMembersMap.get(group.primaryId);
+      if (members && members.length > 0 && entriesById.has(group.primaryId)) {
+        familyLineCount++;
+      }
+    }
+    return {
+      entries,
+      entriesById,
+      trees,
+      treesByLineageId,
+      totalLiving,
+      totalFallen,
+      speciesCount: speciesSet.size,
+      maxGeneration: globalMaxGen,
+      familyLineCount,
+    };
+  }
 
   const sortChildren = (a: CreatureDirectoryEntry, b: CreatureDirectoryEntry): number => {
     if (Math.abs(b.ageDays - a.ageDays) > 0.001) return b.ageDays - a.ageDays;
     if ((a.litterId ?? '') !== (b.litterId ?? '')) {
-      return (a.litterId ?? '').localeCompare(b.litterId ?? '');
+      return compareText(a.litterId ?? '', b.litterId ?? '');
     }
-    return a.name.localeCompare(b.name);
+    return compareText(a.name, b.name);
   };
 
   for (const group of founderGroups) {
@@ -527,22 +565,40 @@ export function buildCreatureDirectorySnapshot(
 
       // Collect direct children that belong to this lineage and have primary (or same-lineage mate) as parent
       const childCandidates: CreatureDirectoryEntry[] = [];
-      for (const candidate of lineageMemberEntries) {
-        if (placedInLineage.has(candidate.id)) continue;
-        const hasPrimaryParent = candidate.parentIds.includes(primary.id);
-        const hasSameLineageMateParent =
-          mate !== null && !mateIsCrossLineage && candidate.parentIds.includes(mate.id);
-        if (hasPrimaryParent || hasSameLineageMateParent) {
-          childCandidates.push(candidate);
+      const primaryOffspring = offspringSetById.get(primary.id);
+      if (primaryOffspring) {
+        for (const childId of primaryOffspring) {
+          if (placedInLineage.has(childId)) continue;
+          const candidate = entriesById.get(childId);
+          if (
+            candidate &&
+            candidate.lineageId === group.primaryId &&
+            candidate.parentIds.includes(primary.id)
+          ) {
+            placedInLineage.add(childId);
+            childCandidates.push(candidate);
+          }
+        }
+      }
+      if (mate !== null && !mateIsCrossLineage) {
+        const mateOffspring = offspringSetById.get(mate.id);
+        if (mateOffspring) {
+          for (const childId of mateOffspring) {
+            if (placedInLineage.has(childId)) continue;
+            const candidate = entriesById.get(childId);
+            if (
+              candidate &&
+              candidate.lineageId === group.primaryId &&
+              candidate.parentIds.includes(mate.id)
+            ) {
+              placedInLineage.add(childId);
+              childCandidates.push(candidate);
+            }
+          }
         }
       }
 
       childCandidates.sort(sortChildren);
-
-      // Reserve children immediately before recursing so siblings never steal each other
-      for (const ch of childCandidates) {
-        placedInLineage.add(ch.id);
-      }
 
       const children: FamilyTreeNode[] = childCandidates.map((ch) => buildNode(ch, null));
 
@@ -665,23 +721,23 @@ export function sortCreatureEntries(
     let cmp = 0;
     switch (sortKey) {
       case 'name':
-        cmp = a.name.localeCompare(b.name);
+        cmp = compareText(a.name, b.name);
         break;
       case 'species':
-        cmp = a.speciesName.localeCompare(b.speciesName) || a.name.localeCompare(b.name);
+        cmp = compareText(a.speciesName, b.speciesName) || compareText(a.name, b.name);
         break;
       case 'lineage':
         cmp =
-          a.lineageName.localeCompare(b.lineageName) ||
+          compareText(a.lineageName, b.lineageName) ||
           a.generation - b.generation ||
           b.ageDays - a.ageDays ||
-          a.name.localeCompare(b.name);
+          compareText(a.name, b.name);
         break;
       case 'generation':
         cmp =
           a.generation - b.generation ||
-          a.lineageName.localeCompare(b.lineageName) ||
-          a.name.localeCompare(b.name);
+          compareText(a.lineageName, b.lineageName) ||
+          compareText(a.name, b.name);
         break;
       case 'age':
         cmp = a.ageDays - b.ageDays;
@@ -690,13 +746,13 @@ export function sortCreatureEntries(
         cmp = LIFE_STAGE_ORDER[a.lifeStage] - LIFE_STAGE_ORDER[b.lifeStage] || a.ageDays - b.ageDays;
         break;
       case 'village':
-        cmp = a.settlementName.localeCompare(b.settlementName) || a.name.localeCompare(b.name);
+        cmp = compareText(a.settlementName, b.settlementName) || compareText(a.name, b.name);
         break;
       case 'role':
-        cmp = a.roleLabel.localeCompare(b.roleLabel) || a.name.localeCompare(b.name);
+        cmp = compareText(a.roleLabel, b.roleLabel) || compareText(a.name, b.name);
         break;
       case 'activity':
-        cmp = a.activityLabel.localeCompare(b.activityLabel) || a.name.localeCompare(b.name);
+        cmp = compareText(a.activityLabel, b.activityLabel) || compareText(a.name, b.name);
         break;
       case 'mood':
         cmp = a.mood - b.mood;
@@ -713,7 +769,7 @@ export function sortCreatureEntries(
     }
 
     if (cmp !== 0) return cmp * mult;
-    return a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+    return compareText(a.name, b.name) || compareText(a.id, b.id);
   });
 }
 
@@ -799,17 +855,17 @@ export function sortLineageTrees(
         break;
       case 'species':
         cmp =
-          a.primarySpeciesName.localeCompare(b.primarySpeciesName) ||
+          compareText(a.primarySpeciesName, b.primarySpeciesName) ||
           b.totalMembers - a.totalMembers ||
-          a.lineageName.localeCompare(b.lineageName);
+          compareText(a.lineageName, b.lineageName);
         break;
       case 'founder':
-        cmp = a.lineageName.localeCompare(b.lineageName);
+        cmp = compareText(a.lineageName, b.lineageName);
         break;
     }
 
     if (cmp !== 0) return cmp * mult;
-    return a.lineageName.localeCompare(b.lineageName) || a.lineageId.localeCompare(b.lineageId);
+    return compareText(a.lineageName, b.lineageName) || compareText(a.lineageId, b.lineageId);
   });
 }
 

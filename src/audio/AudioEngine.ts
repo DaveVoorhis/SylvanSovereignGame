@@ -94,7 +94,9 @@ export class AudioEngine {
   private readonly creatureCooldowns = new Map<string, number>();
 
   private readonly unsubscribes: (() => void)[] = [];
+  private interactionUnsub: (() => void) | null = null;
   private readonly onUserGestureBound: () => void;
+  private muteSuspendTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly bus: EventBus,
@@ -115,13 +117,13 @@ export class AudioEngine {
       });
 
     this.unsubscribes.push(
-      this.bus.on('creature:interaction', (ev) => this.handleCreatureInteraction(ev)),
       this.bus.on('combat:spark', (sp) => this.handleCombatSpark(sp)),
       this.bus.on('divine:effect', (fx) => this.handleDivineEffect(fx)),
       this.bus.on('world:reset', () => {
         this.creatureCooldowns.clear();
       }),
     );
+    this.syncInteractionSubscription();
 
     this.onUserGestureBound = () => {
       if (this.disposed || this.muted) return;
@@ -143,6 +145,17 @@ export class AudioEngine {
     return this.muted;
   }
 
+  /** True when the audio engine is active and ready to process frames. */
+  isRunning(): boolean {
+    return (
+      !this.disposed &&
+      !this.muted &&
+      !this.pageHidden &&
+      this.ctx !== null &&
+      this.ctx.state === 'running'
+    );
+  }
+
   /** Toggles sound on/off and returns the new muted state (`true` = muted). */
   toggleMuted(): boolean {
     this.setMuted(!this.muted);
@@ -156,6 +169,9 @@ export class AudioEngine {
       writeStoredMuted(muted);
     }
 
+    this.syncInteractionSubscription();
+    this.clearMuteSuspendTimer();
+
     if (!muted) {
       this.ensureInitialized();
       this.resumeContextIfNeeded();
@@ -165,6 +181,18 @@ export class AudioEngine {
       const now = this.ctx.currentTime;
       this.masterGain.gain.cancelScheduledValues(now);
       this.masterGain.gain.setTargetAtTime(muted ? 0.0 : 0.88, now, 0.045);
+
+      if (muted && this.ctx.state === 'running' && typeof this.ctx.suspend === 'function') {
+        // Allow the smooth fade-out ramp to finish before suspending the audio thread
+        this.muteSuspendTimer = setTimeout(() => {
+          this.muteSuspendTimer = null;
+          if (!this.disposed && this.muted && this.ctx && this.ctx.state === 'running') {
+            if (typeof this.ctx.suspend === 'function') {
+              void this.ctx.suspend().catch(() => {});
+            }
+          }
+        }, 180);
+      }
     }
   }
 
@@ -195,21 +223,9 @@ export class AudioEngine {
 
     const paused = simSpeed <= 0;
     this.ambient.update(dt, world, listener, paused);
-    this.music.update(world, listener, paused);
+    this.music.update(world, listener, paused, dt);
 
     if (paused) return;
-
-    // Decay per-creature vocalization cooldowns
-    if (this.creatureCooldowns.size > 0) {
-      for (const [id, remaining] of this.creatureCooldowns) {
-        const next = remaining - dt;
-        if (next <= 0) {
-          this.creatureCooldowns.delete(id);
-        } else {
-          this.creatureCooldowns.set(id, next);
-        }
-      }
-    }
 
     // Proximity wildlife & village creature chatter (so viewing any bustling village or POV feels alive)
     this.proximityChatterTimer -= dt;
@@ -328,9 +344,35 @@ export class AudioEngine {
     window.removeEventListener('touchstart', this.onUserGestureBound);
   }
 
+  private syncInteractionSubscription(): void {
+    if (!this.disposed && !this.muted) {
+      if (!this.interactionUnsub) {
+        this.interactionUnsub = this.bus.on('creature:interaction', (ev) =>
+          this.handleCreatureInteraction(ev),
+        );
+      }
+    } else if (this.interactionUnsub) {
+      this.interactionUnsub();
+      this.interactionUnsub = null;
+    }
+  }
+
+  private clearMuteSuspendTimer(): void {
+    if (this.muteSuspendTimer !== null) {
+      clearTimeout(this.muteSuspendTimer);
+      this.muteSuspendTimer = null;
+    }
+  }
+
   private handleCreatureInteraction(ev: CreatureInteractionEvent): void {
     if (this.disposed || this.muted || this.pageHidden || !this.voices || !this.ctx) return;
     if (this.ctx.state !== 'running') return;
+
+    const nowMs = performance.now();
+    const isMilestone =
+      ev.kind === 'birth' || ev.kind === 'court' || ev.kind === 'build' || ev.kind === 'trade';
+    const minSpacingMs = isMilestone ? 220 : 380;
+    if (nowMs - this.lastVoiceMs < minSpacingMs) return;
 
     const spatial = computeSpatialParams(ev.position, this.lastListener, {
       refDistance: this.lastListener.isPov ? 5.5 : 14,
@@ -339,12 +381,6 @@ export class AudioEngine {
     });
     if (!spatial.isAudible) return;
 
-    const nowMs = performance.now();
-    const isMilestone =
-      ev.kind === 'birth' || ev.kind === 'court' || ev.kind === 'build' || ev.kind === 'trade';
-    const minSpacingMs = isMilestone ? 220 : 380;
-
-    if (nowMs - this.lastVoiceMs < minSpacingMs) return;
     this.lastVoiceMs = nowMs;
 
     const intensity = clamp(ev.intensity ?? 0.85, 0.3, 1.0);
@@ -433,6 +469,15 @@ export class AudioEngine {
     const nowMs = performance.now();
     if (nowMs - this.lastVoiceMs < 750) return;
 
+    // Lazily prune expired per-creature vocalization cooldowns
+    if (this.creatureCooldowns.size > 0) {
+      for (const [id, expiryMs] of this.creatureCooldowns) {
+        if (expiryMs <= nowMs) {
+          this.creatureCooldowns.delete(id);
+        }
+      }
+    }
+
     const anchor = listener.isPov ? listener.cameraPos : listener.focusPos;
     const maxR = listener.isPov ? 34 : 52;
     const maxRSq = maxR * maxR;
@@ -442,9 +487,10 @@ export class AudioEngine {
     let best: Creature | null = null;
     let bestScore = -1;
 
-    for (let i = 0; i < world.creatures.length; i++) {
-      const c = world.creatures[i];
-      if (!c.alive || c.activity === 'resting') continue;
+    const alive = world.aliveCreatures;
+    for (let i = 0; i < alive.length; i++) {
+      const c = alive[i];
+      if (c.activity === 'resting') continue;
       if (this.creatureCooldowns.has(c.id)) continue;
 
       const dx = c.x - anchor.x;
@@ -498,7 +544,7 @@ export class AudioEngine {
                   : 'friendly';
 
     this.lastVoiceMs = nowMs;
-    this.creatureCooldowns.set(best.id, 6.5 + Math.random() * 5.0);
+    this.creatureCooldowns.set(best.id, nowMs + (6.5 + Math.random() * 5.0) * 1000);
     this.voices.playVoice({
       species: best.species,
       mood,
@@ -518,9 +564,10 @@ export class AudioEngine {
     const anchor = listener.isPov ? listener.cameraPos : listener.focusPos;
     const maxRSq = 44 * 44;
 
-    for (let i = 0; i < world.creatures.length; i++) {
-      const c = world.creatures[i];
-      if (!c.alive || !c.isActivelyWorking || c.activity !== 'building') continue;
+    const alive = world.aliveCreatures;
+    for (let i = 0; i < alive.length; i++) {
+      const c = alive[i];
+      if (!c.isActivelyWorking || c.activity !== 'building') continue;
       const dx = c.x - anchor.x;
       const dz = c.z - anchor.z;
       if (dx * dx + dz * dz > maxRSq) continue;
@@ -540,7 +587,9 @@ export class AudioEngine {
 
   dispose(): void {
     this.disposed = true;
+    this.clearMuteSuspendTimer();
     this.detachGestureUnlockers();
+    this.syncInteractionSubscription();
     for (const unsub of this.unsubscribes) unsub();
     this.unsubscribes.length = 0;
     this.creatureCooldowns.clear();

@@ -5,7 +5,7 @@ import type {
   VillageAdaptationId,
 } from '@core/Types';
 import type { WorldState } from '@simulation/WorldState';
-import { clamp, createPannedOutput, midiToFreq, smoothstep } from './AudioUtils';
+import { clamp, midiToFreq, smoothstep } from './AudioUtils';
 
 export interface ActiveFestivalAudioTarget {
   readonly celebrationId: string;
@@ -270,13 +270,29 @@ export function selectActiveFestivalMusic(
  * biome-adapted rustic instruments (flute, fiddle, lute, harp, oud, marimba,
  * bodhrán, tambourine, and celebratory village bells).
  */
+interface PannedStrip {
+  readonly input: AudioNode;
+  readonly panner: StereoPannerNode | null;
+  lastPan: number;
+}
+
+const FESTIVE_BELL_RATIOS = [1, 2.0, 2.98] as const;
+
 export class FestivalMusicPlayer {
   private readonly busGain: GainNode;
+  private readonly leadStrip: PannedStrip;
+  private readonly accompStrip: PannedStrip;
+  private readonly percStrip: PannedStrip;
+  private readonly bellStrip: PannedStrip;
   private currentTarget: ActiveFestivalAudioTarget | null = null;
   private nextStepTime = 0;
   private stepIndex = 0;
   private activeCelebrationId: string | null = null;
   private isPlaying = false;
+  private targetSampleAccum = 0.125;
+  private lastCelebrationCount = -1;
+  private lastFirstCelebrationId: string | null = null;
+  private lastBusTarget = -1;
 
   constructor(
     private readonly ctx: AudioContext,
@@ -287,6 +303,33 @@ export class FestivalMusicPlayer {
     this.busGain = ctx.createGain();
     this.busGain.gain.value = 0.0001;
     this.busGain.connect(destination);
+
+    this.leadStrip = this.createStrip();
+    this.accompStrip = this.createStrip();
+    this.percStrip = this.createStrip();
+    this.bellStrip = this.createStrip();
+  }
+
+  private createStrip(): PannedStrip {
+    if (typeof this.ctx.createStereoPanner === 'function') {
+      const panner = this.ctx.createStereoPanner();
+      panner.pan.value = 0;
+      panner.connect(this.busGain);
+      return { input: panner, panner, lastPan: 0 };
+    }
+    return { input: this.busGain, panner: null, lastPan: 0 };
+  }
+
+  private setStripPan(strip: PannedStrip, pan: number, time: number): void {
+    if (!strip.panner) return;
+    const clamped = clamp(pan, -1, 1);
+    if (Math.abs(clamped - strip.lastPan) <= 1e-3) return;
+    strip.lastPan = clamped;
+    if (typeof strip.panner.pan.setTargetAtTime === 'function') {
+      strip.panner.pan.setTargetAtTime(clamped, time, 0.04);
+    } else {
+      strip.panner.pan.value = clamped;
+    }
   }
 
   getCurrentTarget(): ActiveFestivalAudioTarget | null {
@@ -297,13 +340,39 @@ export class FestivalMusicPlayer {
     world: WorldState,
     listener: AudioListenerFrame,
     paused: boolean,
+    dt = 0.125,
   ): void {
-    const target = selectActiveFestivalMusic(world, listener);
-    this.currentTarget = target;
+    const active = world.festivals.activeCelebrations;
+    const activeCount = active.length;
+    const firstId = activeCount > 0 ? active[0].id : null;
+
+    if (activeCount === 0) {
+      this.currentTarget = null;
+      this.lastCelebrationCount = 0;
+      this.lastFirstCelebrationId = null;
+      this.targetSampleAccum = 0.125;
+    } else {
+      this.targetSampleAccum += dt;
+      if (
+        this.targetSampleAccum >= 0.125 ||
+        !this.currentTarget ||
+        activeCount !== this.lastCelebrationCount ||
+        firstId !== this.lastFirstCelebrationId
+      ) {
+        this.targetSampleAccum = 0;
+        this.lastCelebrationCount = activeCount;
+        this.lastFirstCelebrationId = firstId;
+        this.currentTarget = selectActiveFestivalMusic(world, listener);
+      }
+    }
+    const target = this.currentTarget;
     const now = this.ctx.currentTime;
 
     if (!target || paused) {
-      this.busGain.gain.setTargetAtTime(0.0001, now, 0.35);
+      if (Math.abs(0.0001 - this.lastBusTarget) > 1e-4) {
+        this.lastBusTarget = 0.0001;
+        this.busGain.gain.setTargetAtTime(0.0001, now, 0.35);
+      }
       if (!target) {
         this.isPlaying = false;
         this.activeCelebrationId = null;
@@ -313,7 +382,10 @@ export class FestivalMusicPlayer {
 
     // Smoothly ramp master festival volume based on spatial proximity
     const masterLevel = 0.34 * target.gain;
-    this.busGain.gain.setTargetAtTime(masterLevel, now, 0.38);
+    if (Math.abs(masterLevel - this.lastBusTarget) > 1e-4) {
+      this.lastBusTarget = masterLevel;
+      this.busGain.gain.setTargetAtTime(masterLevel, now, 0.38);
+    }
 
     if (!this.isPlaying || this.activeCelebrationId !== target.celebrationId) {
       this.isPlaying = true;
@@ -411,7 +483,13 @@ export class FestivalMusicPlayer {
     amp: number,
     pan: number,
   ): void {
-    const out = createPannedOutput(this.ctx, this.busGain, pan, 1.0);
+    if (timbre === 'oud') {
+      // Plucked oud lead
+      this.playPluck('oud', freq, time, dur * 1.45, amp * 1.05, pan, this.leadStrip);
+      return;
+    }
+    this.setStripPan(this.leadStrip, pan, time);
+    const out = this.leadStrip.input;
 
     if (timbre === 'flute' || timbre === 'pipe') {
       const osc = this.ctx.createOscillator();
@@ -510,9 +588,6 @@ export class FestivalMusicPlayer {
       over.stop(time + 0.08);
       return;
     }
-
-    // Plucked oud lead
-    this.playPluck('oud', freq, time, dur * 1.45, amp * 1.05, pan);
   }
 
   private playPluck(
@@ -522,8 +597,10 @@ export class FestivalMusicPlayer {
     dur: number,
     amp: number,
     pan: number,
+    strip: PannedStrip = this.accompStrip,
   ): void {
-    const out = createPannedOutput(this.ctx, this.busGain, pan, 1.0);
+    this.setStripPan(strip, pan, time);
+    const out = strip.input;
     const osc = this.ctx.createOscillator();
     osc.type = timbre === 'harp' ? 'triangle' : 'sawtooth';
     osc.frequency.value = freq;
@@ -555,8 +632,10 @@ export class FestivalMusicPlayer {
     amp: number,
     pan: number,
   ): void {
-    const out = createPannedOutput(this.ctx, this.busGain, pan, 1.0);
-    for (const f of [rootFreq, fifthFreq]) {
+    this.setStripPan(this.accompStrip, pan, time);
+    const out = this.accompStrip.input;
+    for (let i = 0; i < 2; i++) {
+      const f = i === 0 ? rootFreq : fifthFreq;
       const osc = this.ctx.createOscillator();
       osc.type = 'triangle';
       osc.frequency.value = f;
@@ -583,13 +662,21 @@ export class FestivalMusicPlayer {
     time: number,
     pan: number,
   ): void {
-    const out = createPannedOutput(this.ctx, this.busGain, pan * 0.5, 1.0);
-
     // Warm hand-drum downbeat / secondary pulse
     const isDownbeat = beatInBar === 0;
     const isMidPulse =
       (stepsPerBar === 8 && (beatInBar === 4 || beatInBar === 6)) ||
       (stepsPerBar === 6 && beatInBar === 3);
+    // Crisp tambourine / shaker off-beats
+    const isShaker =
+      kind === 'tambourine'
+        ? beatInBar % 2 === 1
+        : beatInBar === 2 || (stepsPerBar === 8 && beatInBar === 6);
+
+    if (!isDownbeat && !isMidPulse && !isShaker) return;
+
+    this.setStripPan(this.percStrip, pan * 0.5, time);
+    const out = this.percStrip.input;
 
     if (isDownbeat || isMidPulse) {
       const osc = this.ctx.createOscillator();
@@ -609,11 +696,6 @@ export class FestivalMusicPlayer {
       osc.stop(time + 0.17);
     }
 
-    // Crisp tambourine / shaker off-beats
-    const isShaker =
-      kind === 'tambourine'
-        ? beatInBar % 2 === 1
-        : beatInBar === 2 || (stepsPerBar === 8 && beatInBar === 6);
     if (isShaker) {
       const src = this.ctx.createBufferSource();
       src.buffer = this.whiteNoise;
@@ -635,9 +717,10 @@ export class FestivalMusicPlayer {
   }
 
   private playFestiveBell(freq: number, time: number, amp: number, pan: number): void {
-    const out = createPannedOutput(this.ctx, this.busGain, pan, 1.0);
-    const ratios = [1, 2.0, 2.98];
-    ratios.forEach((r, idx) => {
+    this.setStripPan(this.bellStrip, pan, time);
+    const out = this.bellStrip.input;
+    for (let idx = 0; idx < FESTIVE_BELL_RATIOS.length; idx++) {
+      const r = FESTIVE_BELL_RATIOS[idx];
       const osc = this.ctx.createOscillator();
       const env = this.ctx.createGain();
       osc.type = 'sine';
@@ -649,13 +732,17 @@ export class FestivalMusicPlayer {
       env.connect(out);
       osc.start(time);
       osc.stop(time + 1.25);
-    });
+    }
   }
 
   dispose(): void {
     this.isPlaying = false;
     this.activeCelebrationId = null;
     try {
+      this.leadStrip.panner?.disconnect();
+      this.accompStrip.panner?.disconnect();
+      this.percStrip.panner?.disconnect();
+      this.bellStrip.panner?.disconnect();
       this.busGain.disconnect();
     } catch {
       // Ignore already disconnected node

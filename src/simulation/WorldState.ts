@@ -39,6 +39,36 @@ import { TerrainMap } from './terrain/TerrainMap';
 
 const SEASONS: readonly Season[] = ['spring', 'summer', 'autumn', 'winter'];
 
+const SEASONAL_WEATHER_POOL: Record<Season, readonly { item: WeatherType; weight: number }[]> = {
+  spring: [
+    { item: 'sunbeams', weight: 36 },
+    { item: 'clear', weight: 28 },
+    { item: 'blossom', weight: 24 },
+    { item: 'rain', weight: 10 },
+    { item: 'mist', weight: 2 },
+  ],
+  summer: [
+    { item: 'clear', weight: 40 },
+    { item: 'sunbeams', weight: 38 },
+    { item: 'rain', weight: 12 },
+    { item: 'storm', weight: 8 },
+    { item: 'mist', weight: 2 },
+  ],
+  autumn: [
+    { item: 'clear', weight: 35 },
+    { item: 'sunbeams', weight: 31 },
+    { item: 'rain', weight: 18 },
+    { item: 'storm', weight: 11 },
+    { item: 'mist', weight: 5 },
+  ],
+  winter: [
+    { item: 'clear', weight: 36 },
+    { item: 'snow', weight: 42 },
+    { item: 'sunbeams', weight: 19 },
+    { item: 'mist', weight: 3 },
+  ],
+};
+
 /** Full serializable snapshot of a headless WorldState (terrain regenerates deterministically from config.seed). */
 export interface WorldSnapshot {
   readonly version: 1;
@@ -109,6 +139,8 @@ export class WorldState {
   readonly settlements: Settlement[] = [];
   readonly bridges: BridgeInstance[] = [];
   readonly creatures: Creature[] = [];
+  /** Order-preserving active list of living creatures (compacted each step, updated on spawn). */
+  readonly aliveCreatures: Creature[] = [];
   readonly activeDivineEffects: DivineEffectVisual[] = [];
   readonly activeCombatSparks: CombatSparkVisual[] = [];
   /** Sustained dramatic ecological upheavals & restorations triggered by the Deity. */
@@ -141,6 +173,9 @@ export class WorldState {
   private cachedBridgeLen = -1;
   private readonly creatureIndex = new Map<string, number>();
   private cachedCreatureLen = -1;
+  private readonly settlementPopCache = new Map<string, number>();
+  private lastTrackedCreatureLen = 0;
+  private aliveCacheSyncedDuringStep = false;
 
   constructor(
     readonly bus: EventBus,
@@ -209,7 +244,7 @@ export class WorldState {
       const radius = options.spawnNear ? this.rng.range(0.65, 2.35) : this.rng.range(2.2, maxSpawnR);
       const rawX = anchorX + Math.cos(angle) * radius;
       const rawZ = anchorZ + Math.sin(angle) * radius;
-      const safe = this.obstacles.pushPointOutsideObstacles(
+      this.obstacles.pushPointOutsideObstaclesInto(
         rawX,
         rawZ,
         anchorX,
@@ -219,22 +254,26 @@ export class WorldState {
         0.18,
         angle,
       );
-      if (!this.terrain.canCreatureTraverse(safe.x, safe.z, def)) {
+      const safeX = this.obstacles.resX;
+      const safeZ = this.obstacles.resZ;
+      if (!this.terrain.canCreatureTraverse(safeX, safeZ, def)) {
         continue;
       }
 
       let minCreatureGap = Infinity;
-      for (const other of this.creatures) {
+      const aliveList = this.aliveCreatures;
+      for (let i = 0; i < aliveList.length; i++) {
+        const other = aliveList[i];
         if (!other.alive || other.flightAltitude > 1.1) continue;
         const otherR = Math.max(0.22, other.getSizeScale() * 0.42);
-        const gap = Math.hypot(safe.x - other.x, safe.z - other.z) - (personalR + otherR);
+        const gap = Math.hypot(safeX - other.x, safeZ - other.z) - (personalR + otherR);
         if (gap < minCreatureGap) minCreatureGap = gap;
       }
 
       if (minCreatureGap > bestClearance) {
         bestClearance = minCreatureGap;
-        x = safe.x;
-        z = safe.z;
+        x = safeX;
+        z = safeZ;
       }
       if (minCreatureGap >= 0.2) break;
     }
@@ -247,7 +286,7 @@ export class WorldState {
         const wx = settlement.center.x + Math.cos(angle) * radius;
         const wz = settlement.center.z + Math.sin(angle) * radius;
         if (this.terrain.isSwimmable(wx, wz)) {
-          const safe = this.obstacles.pushPointOutsideObstacles(
+          this.obstacles.pushPointOutsideObstaclesInto(
             wx,
             wz,
             settlement.center.x,
@@ -257,9 +296,9 @@ export class WorldState {
             0.18,
             angle,
           );
-          if (this.terrain.isSwimmable(safe.x, safe.z)) {
-            x = safe.x;
-            z = safe.z;
+          if (this.terrain.isSwimmable(this.obstacles.resX, this.obstacles.resZ)) {
+            x = this.obstacles.resX;
+            z = this.obstacles.resZ;
             break;
           }
         }
@@ -303,6 +342,12 @@ export class WorldState {
       },
     });
     this.creatures.push(creature);
+    this.aliveCreatures.push(creature);
+    this.lastTrackedCreatureLen = this.creatures.length;
+    this.settlementPopCache.set(
+      creature.settlementId,
+      (this.settlementPopCache.get(creature.settlementId) ?? 0) + 1,
+    );
     return creature;
   }
 
@@ -514,9 +559,70 @@ export class WorldState {
     return undefined;
   }
 
+  /** Compacts `aliveCreatures` in exact insertion order and refreshes O(1) settlement population counts. */
+  syncAliveTracking(): void {
+    const pop = this.settlementPopCache;
+    pop.clear();
+    if (this.lastTrackedCreatureLen !== this.creatures.length) {
+      this.aliveCreatures.length = 0;
+      for (let i = 0; i < this.creatures.length; i++) {
+        const c = this.creatures[i];
+        if (c.alive) {
+          this.aliveCreatures.push(c);
+          pop.set(c.settlementId, (pop.get(c.settlementId) ?? 0) + 1);
+        }
+      }
+      this.lastTrackedCreatureLen = this.creatures.length;
+      return;
+    }
+
+    let write = 0;
+    const list = this.aliveCreatures;
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i];
+      if (c.alive) {
+        if (write !== i) list[write] = c;
+        write++;
+        pop.set(c.settlementId, (pop.get(c.settlementId) ?? 0) + 1);
+      }
+    }
+    list.length = write;
+  }
+
+  /** Marks a living creature as dead and keeps O(1) settlement population counts synchronized. */
+  markCreatureDead(creature: Creature): void {
+    if (!creature.alive) return;
+    creature.alive = false;
+    const prev = this.settlementPopCache.get(creature.settlementId) ?? 0;
+    if (prev > 0) this.settlementPopCache.set(creature.settlementId, prev - 1);
+  }
+
+  /** Transfers a living creature to a new settlement while keeping O(1) population counts synchronized. */
+  transferCreatureSettlement(creature: Creature, nextSettlementId: string): void {
+    if (creature.settlementId === nextSettlementId) return;
+    if (creature.alive) {
+      const prev = this.settlementPopCache.get(creature.settlementId) ?? 0;
+      if (prev > 0) this.settlementPopCache.set(creature.settlementId, prev - 1);
+      this.settlementPopCache.set(
+        nextSettlementId,
+        (this.settlementPopCache.get(nextSettlementId) ?? 0) + 1,
+      );
+    }
+    creature.settlementId = nextSettlementId;
+  }
+
   getSettlementPopulation(settlementId: string): number {
+    if (this.aliveCacheSyncedDuringStep) {
+      return this.settlementPopCache.get(settlementId) ?? 0;
+    }
+    if (this.lastTrackedCreatureLen !== this.creatures.length) {
+      this.syncAliveTracking();
+      return this.settlementPopCache.get(settlementId) ?? 0;
+    }
     let count = 0;
-    for (const c of this.creatures) {
+    const list = this.aliveCreatures;
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i];
       if (c.alive && c.settlementId === settlementId) count++;
     }
     return count;
@@ -584,7 +690,7 @@ export class WorldState {
     influence?: ActiveDivineInfluence,
   ): void {
     if (!creature.alive) return;
-    creature.alive = false;
+    this.markCreatureDead(creature);
     creature.health = 0;
     if (creature.mateId) {
       const mate = this.getCreature(creature.mateId);
@@ -728,20 +834,28 @@ export class WorldState {
     }
 
     // Step subsystems
-    this.deity.tick(this, dt);
-    this.settlementManager.tick(this, dt);
-    this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision, this.habitatScars);
-    this.diplomacy.tick(this, dt);
-    this.wars.tick(this, dt);
-    this.festivals.tick(this, dt);
+    this.syncAliveTracking();
+    this.aliveCacheSyncedDuringStep = true;
+    try {
+      this.deity.tick(this, dt);
+      this.settlementManager.tick(this, dt);
+      this.obstacles.sync(this.terrain, this.settlements, this.bridges, this.structureRevision, this.habitatScars);
+      this.diplomacy.tick(this, dt);
+      this.wars.tick(this, dt);
+      this.festivals.tick(this, dt);
 
-    this.creatureAI.prepareStep(this);
-    for (const creature of this.creatures) {
-      if (creature.alive) {
-        this.creatureAI.updateCreature(creature, this, dt);
+      this.creatureAI.prepareStep(this);
+      const alive = this.aliveCreatures;
+      for (let i = 0; i < alive.length; i++) {
+        const creature = alive[i];
+        if (creature.alive) {
+          this.creatureAI.updateCreature(creature, this, dt);
+        }
       }
+      this.creatureAI.resolveCreatureCollisions(this);
+    } finally {
+      this.aliveCacheSyncedDuringStep = false;
     }
-    this.creatureAI.resolveCreatureCollisions(this);
 
     // Refresh visual trade routes periodically
     this.routeRefreshTimer -= dt;
@@ -766,36 +880,7 @@ export class WorldState {
   }
 
   private rollSeasonalWeather(): void {
-    const weightedPool: Record<Season, { item: WeatherType; weight: number }[]> = {
-      spring: [
-        { item: 'sunbeams', weight: 36 },
-        { item: 'clear', weight: 28 },
-        { item: 'blossom', weight: 24 },
-        { item: 'rain', weight: 10 },
-        { item: 'mist', weight: 2 },
-      ],
-      summer: [
-        { item: 'clear', weight: 40 },
-        { item: 'sunbeams', weight: 38 },
-        { item: 'rain', weight: 12 },
-        { item: 'storm', weight: 8 },
-        { item: 'mist', weight: 2 },
-      ],
-      autumn: [
-        { item: 'clear', weight: 35 },
-        { item: 'sunbeams', weight: 31 },
-        { item: 'rain', weight: 18 },
-        { item: 'storm', weight: 11 },
-        { item: 'mist', weight: 5 },
-      ],
-      winter: [
-        { item: 'clear', weight: 36 },
-        { item: 'snow', weight: 42 },
-        { item: 'sunbeams', weight: 19 },
-        { item: 'mist', weight: 3 },
-      ],
-    };
-    this.weather = this.rng.weightedPick(weightedPool[this.season]);
+    this.weather = this.rng.weightedPick(SEASONAL_WEATHER_POOL[this.season]);
     // Keep rare misty spells brief while clear/sunny skies linger comfortably
     this.weatherTimer =
       this.weather === 'mist' ? this.rng.range(12, 20) : this.rng.range(28, 56);
@@ -883,6 +968,7 @@ export class WorldState {
     for (const cSnap of snapshot.creatures) {
       world.creatures.push(Creature.fromSnapshot(cSnap));
     }
+    world.syncAliveTracking();
     for (const fx of snapshot.activeDivineEffects) {
       world.activeDivineEffects.push({ ...fx, position: { ...fx.position } });
     }

@@ -113,6 +113,10 @@ export class CreatureDirectoryModal {
   private lastSpeciesOptionSig = '';
   private lastVillageOptionSig = '';
   private refreshAccumSec = 0;
+  private lastWorldElapsed = -1;
+  private lastSnapshotHasTrees = false;
+  private lastRenderedHtml = '';
+  private searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly callbacks: CreatureDirectoryCallbacks) {
     this.element = document.createElement('div');
@@ -190,7 +194,13 @@ export class CreatureDirectoryModal {
     this.searchInput.placeholder = 'Search name, species, bloodline, village…';
     this.searchInput.addEventListener('input', () => {
       this.filter.search = this.searchInput.value;
-      this.renderBody();
+      if (this.searchDebounceTimer !== null) {
+        clearTimeout(this.searchDebounceTimer);
+      }
+      this.searchDebounceTimer = setTimeout(() => {
+        this.searchDebounceTimer = null;
+        this.renderBody();
+      }, 100);
     });
 
     this.speciesSelect = document.createElement('select');
@@ -360,6 +370,10 @@ export class CreatureDirectoryModal {
   close(): void {
     if (!this.open) return;
     this.open = false;
+    if (this.searchDebounceTimer !== null) {
+      clearTimeout(this.searchDebounceTimer);
+      this.searchDebounceTimer = null;
+    }
     this.element.classList.add('hidden');
     this.callbacks.onClose();
   }
@@ -380,6 +394,9 @@ export class CreatureDirectoryModal {
     this.refreshAccumSec += dt;
     if (!force && this.refreshAccumSec < 0.65) return;
     this.refreshAccumSec = 0;
+    if (!force && this.lastSnapshot && world.elapsedSeconds === this.lastWorldElapsed) {
+      return;
+    }
     this.refreshNow(world);
   }
 
@@ -389,7 +406,11 @@ export class CreatureDirectoryModal {
     this.tableTabBtn.classList.toggle('active', mode === 'table');
     this.treeTabBtn.classList.toggle('active', mode === 'tree');
     this.rebuildSortOptions();
-    this.renderBody();
+    if (mode === 'tree' && !this.lastSnapshotHasTrees && this.lastWorld) {
+      this.refreshNow(this.lastWorld);
+    } else {
+      this.renderBody();
+    }
   }
 
   private rebuildSortOptions(): void {
@@ -423,7 +444,12 @@ export class CreatureDirectoryModal {
   }
 
   private refreshNow(world: WorldState): void {
-    this.lastSnapshot = buildCreatureDirectorySnapshot(world.creatures, world.settlements);
+    const includeTrees = this.viewMode === 'tree';
+    this.lastSnapshot = buildCreatureDirectorySnapshot(world.creatures, world.settlements, {
+      includeTrees,
+    });
+    this.lastSnapshotHasTrees = includeTrees;
+    this.lastWorldElapsed = world.elapsedSeconds;
     this.updateSummaryAndFilters(this.lastSnapshot, world);
     this.renderBody();
   }
@@ -486,20 +512,21 @@ export class CreatureDirectoryModal {
 
   private renderBody(): void {
     if (!this.lastSnapshot) return;
+    const nextHtml =
+      this.viewMode === 'table'
+        ? this.renderTableView(this.lastSnapshot)
+        : this.renderFamilyTreeView(this.lastSnapshot);
+    if (nextHtml === this.lastRenderedHtml) return;
+    this.lastRenderedHtml = nextHtml;
+
     const prevScrollTop = this.bodyEl.scrollTop;
     const prevScrollLeft = this.bodyEl.scrollLeft;
-
-    if (this.viewMode === 'table') {
-      this.renderTableView(this.lastSnapshot);
-    } else {
-      this.renderFamilyTreeView(this.lastSnapshot);
-    }
-
+    this.bodyEl.innerHTML = nextHtml;
     this.bodyEl.scrollTop = prevScrollTop;
     this.bodyEl.scrollLeft = prevScrollLeft;
   }
 
-  private renderTableView(snapshot: CreatureDirectorySnapshot): void {
+  private renderTableView(snapshot: CreatureDirectorySnapshot): string {
     const filtered = filterCreatureEntries(snapshot.entries, this.filter);
     const sorted = sortCreatureEntries(filtered, this.tableSortKey, this.tableSortDir);
 
@@ -600,7 +627,7 @@ export class CreatureDirectoryModal {
             })
             .join('');
 
-    this.bodyEl.innerHTML = `
+    return `
       <div class="cmodal-table-meta">
         Showing <strong>${sorted.length}</strong> of ${snapshot.entries.length} recorded creatures · Click any column header to sort, or click a bloodline to view its family tree.
       </div>
@@ -627,7 +654,7 @@ export class CreatureDirectoryModal {
     `;
   }
 
-  private renderFamilyTreeView(snapshot: CreatureDirectorySnapshot): void {
+  private renderFamilyTreeView(snapshot: CreatureDirectorySnapshot): string {
     const filteredTrees = filterLineageTrees(snapshot.trees, this.filter);
     const sortedTrees = sortLineageTrees(filteredTrees, this.treeSortKey, this.treeSortDir);
 
@@ -699,7 +726,7 @@ export class CreatureDirectoryModal {
         ? `<div class="cmodal-empty">No bloodlines match the active filters.</div>`
         : '';
 
-    this.bodyEl.innerHTML = `
+    return `
       <div class="cmodal-table-meta">
         Showing <strong>${familyTrees.length}</strong> bonded family ${familyTrees.length === 1 ? 'tree' : 'trees'}
         ${soloTrees.length > 0 ? `and <strong>${soloTrees.length}</strong> unbonded founders` : ''} ·

@@ -1275,7 +1275,30 @@ export class ProceduralGod {
 
     // Apply sustained ecological effects to creatures inside the influence zone
     const effWater = world.getEffectiveWaterLevel();
-    for (const c of world.creatures) {
+    let miasmaMitigationBySettlement: Map<string, number> | null = null;
+    if (inf.type === 'ashen_miasma') {
+      miasmaMitigationBySettlement = new Map<string, number>();
+      for (const s of world.settlements) {
+        let buffers = 0;
+        for (let i = 0; i < s.buildings.length; i++) {
+          const b = s.buildings[i];
+          if (!b.completed) continue;
+          if (
+            b.type === 'greenhouse' ||
+            b.type === 'shrine' ||
+            b.type === 'aquatic_sanctuary' ||
+            b.type === 'fountain_plaza'
+          ) {
+            buffers++;
+          }
+        }
+        miasmaMitigationBySettlement.set(
+          s.id,
+          Math.min(0.72, buffers * 0.16 + s.environmentalResilience * 0.35),
+        );
+      }
+    }
+    for (const c of world.aliveCreatures) {
       if (!c.alive) continue;
       const home = world.getSettlement(c.settlementId);
       const dist = Math.hypot(c.x - inf.position.x, c.z - inf.position.z);
@@ -1327,13 +1350,7 @@ export class ProceduralGod {
         }
       } else if (inf.type === 'ashen_miasma') {
         if (!inZone) continue;
-        const buffers = home
-          ? home.getCompletedCount('greenhouse') +
-            home.getCompletedCount('shrine') +
-            home.getCompletedCount('aquatic_sanctuary') +
-            home.getCompletedCount('fountain_plaza')
-          : 0;
-        const mitigation = Math.min(0.72, buffers * 0.16 + (home?.environmentalResilience ?? 0) * 0.35);
+        const mitigation = home ? (miasmaMitigationBySettlement?.get(home.id) ?? 0) : 0;
         const sensitive = c.def.aquatic || c.def.amphibious || c.def.strictlyAquatic;
         c.mood = Math.max(8, c.mood - stepSec * (sensitive ? 2.0 : 1.1) * (1 - mitigation));
         const pop = home ? world.getSettlementPopulation(home.id) : 0;

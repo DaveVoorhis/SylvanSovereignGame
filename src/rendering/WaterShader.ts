@@ -51,9 +51,8 @@ const WATER_VERTEX_SHADER = /* glsl */ `
     float w3 = sin(d3 * 0.14 + uTime * 0.78) * 0.026 * smoothstep(0.6, 2.6, effDepth);
     float farCalm = 1.0 - smoothstep(900.0, 2600.0, length(wp0.xz));
     float floodChop = 1.0 + clamp(uFloodOffset, 0.0, 1.4) * 0.45;
-    pos.y += (w1 + w2 + w3) * shoreMask * farCalm * (0.7 + uWindStrength * 0.65) * floodChop;
-
-    vec4 worldPos = modelMatrix * vec4(pos, 1.0);
+    wp0.y += (w1 + w2 + w3) * shoreMask * farCalm * (0.7 + uWindStrength * 0.65) * floodChop;
+    vec4 worldPos = wp0;
     vWorldPos = worldPos.xyz;
 
     vec4 mvPos = viewMatrix * worldPos;
@@ -170,7 +169,7 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
 
   // Aperiodic 5-band analytical-gradient simplex wave spectrum with bounded dual-phase flow advection
   // (eliminates chevron/herringbone shear across river currents, square tiling, and zoom repetition)
-  vec2 waveGrad(vec2 p, vec2 adv0, vec2 adv1, float flowBlend, float t, float viewDist, float depth) {
+  vec2 waveGrad(vec2 p, vec2 adv0, vec2 adv1, float flowBlend, bool hasFlow, float t, float viewDist, float depth) {
     // Gentle low-frequency eddy domain warp bends wave fronts organically across bays & rivers
     vec2 warp = vec2(
       snoise(p * 0.018 + vec2(t * 0.020, -t * 0.014)),
@@ -203,9 +202,12 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
     if (a2 > 0.04) {
       float w2 = a2 * smoothstep(0.04, 0.14, a2);
       vec2 wind2 = vec2(t * 0.14, t * 0.10);
-      vec2 g2a = snoiseD((R2 * (wp + adv0 * 0.65)) * 0.215 + wind2).yz;
-      vec2 g2b = snoiseD((R2 * (wp + adv1 * 0.65)) * 0.215 + wind2).yz;
-      grad += (mix(g2a, g2b, flowBlend) * R2) * (0.215 * 0.28 * w2);
+      vec2 g2 = snoiseD((R2 * (wp + adv0 * 0.65)) * 0.215 + wind2).yz;
+      if (hasFlow) {
+        vec2 g2b = snoiseD((R2 * (wp + adv1 * 0.65)) * 0.215 + wind2).yz;
+        g2 = mix(g2, g2b, flowBlend);
+      }
+      grad += (g2 * R2) * (0.215 * 0.28 * w2);
     }
 
     // Band 3: River & pond ripples (~1.55m wavelength, dual-phase current-advected)
@@ -213,18 +215,24 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
       float w3 = a3 * smoothstep(0.04, 0.14, a3);
       vec2 wp3 = p + warp * 0.75;
       vec2 wind3 = vec2(-t * 0.22, t * 0.18);
-      vec2 g3a = snoiseD((R3 * (wp3 + adv0)) * 0.64 + wind3).yz;
-      vec2 g3b = snoiseD((R3 * (wp3 + adv1)) * 0.64 + wind3).yz;
-      grad += (mix(g3a, g3b, flowBlend) * R3) * (0.64 * 0.125 * w3);
+      vec2 g3 = snoiseD((R3 * (wp3 + adv0)) * 0.64 + wind3).yz;
+      if (hasFlow) {
+        vec2 g3b = snoiseD((R3 * (wp3 + adv1)) * 0.64 + wind3).yz;
+        g3 = mix(g3, g3b, flowBlend);
+      }
+      grad += (g3 * R3) * (0.64 * 0.125 * w3);
     }
 
     // Band 4: Close-up capillary sparkle wavelets (~0.58m wavelength, dual-phase current-advected)
     if (a4 > 0.04) {
       float w4 = a4 * smoothstep(0.04, 0.14, a4);
       vec2 wind4 = vec2(t * 0.34, -t * 0.27);
-      vec2 g4a = snoiseD((R4 * (p + adv0 * 1.15)) * 1.72 + wind4).yz;
-      vec2 g4b = snoiseD((R4 * (p + adv1 * 1.15)) * 1.72 + wind4).yz;
-      grad += (mix(g4a, g4b, flowBlend) * R4) * (1.72 * 0.048 * w4);
+      vec2 g4 = snoiseD((R4 * (p + adv0 * 1.15)) * 1.72 + wind4).yz;
+      if (hasFlow) {
+        vec2 g4b = snoiseD((R4 * (p + adv1 * 1.15)) * 1.72 + wind4).yz;
+        g4 = mix(g4, g4b, flowBlend);
+      }
+      grad += (g4 * R4) * (1.72 * 0.048 * w4);
     }
 
     return grad;
@@ -242,7 +250,8 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
     return clamp((ridge1 + ridge2) * 0.68, 0.0, 1.20);
   }
 
-  float causticsPattern(vec2 p, vec2 adv0, vec2 adv1, float flowBlend, float t) {
+  float causticsPattern(vec2 p, vec2 adv0, vec2 adv1, float flowBlend, bool hasFlow, float t) {
+    if (!hasFlow) return causticsSample(p, t);
     return mix(causticsSample(p + adv0, t), causticsSample(p + adv1, t), flowBlend);
   }
 
@@ -255,12 +264,14 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
 
     // Dual-phase cyclic flow advection: keeps UV displacement strictly bounded (<= half-cycle)
     // so spatially varying river currents glide smoothly without shearing into chevron stripes.
+    float flowSpeedSq = dot(vFlow, vFlow);
+    bool hasFlow = flowSpeedSq > 1e-4;
     float flowCycle = 3.6;
     float phase0 = fract(uTime / flowCycle);
     float phase1 = fract(uTime / flowCycle + 0.5);
     float flowBlend = abs(2.0 * phase0 - 1.0);
-    vec2 adv0 = -vFlow * ((phase0 - 0.5) * flowCycle * 0.78);
-    vec2 adv1 = -vFlow * ((phase1 - 0.5) * flowCycle * 0.78);
+    vec2 adv0 = hasFlow ? -vFlow * ((phase0 - 0.5) * flowCycle * 0.78) : vec2(0.0);
+    vec2 adv1 = hasFlow ? -vFlow * ((phase1 - 0.5) * flowCycle * 0.78) : vec2(0.0);
 
     // Organic drifting wind-gust patches ("cat's paws") break uniformity across wide lakes & sea
     float windPatch = smoothstep(
@@ -271,7 +282,7 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
     );
 
     // 1. Exact analytical gradient normal from aperiodic 5-band simplex wave spectrum
-    vec2 waveD = waveGrad(vWorldPos.xz, adv0, adv1, flowBlend, uTime, vViewDist, depth);
+    vec2 waveD = waveGrad(vWorldPos.xz, adv0, adv1, flowBlend, hasFlow, uTime, vViewDist, depth);
 
     float rippleStrength =
       (0.24 + uWindStrength * 0.22) *
@@ -279,7 +290,7 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
       mix(0.48, 1.24, windPatch);
     vec3 N = normalize(vec3(-waveD.x * rippleStrength, 1.0, -waveD.y * rippleStrength));
     vec3 V = normalize(cameraPosition - vWorldPos);
-    vec3 L = normalize(uSunDirection);
+    vec3 L = uSunDirection;
 
     // 2. Natural Beer-Lambert optical water absorption (realistic river tannins & deep marine slate)
     float lightLevel = mix(0.20, 1.0, uDaylight);
@@ -292,7 +303,7 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
       vec3 underDeep = mix(vec3(0.035, 0.165, 0.185), vec3(0.045, 0.145, 0.210), uWinter) * lightLevel;
       vec3 underSky = mix(uSkyHorizonColor, uSkyTopColor, 0.45) * mix(0.48, 0.92, uDaylight);
       float sunTrans = pow(max(dot(-V, L), 0.0), 14.0) * smoothstep(-0.05, 0.25, L.y) * uDaylight;
-      float underCaust = causticsPattern(vWorldPos.xz + Nu.xz * 0.6, adv0, adv1, flowBlend, uTime);
+      float underCaust = causticsPattern(vWorldPos.xz + Nu.xz * 0.6, adv0, adv1, flowBlend, hasFlow, uTime);
       vec3 underCol = mix(underDeep, underSky, snellWindow * 0.62);
       underCol += uSunColor * (sunTrans * 0.85 + underCaust * 0.16 * uDaylight * snellWindow);
       float underAlpha = clamp(mix(0.76, 0.34, snellWindow), 0.22, 0.84) * shoreFade;
@@ -315,7 +326,7 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
     float clearSkySun = mix(1.0, 0.35, clamp(uCloudCoverage, 0.0, 1.0));
     float causticVis = exp(-depth * 2.15) * smoothstep(0.02, 0.22, depth) * uDaylight * clearSkySun;
     if (causticVis > 0.005) {
-      float caustics = causticsPattern(vWorldPos.xz + N.xz * 0.42, adv0, adv1, flowBlend, uTime);
+      float caustics = causticsPattern(vWorldPos.xz + N.xz * 0.42, adv0, adv1, flowBlend, hasFlow, uTime);
       bodyColor += uSunColor * caustics * causticVis * 0.24;
     }
 
@@ -355,28 +366,32 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
     color += specTint * glitter * (0.30 + 0.80 * sunHeightFade) * clearSkySun;
 
     // 6. Delicate natural shore meniscus & subtle shallow-riffle crest froth (no polka-dot noise)
-    float foamA =
-      snoise01((vWorldPos.xz + adv0) * 1.45) * 0.62 +
-      snoise01((vWorldPos.xz + adv0) * 3.7 + vec2(17.3, -9.1)) * 0.38;
-    float foamB =
-      snoise01((vWorldPos.xz + adv1) * 1.45) * 0.62 +
-      snoise01((vWorldPos.xz + adv1) * 3.7 + vec2(17.3, -9.1)) * 0.38;
-    float foamNoise = mix(foamA, foamB, flowBlend);
-    float lapWave = 0.5 + 0.5 * sin(depth * 18.0 - uTime * 1.85 + foamNoise * 3.6);
     float shoreBand = (1.0 - smoothstep(0.01, 0.14, depth)) * smoothstep(0.0, 0.03, depth);
-    float shoreFoam = shoreBand * smoothstep(0.62, 0.90, lapWave * 0.48 + foamNoise * 0.52) * detailAtten;
-
-    float flowSpeed = length(vFlow);
-    float slopeMag = length(waveD);
+    float flowSpeed = hasFlow ? sqrt(flowSpeedSq) : 0.0;
     float riffleMask =
       smoothstep(0.45, 0.95, flowSpeed) *
       smoothstep(0.06, 0.28, depth) *
       (1.0 - smoothstep(0.30, 0.72, depth));
-    float riffleFoam = riffleMask * smoothstep(0.30, 0.62, slopeMag + (foamNoise - 0.5) * 0.25) * 0.20 * detailAtten;
-
-    vec3 foamColor = mix(vec3(0.42, 0.48, 0.54), mix(vec3(0.84, 0.87, 0.86), uSunColor, 0.15), uDaylight);
-    float totalFoam = clamp(shoreFoam * 0.34 + riffleFoam, 0.0, 0.48);
-    color = mix(color, foamColor, totalFoam);
+    float totalFoam = 0.0;
+    if (shoreBand > 0.001 || riffleMask > 0.001) {
+      float foamA =
+        snoise01((vWorldPos.xz + adv0) * 1.45) * 0.62 +
+        snoise01((vWorldPos.xz + adv0) * 3.7 + vec2(17.3, -9.1)) * 0.38;
+      float foamNoise = foamA;
+      if (hasFlow) {
+        float foamB =
+          snoise01((vWorldPos.xz + adv1) * 1.45) * 0.62 +
+          snoise01((vWorldPos.xz + adv1) * 3.7 + vec2(17.3, -9.1)) * 0.38;
+        foamNoise = mix(foamA, foamB, flowBlend);
+      }
+      float lapWave = 0.5 + 0.5 * sin(depth * 18.0 - uTime * 1.85 + foamNoise * 3.6);
+      float shoreFoam = shoreBand * smoothstep(0.62, 0.90, lapWave * 0.48 + foamNoise * 0.52) * detailAtten;
+      float slopeMag = length(waveD);
+      float riffleFoam = riffleMask * smoothstep(0.30, 0.62, slopeMag + (foamNoise - 0.5) * 0.25) * 0.20 * detailAtten;
+      vec3 foamColor = mix(vec3(0.42, 0.48, 0.54), mix(vec3(0.84, 0.87, 0.86), uSunColor, 0.15), uDaylight);
+      totalFoam = clamp(shoreFoam * 0.34 + riffleFoam, 0.0, 0.48);
+      color = mix(color, foamColor, totalFoam);
+    }
 
     // 7. Depth-aware optical clarity alpha + smooth far-horizon dissolve
     float waterAlpha = clamp(
@@ -434,6 +449,7 @@ export function createRealisticWaterSurface(
   worldSize: number,
   segments = 160,
   extentMultiplier = 1.0,
+  precomputedHeights?: Float32Array,
 ): RealisticWaterSurface {
   const halfCore = worldSize * 0.56;
   const half = Math.max(halfCore, worldSize * extentMultiplier);
@@ -447,12 +463,17 @@ export function createRealisticWaterSurface(
 
   // Precompute grid heights to prune dry tiles far from water
   const cols = segments + 1;
-  const heights = new Float32Array(cols * cols);
-  for (let iz = 0; iz <= segments; iz++) {
-    const z = coords[iz];
-    for (let ix = 0; ix <= segments; ix++) {
-      const x = coords[ix];
-      heights[iz * cols + ix] = terrain.getHeightAt(x, z);
+  let heights: Float32Array;
+  if (precomputedHeights && precomputedHeights.length === cols * cols) {
+    heights = precomputedHeights;
+  } else {
+    heights = new Float32Array(cols * cols);
+    for (let iz = 0; iz <= segments; iz++) {
+      const z = coords[iz];
+      for (let ix = 0; ix <= segments; ix++) {
+        const x = coords[ix];
+        heights[iz * cols + ix] = terrain.getHeightAt(x, z);
+      }
     }
   }
 
@@ -550,7 +571,7 @@ export function createRealisticWaterSurface(
     mesh,
     update(dt: number, sky: SkyLightingState): void {
       uniforms.uTime.value += dt;
-      uniforms.uSunDirection.value.copy(sky.sunDirection);
+      uniforms.uSunDirection.value.copy(sky.sunDirection).normalize();
       uniforms.uSunColor.value.copy(sky.sunColor);
       uniforms.uSkyTopColor.value.copy(sky.skyTopColor);
       uniforms.uSkyHorizonColor.value.copy(sky.skyHorizonColor);

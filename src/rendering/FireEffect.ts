@@ -115,11 +115,12 @@ const FLAME_RIBBON_FRAG = /* glsl */ `
     // Branch B: Seamless 3D volumetric teardrop core (ensures lush volume even from top-down view)
     if (vLayer > 0.5) {
       float fresnelSoft = smoothstep(0.08, 0.72, ndotv);
+      float vMask = smoothstep(0.0, 0.14, y) * (1.0 - smoothstep(0.62, 1.0, y));
+      if (fresnelSoft * vMask <= 0.004) discard;
       vec2 cylCoord = vec2(vLocalPos.x * 4.8 - vLocalPos.z * 3.6 + seed, y * 2.9 - t * 2.65);
       float w1 = fbm4(cylCoord);
       float w2 = fbm4(vec2(vLocalPos.z * 5.6 + vLocalPos.x * 3.1 + w1 * 1.4, y * 5.1 - t * 4.2));
 
-      float vMask = smoothstep(0.0, 0.14, y) * (1.0 - smoothstep(0.62, 1.0, y));
       float density = fresnelSoft * vMask * (0.62 + w1 * 0.45 + w2 * 0.32 - y * 0.35);
       float flame = smoothstep(0.14, 0.78, density);
       if (flame <= 0.004) discard;
@@ -138,6 +139,11 @@ const FLAME_RIBBON_FRAG = /* glsl */ `
     // Branch A: Curved vertical flame ribbons with view-angle fade & licking turbulent tongues
     float cx = (vUv.x - 0.5) * 2.0; // -1..1 across ribbon
     float viewFade = smoothstep(0.06, 0.58, ndotv);
+    // Soft quad-boundary fade guarantees zero straight edges can ever appear
+    float edgeMask = (1.0 - smoothstep(0.66, 0.98, abs(cx)))
+                   * smoothstep(0.0, 0.11, y)
+                   * (1.0 - smoothstep(0.76, 1.0, y));
+    if (edgeMask <= 0.004 || viewFade <= 0.001) discard;
 
     vec2 warpUv = vec2(cx * 1.55 + seed, y * 2.15 - t * 2.2);
     float warp = fbm4(warpUv) - 0.5;
@@ -156,11 +162,6 @@ const FLAME_RIBBON_FRAG = /* glsl */ `
     float verticalDecay = 1.0 - pow(y, 1.28);
     float tongueNoise = (fine * 0.72 + wisps * 0.28) * (0.58 + y * 0.82);
     float density = baseShape * (0.48 + verticalDecay * 0.65) + (tongueNoise - 0.44) * (0.72 + y * 0.55);
-
-    // Soft quad-boundary fade guarantees zero straight edges can ever appear
-    float edgeMask = (1.0 - smoothstep(0.66, 0.98, abs(cx)))
-                   * smoothstep(0.0, 0.11, y)
-                   * (1.0 - smoothstep(0.76, 1.0, y));
 
     float flame = smoothstep(0.08, 0.78, density) * edgeMask;
     if (flame <= 0.004) discard;
@@ -471,7 +472,6 @@ const CHIMNEY_SMOKE_FRAG = /* glsl */ `
     vec2 warpedUv = rotUv + vec2(warpX, warpY) * (0.28 + vLife * 0.2);
 
     float density = fbm4(warpedUv * 4.8 + flow * 1.15);
-    float densityShift = fbm4((warpedUv + vec2(0.06, -0.06)) * 4.8 + flow * 1.15);
 
     // Delicate, airy gossamer filaments that curl and dissolve smoothly aloft
     float radial = smoothstep(0.5, 0.08, r);
@@ -486,6 +486,7 @@ const CHIMNEY_SMOKE_FRAG = /* glsl */ `
     float alpha = shape * fadeIn * fadeOut * 0.145;
     if (alpha <= 0.003) discard;
 
+    float densityShift = fbm4((warpedUv + vec2(0.06, -0.06)) * 4.8 + flow * 1.15);
     // Volumetric directional lighting: warm sunlit crests & soft cool shadowed undersides
     vec2 lobeGrad = vec2(densityShift - density, density - densityShift) * 2.4;
     vec3 pseudoNormal = normalize(vec3(uv.x * 1.7 + lobeGrad.x, -uv.y * 1.7 + lobeGrad.y + 0.35, 0.72));
