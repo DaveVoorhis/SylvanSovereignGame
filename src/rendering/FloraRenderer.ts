@@ -5,6 +5,13 @@ import { isPointNearBridge } from '@simulation/terrain/Bridge';
 import type { TreeSpot } from '@simulation/terrain/TerrainMap';
 import type { WorldState } from '@simulation/WorldState';
 import {
+  computeDeciduousPhenology,
+  createFallenLeafPatchGeo,
+  FallingLeafSystem,
+  type DeciduousPhenologyState,
+  type DeciduousTreeAnchor,
+} from './DeciduousPhenology';
+import {
   createBerryBushGeo,
   createBirchCanopyGeo,
   createCragSpireGeo,
@@ -13,6 +20,7 @@ import {
   createFernRosetteGeo,
   createGnarledOakTrunkGeo,
   createHorizonBroadleafGeo,
+  createHorizonBroadleafTrunkGeo,
   createLilyPadGeo,
   createLotusBloomGeo,
   createMossyBoulderGeo,
@@ -38,6 +46,9 @@ interface FoliageUniforms {
   uDaylight: { value: number };
   uCloudTime: { value: number };
   uCloudCoverage: { value: number };
+  uLeafCoverage: { value: number };
+  uAutumnBrown: { value: number };
+  uSpringSprout: { value: number };
 }
 
 interface ClearableTreeGroup {
@@ -116,23 +127,63 @@ function makeNormalOrBumpProps(
 }
 
 /**
- * Shared vertex wind displacement chunk used by both color and shadow-depth foliage passes
- * so dappled leaf shadows sway organically in perfect sync with the canopy.
+ * Shared vertex phenology + wind displacement chunk used by both color and shadow-depth
+ * deciduous foliage passes so shedding, spring bud sprouting, and dappled leaf shadows
+ * stay in exact lockstep.
  */
-function buildCanopyWindVertexChunk(windAmp: number): string {
+function buildDeciduousCanopyVertexChunk(windAmp: number, writeColorVaryings: boolean): string {
   return `#include <begin_vertex>
     vec3 instOrigin = vec3(0.0);
     #ifdef USE_INSTANCING
       instOrigin = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
     #endif
+    float treeSeed = fract(sin(dot(instOrigin.xz, vec2(12.9898, 78.233))) * 43758.5453);
+    float treeJitter = (treeSeed - 0.5) * 0.16;
+    float shedCenter = clamp(aLeafOrder.x * 0.72 + 0.14 + treeJitter * 0.6, 0.08, 0.92);
+
+    float leafScale = 1.0;
+    float leafDroop = 0.0;
+    float leafAlphaCut = 0.0;
+    float cardBud = 0.0;
+    if (uLeafCoverage <= 0.001) {
+      leafScale = 0.0;
+      leafAlphaCut = 1.0;
+    } else if (uSpringSprout > 0.001) {
+      // Spring sprouting: tender buds unfurl together across every branch with organic stagger
+      float budStart = clamp(aLeafOrder.x * 0.24 + treeSeed * 0.06, 0.0, 0.30);
+      float grow = smoothstep(budStart, budStart + 0.56, uLeafCoverage);
+      leafScale = grow > 0.001 ? mix(0.20, 1.0, pow(grow, 0.72)) : 0.0;
+      leafAlphaCut = (1.0 - grow) * 0.22;
+      cardBud = uSpringSprout * (1.0 - grow * 0.55);
+    } else if (uLeafCoverage < 0.999) {
+      // Autumn shedding: outer/upper brown leaf sprays droop, thin out, and drop off card by card
+      float retain = smoothstep(shedCenter - 0.08, shedCenter + 0.08, uLeafCoverage);
+      leafScale = retain > 0.001 ? mix(0.32, 1.0, retain) : 0.0;
+      leafDroop = (1.0 - retain) * 0.36;
+      leafAlphaCut = (1.0 - retain) * 0.42;
+    }
+
+    transformed = aCardCenter + (transformed - aCardCenter) * leafScale;
+    transformed.y -= leafDroop;
+    vLeafAlphaCut = leafAlphaCut;
+    ${
+      writeColorVaryings
+        ? `float brownLead = (shedCenter - 0.5) * 0.38 + (aLeafOrder.y - 0.5) * 0.24;
+    vCardBrown = uAutumnBrown > 0.001
+      ? clamp(uAutumnBrown * 1.24 + brownLead * smoothstep(0.0, 0.24, uAutumnBrown), 0.0, 1.0)
+      : 0.0;
+    vCardBud = cardBud;
+    vCardSeed = aLeafOrder.y;`
+        : ''
+    }
     float canopyMask = smoothstep(2.0, 6.8, position.y);
     float phase = uTime * (1.45 + uWindStrength * 1.15) + instOrigin.x * 0.27 + instOrigin.z * 0.21;
     float gust = sin(phase + position.y * 0.45) * 0.65 + cos(phase * 1.8 + position.x * 1.3 + position.z * 1.1) * 0.35;
     float flutter = sin(uTime * 4.2 + position.x * 3.1 + position.z * 2.7 + instOrigin.x) * 0.22;
-    float sway = (gust + flutter) * ${windAmp.toFixed(3)} * (0.65 + uWindStrength * 0.95) * canopyMask;
+    float sway = (gust + flutter) * ${windAmp.toFixed(3)} * (0.65 + uWindStrength * 0.95) * canopyMask * leafScale;
     transformed.x += sway;
     transformed.z += sway * 0.68;
-    transformed.y += flutter * 0.042 * canopyMask;`;
+    transformed.y += flutter * 0.042 * canopyMask * leafScale;`;
 }
 
 function enhanceFoliageDepthMaterial(
@@ -140,24 +191,44 @@ function enhanceFoliageDepthMaterial(
   uniforms: FoliageUniforms,
   windAmp: number,
 ): void {
-  mat.customProgramCacheKey = () => `forest-foliage-depth-${windAmp.toFixed(3)}`;
+  mat.customProgramCacheKey = () => `forest-deciduous-depth-v2-${windAmp.toFixed(3)}`;
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = uniforms.uTime;
     shader.uniforms.uWindStrength = uniforms.uWindStrength;
+    shader.uniforms.uLeafCoverage = uniforms.uLeafCoverage;
+    shader.uniforms.uSpringSprout = uniforms.uSpringSprout;
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
         `#include <common>
+        attribute vec3 aCardCenter;
+        attribute vec2 aLeafOrder;
         uniform float uTime;
-        uniform float uWindStrength;`,
+        uniform float uWindStrength;
+        uniform float uLeafCoverage;
+        uniform float uSpringSprout;
+        varying float vLeafAlphaCut;`,
       )
-      .replace('#include <begin_vertex>', buildCanopyWindVertexChunk(windAmp));
+      .replace('#include <begin_vertex>', buildDeciduousCanopyVertexChunk(windAmp, false));
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        varying float vLeafAlphaCut;`,
+      )
+      .replace(
+        '#include <alphatest_fragment>',
+        `diffuseColor.a -= vLeafAlphaCut;
+        #include <alphatest_fragment>`,
+      );
   };
 }
 
 /**
  * Enhances a standard foliage material with gentle GPU breeze flutter, natural backlit
- * chlorophyll translucency, and synchronized drifting cloud shadows.
+ * chlorophyll translucency, synchronized drifting cloud shadows, and full deciduous
+ * phenology (autumn browning, progressive card shedding, and spring bud sprouting).
  */
 function enhanceBotanicalFoliageMaterial(
   mat: THREE.MeshStandardMaterial,
@@ -165,7 +236,7 @@ function enhanceBotanicalFoliageMaterial(
   windAmp: number,
   translucency: number,
 ): void {
-  mat.customProgramCacheKey = () => `forest-foliage-v2-${windAmp.toFixed(2)}-${translucency.toFixed(2)}`;
+  mat.customProgramCacheKey = () => `forest-deciduous-foliage-v3-${windAmp.toFixed(2)}-${translucency.toFixed(2)}`;
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = uniforms.uTime;
     shader.uniforms.uWindStrength = uniforms.uWindStrength;
@@ -174,16 +245,28 @@ function enhanceBotanicalFoliageMaterial(
     shader.uniforms.uDaylight = uniforms.uDaylight;
     shader.uniforms.uCloudTime = uniforms.uCloudTime;
     shader.uniforms.uCloudCoverage = uniforms.uCloudCoverage;
+    shader.uniforms.uLeafCoverage = uniforms.uLeafCoverage;
+    shader.uniforms.uAutumnBrown = uniforms.uAutumnBrown;
+    shader.uniforms.uSpringSprout = uniforms.uSpringSprout;
 
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
         `#include <common>
+        attribute vec3 aCardCenter;
+        attribute vec2 aLeafOrder;
         uniform float uTime;
         uniform float uWindStrength;
-        varying vec3 vFoliageWorldPos;`,
+        uniform float uLeafCoverage;
+        uniform float uAutumnBrown;
+        uniform float uSpringSprout;
+        varying vec3 vFoliageWorldPos;
+        varying float vLeafAlphaCut;
+        varying float vCardBrown;
+        varying float vCardBud;
+        varying float vCardSeed;`,
       )
-      .replace('#include <begin_vertex>', buildCanopyWindVertexChunk(windAmp))
+      .replace('#include <begin_vertex>', buildDeciduousCanopyVertexChunk(windAmp, true))
       .replace(
         '#include <project_vertex>',
         `#include <project_vertex>
@@ -205,6 +288,10 @@ function enhanceBotanicalFoliageMaterial(
         uniform float uCloudTime;
         uniform float uCloudCoverage;
         varying vec3 vFoliageWorldPos;
+        varying float vLeafAlphaCut;
+        varying float vCardBrown;
+        varying float vCardBud;
+        varying float vCardSeed;
 
         float fHash21(vec2 p) {
           p = fract(p * vec2(127.1, 311.7));
@@ -223,21 +310,139 @@ function enhanceBotanicalFoliageMaterial(
         }`,
       )
       .replace(
+        '#include <alphatest_fragment>',
+        `diffuseColor.a -= vLeafAlphaCut;
+        #include <alphatest_fragment>
+        if (vCardBrown > 0.001) {
+          float bLum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+          vec3 russetCol = bLum * vec3(1.80, 0.88, 0.22);
+          vec3 dryBrownCol = bLum * vec3(1.50, 0.68, 0.24) * mix(0.84, 1.06, vCardSeed);
+          vec3 autumnCol = mix(russetCol, dryBrownCol, smoothstep(0.18, 0.78, vCardBrown));
+          diffuseColor.rgb = mix(diffuseColor.rgb, autumnCol, vCardBrown * 0.88);
+        } else if (vCardBud > 0.001) {
+          float sLum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+          vec3 youngBudCol = sLum * vec3(0.96, 1.38, 0.38);
+          diffuseColor.rgb = mix(diffuseColor.rgb, youngBudCol, vCardBud * 0.42);
+        }`,
+      )
+      .replace(
         '#include <opaque_fragment>',
         `if (uDaylight > 0.001) {
           vec3 fViewDir = normalize(cameraPosition - vFoliageWorldPos);
           float backLit = pow(clamp(dot(fViewDir, -uSunDir), 0.0, 1.0), 3.2);
-          // Natural chlorophyll warmth when sunlit from behind
-          vec3 sssTint = diffuseColor.rgb * vec3(1.12, 1.18, 0.72);
+          // Shift backlit translucency from chlorophyll green to dry amber-brown parchment in autumn
+          vec3 greenSss = diffuseColor.rgb * vec3(1.12, 1.18, 0.72);
+          vec3 brownSss = diffuseColor.rgb * vec3(1.18, 0.82, 0.40);
+          vec3 sssTint = mix(greenSss, brownSss, vCardBrown);
+          float sssScale = mix(1.0, 0.55, vCardBrown);
           vec2 fCloudUv = vFoliageWorldPos.xz * 0.0046 + vec2(uCloudTime * 0.011, uCloudTime * 0.0045);
           float fCloudN = fNoise2(fCloudUv) * 0.65 + fNoise2(fCloudUv * 2.1 + 4.3) * 0.35;
           float fCloudThresh = mix(0.64, 0.34, clamp(uCloudCoverage, 0.0, 1.0));
           float fCloudShadow = smoothstep(fCloudThresh, fCloudThresh + 0.22, fCloudN);
           float fSunVis = mix(1.0, 0.72, fCloudShadow * uDaylight * (1.0 - uCloudCoverage * 0.35));
           outgoingLight *= fSunVis;
-          outgoingLight += sssTint * uSunColor * (0.14 + 0.86 * backLit) * uDaylight * fSunVis * ${translucency.toFixed(3)};
+          outgoingLight += sssTint * uSunColor * (0.14 + 0.86 * backLit) * uDaylight * fSunVis * ${translucency.toFixed(3)} * sssScale;
         }
         #include <opaque_fragment>`,
+      );
+  };
+}
+
+/**
+ * Lightweight deciduous phenology shader for distant horizon broadleaf tree ridges
+ * (browning, progressive autumn shedding, winter bareness, and spring sprouting).
+ */
+function enhanceHorizonDeciduousMaterial(
+  mat: THREE.MeshStandardMaterial,
+  uniforms: FoliageUniforms,
+): void {
+  mat.customProgramCacheKey = () => 'forest-horizon-deciduous-v1';
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uLeafCoverage = uniforms.uLeafCoverage;
+    shader.uniforms.uAutumnBrown = uniforms.uAutumnBrown;
+    shader.uniforms.uSpringSprout = uniforms.uSpringSprout;
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        attribute vec3 aCardCenter;
+        attribute vec2 aLeafOrder;
+        uniform float uLeafCoverage;
+        uniform float uAutumnBrown;
+        uniform float uSpringSprout;
+        varying float vLeafAlphaCut;
+        varying float vCardBrown;
+        varying float vCardSeed;`,
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        vec3 hOrigin = vec3(0.0);
+        #ifdef USE_INSTANCING
+          hOrigin = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
+        #endif
+        float hSeed = fract(sin(dot(hOrigin.xz, vec2(12.9898, 78.233))) * 43758.5453);
+        float hShedCenter = clamp(aLeafOrder.x * 0.72 + 0.14 + (hSeed - 0.5) * 0.12, 0.08, 0.92);
+        float hScale = 1.0;
+        float hCut = 0.0;
+        if (uLeafCoverage <= 0.001) {
+          hScale = 0.0;
+          hCut = 1.0;
+        } else if (uSpringSprout > 0.001) {
+          float hGrow = smoothstep(clamp(aLeafOrder.x * 0.24 + hSeed * 0.06, 0.0, 0.30), clamp(aLeafOrder.x * 0.24 + hSeed * 0.06, 0.0, 0.30) + 0.56, uLeafCoverage);
+          hScale = hGrow > 0.001 ? mix(0.22, 1.0, pow(hGrow, 0.72)) : 0.0;
+          hCut = (1.0 - hGrow) * 0.20;
+        } else if (uLeafCoverage < 0.999) {
+          float hRetain = smoothstep(hShedCenter - 0.08, hShedCenter + 0.08, uLeafCoverage);
+          hScale = hRetain > 0.001 ? mix(0.35, 1.0, hRetain) : 0.0;
+          hCut = (1.0 - hRetain) * 0.40;
+        }
+        transformed = aCardCenter + (transformed - aCardCenter) * hScale;
+        vLeafAlphaCut = hCut;
+        vCardBrown = uAutumnBrown > 0.001 ? clamp(uAutumnBrown * 1.2 + (hShedCenter - 0.5) * 0.32, 0.0, 1.0) : 0.0;
+        vCardSeed = aLeafOrder.y;`,
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        varying float vLeafAlphaCut;
+        varying float vCardBrown;
+        varying float vCardSeed;`,
+      )
+      .replace(
+        '#include <alphatest_fragment>',
+        `diffuseColor.a -= vLeafAlphaCut;
+        #include <alphatest_fragment>
+        if (vCardBrown > 0.001) {
+          float hLum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+          vec3 hRusset = hLum * vec3(1.72, 0.86, 0.24);
+          vec3 hBrown = hLum * vec3(1.45, 0.66, 0.25) * mix(0.86, 1.06, vCardSeed);
+          diffuseColor.rgb = mix(diffuseColor.rgb, mix(hRusset, hBrown, smoothstep(0.18, 0.78, vCardBrown)), vCardBrown * 0.85);
+        }`,
+      );
+  };
+}
+
+function enhanceFallenLitterMaterial(
+  mat: THREE.MeshStandardMaterial,
+  uLitterScale: { value: number },
+): void {
+  mat.customProgramCacheKey = () => 'forest-fallen-litter-v1';
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uLitterScale = uLitterScale;
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        uniform float uLitterScale;`,
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        transformed *= uLitterScale;`,
       );
   };
 }
@@ -448,16 +653,25 @@ export class FloraRenderer {
   private readonly fairyLanternMat: THREE.MeshStandardMaterial;
   private readonly wildflowerGroup = new THREE.Group();
   private readonly lilyGroup = new THREE.Group();
+  private readonly fallenLitterGroup = new THREE.Group();
+  private readonly fallenLitterUniform = { value: 0 };
+  private readonly deciduousCrownMeshes: THREE.InstancedMesh[] = [];
+  private readonly deciduousTreeAnchors: DeciduousTreeAnchor[] = [];
+  private readonly fallingLeafSystem: FallingLeafSystem | null = null;
   private readonly clearableTreeGroups: ClearableTreeGroup[] = [];
   private readonly zeroMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
   private readonly proceduralPineChunks: ProceduralPineForestResult[] = [];
   private readonly foliageMats: THREE.MeshStandardMaterial[];
   private readonly disposables: (THREE.BufferGeometry | THREE.Material)[] = [];
   private readonly foliageUniforms: FoliageUniforms;
+  private currentPhenology: DeciduousPhenologyState;
   private lastSeason: Season | null = null;
   private lastStructureRevision = -1;
   private lastClimateTintCode = -1;
+  private lastPhenologyTintCode = -1;
   private readonly tmpClimateTint = new THREE.Color();
+  private readonly tmpPaletteA = new THREE.Color();
+  private readonly tmpPaletteB = new THREE.Color();
 
   constructor(
     scene: THREE.Scene,
@@ -465,6 +679,12 @@ export class FloraRenderer {
     textures: TextureLibrary,
     grassMultiplier = 1.0,
   ) {
+    this.currentPhenology = computeDeciduousPhenology(
+      world.season,
+      world.day,
+      world.timeOfDay,
+      world.config.daysPerSeason,
+    );
     this.foliageUniforms = {
       uTime: { value: 0 },
       uWindStrength: { value: 0.25 },
@@ -473,6 +693,9 @@ export class FloraRenderer {
       uDaylight: { value: 1.0 },
       uCloudTime: { value: 0 },
       uCloudCoverage: { value: 0.38 },
+      uLeafCoverage: { value: this.currentPhenology.leafCoverage },
+      uAutumnBrown: { value: this.currentPhenology.brownAmount },
+      uSpringSprout: { value: this.currentPhenology.springSprout },
     };
 
     // Filter out trees sitting directly inside initial settlement clearings
@@ -561,6 +784,7 @@ export class FloraRenderer {
       side: THREE.DoubleSide,
       vertexColors: true,
     });
+    enhanceHorizonDeciduousMaterial(this.distantBroadleafMat, this.foliageUniforms);
 
     const oakDepthMat = new THREE.MeshDepthMaterial({
       depthPacking: THREE.RGBADepthPacking,
@@ -715,14 +939,20 @@ export class FloraRenderer {
         finalizeInstancedBounds(trunks, 0.5);
         finalizeInstancedBounds(crowns, 1.5);
         this.group.add(trunks, crowns);
-        this.clearableTreeGroups.push({
+        this.deciduousCrownMeshes.push(crowns);
+        const groupRecord: ClearableTreeGroup = {
           spots: chunkSpots,
           trunks,
           crowns,
           cleared: new Uint8Array(chunk.length),
           savedTrunks: new Map(),
           savedCrowns: new Map(),
-        });
+        };
+        this.clearableTreeGroups.push(groupRecord);
+        for (let ci = 0; ci < chunkSpots.length; ci++) {
+          const idx = ci;
+          this.deciduousTreeAnchors.push({ spot: chunkSpots[idx], isCleared: () => groupRecord.cleared[idx] !== 0 });
+        }
       }
 
       if (lanternPositions.length > 0) {
@@ -801,20 +1031,37 @@ export class FloraRenderer {
         finalizeInstancedBounds(trunks, 0.5);
         finalizeInstancedBounds(crowns, 1.5);
         this.group.add(trunks, crowns);
-        this.clearableTreeGroups.push({
+        this.deciduousCrownMeshes.push(crowns);
+        const groupRecord: ClearableTreeGroup = {
           spots: chunkSpots,
           trunks,
           crowns,
           cleared: new Uint8Array(chunk.length),
           savedTrunks: new Map(),
           savedCrowns: new Map(),
-        });
+        };
+        this.clearableTreeGroups.push(groupRecord);
+        for (let ci = 0; ci < chunkSpots.length; ci++) {
+          const idx = ci;
+          this.deciduousTreeAnchors.push({ spot: chunkSpots[idx], isCleared: () => groupRecord.cleared[idx] !== 0 });
+        }
       }
     }
 
     // 3b. Endless Horizon Woodland Ring — feathery botanical card canopies across distant hills
     const rng = world.rng.fork();
     this.buildHorizonForestRing(rng, dummy, tint);
+
+    // 3c. Falling Autumn Leaves & Fallen Brown Leaf Litter Beneath Deciduous Trees
+    if (this.deciduousTreeAnchors.length > 0) {
+      const leafBudget = Math.round(520 * THREE.MathUtils.clamp(grassMultiplier, 0.5, 1.4));
+      this.fallingLeafSystem = new FallingLeafSystem(
+        this.deciduousTreeAnchors,
+        (x, z) => world.terrain.getHeightAt(x, z),
+        leafBudget,
+      );
+      this.group.add(this.fallingLeafSystem.mesh);
+    }
 
     // 4. Sculpted Mossy Woodland Boulders vs. Sharp Alpine Crags & Desert Outcrops
     if (world.terrain.rocks.length > 0) {
@@ -1332,8 +1579,100 @@ export class FloraRenderer {
     }
 
     scene.add(this.group);
-    this.updateSeasonPalette(world.season);
     this.clearTreesNearBuildings();
+    this.lastStructureRevision = world.structureRevision;
+    if (this.deciduousTreeAnchors.length > 0) {
+      this.buildFallenLeafLitter(rng, dummy, tint, mapHalfExtent);
+    }
+    this.syncDeciduousPhenology(0, 0.25, undefined);
+  }
+
+  getPhenology(): DeciduousPhenologyState {
+    return this.currentPhenology;
+  }
+
+  getFallingLeafCount(): number {
+    return this.fallingLeafSystem?.activeLeafCount ?? 0;
+  }
+
+  private buildFallenLeafLitter(
+    rng: WorldState['rng'],
+    dummy: THREE.Object3D,
+    tint: THREE.Color,
+    mapHalfExtent: number,
+  ): void {
+    const litterGeo = createFallenLeafPatchGeo();
+    const litterMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.90,
+      metalness: 0.0,
+      side: THREE.DoubleSide,
+    });
+    enhanceFallenLitterMaterial(litterMat, this.fallenLitterUniform);
+    this.disposables.push(litterGeo, litterMat);
+
+    const oakPalette = [0x6e4120, 0x824c25, 0x5c371c, 0x8e592b];
+    const birchPalette = [0x8b622b, 0x765124, 0x996d30, 0x674621];
+    const up = new THREE.Vector3(0, 1, 0);
+    const normal = new THREE.Vector3();
+    const quat = new THREE.Quaternion();
+    const spinQuat = new THREE.Quaternion();
+    const patches: Array<{ x: number; y: number; z: number; scale: number; rotY: number; colorHex: number }> = [];
+
+    const waterLevel = this.world.terrain.waterLevel;
+    for (let i = 0; i < this.deciduousTreeAnchors.length; i++) {
+      if (this.deciduousTreeAnchors[i].isCleared()) continue;
+      const t = this.deciduousTreeAnchors[i].spot;
+      const perTree = t.kind === 'oak' ? 2 : 1;
+      const palette = t.kind === 'oak' ? oakPalette : birchPalette;
+      for (let k = 0; k < perTree; k++) {
+        const a = rng.range(0, Math.PI * 2);
+        const r = rng.range(0.95, t.kind === 'oak' ? 3.4 : 2.3) * t.scale;
+        const px = t.x + Math.cos(a) * r;
+        const pz = t.z + Math.sin(a) * r;
+        const py = this.world.terrain.getHeightAt(px, pz);
+        if (py < waterLevel + 0.16) continue;
+        patches.push({
+          x: px,
+          y: py + 0.025,
+          z: pz,
+          scale: rng.range(0.85, 1.45),
+          rotY: rng.range(0, Math.PI * 2),
+          colorHex: palette[(i + k) % palette.length],
+        });
+      }
+    }
+
+    const chunks = partitionByGrid(patches, (p) => p.x, (p) => p.z, mapHalfExtent, 5);
+    for (const chunk of chunks) {
+      const mesh = new THREE.InstancedMesh(litterGeo, litterMat, chunk.length);
+      mesh.receiveShadow = true;
+      mesh.castShadow = false;
+      for (let i = 0; i < chunk.length; i++) {
+        const p = chunk[i];
+        const hL = this.world.terrain.getHeightAt(p.x - 0.5, p.z);
+        const hR = this.world.terrain.getHeightAt(p.x + 0.5, p.z);
+        const hD = this.world.terrain.getHeightAt(p.x, p.z - 0.5);
+        const hU = this.world.terrain.getHeightAt(p.x, p.z + 0.5);
+        normal.set(hL - hR, 1.0, hD - hU).normalize();
+        quat.setFromUnitVectors(up, normal);
+        spinQuat.setFromAxisAngle(up, p.rotY);
+        quat.multiply(spinQuat);
+
+        dummy.position.set(p.x, p.y, p.z);
+        dummy.quaternion.copy(quat);
+        dummy.scale.setScalar(p.scale);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+        tint.setHex(p.colorHex);
+        mesh.setColorAt(i, tint);
+      }
+      finalizeInstancedBounds(mesh, 0.2);
+      this.fallenLitterGroup.add(mesh);
+    }
+    this.fallenLitterGroup.name = 'deciduous-fallen-litter';
+    this.fallenLitterGroup.visible = false;
+    this.group.add(this.fallenLitterGroup);
   }
 
   private buildHorizonForestRing(
@@ -1343,9 +1682,7 @@ export class FloraRenderer {
   ): void {
     // Procedurally unique multi-tier distant conifers + broadleaves across distant hills
     const distantOakGeo = createHorizonBroadleafGeo();
-
-    const trunkGeo = new THREE.CylinderGeometry(0.28, 0.50, 3.2, 5);
-    trunkGeo.translate(0, 1.5, 0);
+    const trunkGeo = createHorizonBroadleafTrunkGeo();
     const trunkMat = new THREE.MeshStandardMaterial({ color: 0x453629, roughness: 0.96 });
 
     this.disposables.push(distantOakGeo, trunkGeo, trunkMat);
@@ -1455,23 +1792,12 @@ export class FloraRenderer {
         finalizeInstancedBounds(oakMesh, 1.5);
         finalizeInstancedBounds(oakTrunkMesh, 0.5);
         this.group.add(oakTrunkMesh, oakMesh);
+        this.deciduousCrownMeshes.push(oakMesh);
       }
     }
   }
 
-  update(dt = 0, sky?: SkyLightingState): void {
-    const heat = this.world.climateHeat;
-    const freeze = this.world.climateFreeze;
-    const miasma = this.world.miasmaIntensity;
-    const climateCode =
-      ((Math.round(heat * 20) & 0xff) << 16) |
-      ((Math.round(freeze * 20) & 0xff) << 8) |
-      (Math.round(miasma * 20) & 0xff);
-    if (this.lastSeason !== this.world.season || climateCode !== this.lastClimateTintCode) {
-      this.lastClimateTintCode = climateCode;
-      this.updateSeasonPalette(this.world.season, heat, freeze, miasma);
-    }
-
+  update(dt = 0, sky?: SkyLightingState, focusTarget?: THREE.Vector3): void {
     if (this.world.structureRevision !== this.lastStructureRevision) {
       this.lastStructureRevision = this.world.structureRevision;
       this.clearTreesNearBuildings();
@@ -1488,6 +1814,8 @@ export class FloraRenderer {
       this.foliageUniforms.uCloudCoverage.value = sky.cloudCoverage ?? 0.38;
     }
 
+    this.syncDeciduousPhenology(dt, sky?.windStrength ?? 0.25, focusTarget);
+
     const t = this.world.elapsedSeconds;
     this.lilyGroup.position.y = this.world.floodSurge + Math.sin(t * 1.45) * 0.018;
 
@@ -1495,6 +1823,65 @@ export class FloraRenderer {
     const sunY = Math.sin((this.world.timeOfDay - 0.25) * Math.PI * 2);
     const nightAmt = THREE.MathUtils.clamp(1 - (sunY + 0.08) * 2.6, 0.0, 1.35);
     this.fairyLanternMat.emissiveIntensity = nightAmt * (1.25 + Math.sin(t * 3.8) * 0.16);
+  }
+
+  private syncDeciduousPhenology(
+    dt: number,
+    windStrength: number,
+    focusTarget?: THREE.Vector3,
+  ): void {
+    const phenology = computeDeciduousPhenology(
+      this.world.season,
+      this.world.day,
+      this.world.timeOfDay,
+      this.world.config.daysPerSeason,
+    );
+    this.currentPhenology = phenology;
+
+    this.foliageUniforms.uLeafCoverage.value = phenology.leafCoverage;
+    this.foliageUniforms.uAutumnBrown.value = phenology.brownAmount;
+    this.foliageUniforms.uSpringSprout.value = phenology.springSprout;
+
+    for (let i = 0; i < this.deciduousCrownMeshes.length; i++) {
+      this.deciduousCrownMeshes[i].visible = phenology.crownsVisible;
+    }
+
+    const heat = this.world.climateHeat;
+    const freeze = this.world.climateFreeze;
+    const miasma = this.world.miasmaIntensity;
+    const climateCode =
+      ((Math.round(heat * 20) & 0xff) << 16) |
+      ((Math.round(freeze * 20) & 0xff) << 8) |
+      (Math.round(miasma * 20) & 0xff);
+    const phenologyTintCode =
+      (Math.round(phenology.brownAmount * 50) << 8) | Math.round(phenology.springSprout * 50);
+    if (
+      this.lastSeason !== this.world.season ||
+      climateCode !== this.lastClimateTintCode ||
+      phenologyTintCode !== this.lastPhenologyTintCode
+    ) {
+      this.lastClimateTintCode = climateCode;
+      this.lastPhenologyTintCode = phenologyTintCode;
+      this.updateSeasonPalette(this.world.season, phenology, heat, freeze, miasma);
+    }
+
+    const litterScale = phenology.groundLitterAmount * (1 - THREE.MathUtils.clamp(freeze * 1.4, 0, 1));
+    this.fallenLitterUniform.value = litterScale;
+    this.fallenLitterGroup.visible = litterScale > 0.01;
+
+    if (this.fallingLeafSystem) {
+      const fx = focusTarget?.x ?? this.world.settlements[0]?.center.x ?? 0;
+      const fz = focusTarget?.z ?? this.world.settlements[0]?.center.z ?? 0;
+      this.fallingLeafSystem.update(
+        dt,
+        this.world.elapsedSeconds,
+        windStrength,
+        phenology,
+        fx,
+        fz,
+        this.world.structureRevision,
+      );
+    }
   }
 
   private clearTreesNearBuildings(): void {
@@ -1586,17 +1973,31 @@ export class FloraRenderer {
     }
   }
 
-  private updateSeasonPalette(season: Season, heat = 0, freeze = 0, miasma = 0): void {
+  private updateSeasonPalette(
+    season: Season,
+    phenology: DeciduousPhenologyState,
+    heat = 0,
+    freeze = 0,
+    miasma = 0,
+  ): void {
     this.lastSeason = season;
     this.wildflowerGroup.visible = season !== 'winter' && freeze < 0.55;
 
     // Calibrated naturalistic chlorophyll & seasonal pigments (photographic, non-neon)
     if (season === 'spring') {
-      this.oakFoliageMat.color.setHex(0x4f783b);
+      // Tender fresh spring sprout green maturing into rich spring canopy green
+      const bud = phenology.springSprout;
+      this.oakFoliageMat.color
+        .setHex(0x4f783b)
+        .lerp(this.tmpPaletteA.setHex(0x6c9942), bud * 0.85);
+      this.birchFoliageMat.color
+        .setHex(0x74994a)
+        .lerp(this.tmpPaletteA.setHex(0x90ba56), bud * 0.85);
+      this.distantBroadleafMat.color
+        .setHex(0x456b36)
+        .lerp(this.tmpPaletteA.setHex(0x5e863c), bud * 0.85);
       this.pineFoliageMat.color.setHex(0x2d583c);
-      this.birchFoliageMat.color.setHex(0x74994a);
       this.distantPineMat.color.setHex(0x284d35);
-      this.distantBroadleafMat.color.setHex(0x456b36);
       this.grassMat.color.setHex(0xa8c27e);
       this.fernMat.color.setHex(0xf2f5ee);
       this.bushMat.color.setHex(0x486e36);
@@ -1610,20 +2011,37 @@ export class FloraRenderer {
       this.fernMat.color.setHex(0xe2ebd9);
       this.bushMat.color.setHex(0x3c5f2f);
     } else if (season === 'autumn') {
-      this.oakFoliageMat.color.setHex(0xb86631);
+      // Progressive deciduous autumn senescence: late-summer green -> russet/amber -> withered earthy brown
+      const b = phenology.brownAmount;
+      if (b < 0.45) {
+        const t = b / 0.45;
+        this.oakFoliageMat.color.setHex(0x3e6631).lerp(this.tmpPaletteA.setHex(0xaa622b), t);
+        this.birchFoliageMat.color.setHex(0x5e8542).lerp(this.tmpPaletteA.setHex(0xc28f34), t);
+        this.distantBroadleafMat.color.setHex(0x385c2d).lerp(this.tmpPaletteA.setHex(0x94572a), t);
+      } else {
+        const t = (b - 0.45) / 0.55;
+        this.oakFoliageMat.color
+          .setHex(0xaa622b)
+          .lerp(this.tmpPaletteB.setHex(0x7a4924), t);
+        this.birchFoliageMat.color
+          .setHex(0xc28f34)
+          .lerp(this.tmpPaletteB.setHex(0x8a5e2a), t);
+        this.distantBroadleafMat.color
+          .setHex(0x94572a)
+          .lerp(this.tmpPaletteB.setHex(0x6b4324), t);
+      }
       this.pineFoliageMat.color.setHex(0x314f3d);
-      this.birchFoliageMat.color.setHex(0xcfa544);
       this.distantPineMat.color.setHex(0x2b4535);
-      this.distantBroadleafMat.color.setHex(0x9a5c30);
       this.grassMat.color.setHex(0xbda068);
       this.fernMat.color.setHex(0xb8965d);
       this.bushMat.color.setHex(0x9e6e42);
     } else {
-      this.oakFoliageMat.color.setHex(0xa8b5bf);
+      // Winter: deciduous canopies are completely bare (crowns.visible = false); keep dry brown base pigment
+      this.oakFoliageMat.color.setHex(0x6b4323);
+      this.birchFoliageMat.color.setHex(0x755126);
+      this.distantBroadleafMat.color.setHex(0x5e3c21);
       this.pineFoliageMat.color.setHex(0x4f6d67);
-      this.birchFoliageMat.color.setHex(0xbec8d0);
       this.distantPineMat.color.setHex(0x48625e);
-      this.distantBroadleafMat.color.setHex(0x99a6b0);
       this.grassMat.color.setHex(0xc2ccd2);
       this.fernMat.color.setHex(0x8b9ea6);
       this.bushMat.color.setHex(0x98a8b2);
@@ -1655,6 +2073,7 @@ export class FloraRenderer {
   }
 
   dispose(): void {
+    this.fallingLeafSystem?.dispose();
     for (const d of this.disposables) {
       d.dispose();
     }

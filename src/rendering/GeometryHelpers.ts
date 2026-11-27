@@ -62,8 +62,10 @@ export function paintVertexColors(
 export function mergePartGeometries(
   parts: THREE.BufferGeometry[],
   withColors = false,
+  extraAttributes: readonly string[] = [],
 ): THREE.BufferGeometry {
   const normalized: THREE.BufferGeometry[] = [];
+  const extraSet = extraAttributes.length > 0 ? new Set(extraAttributes) : null;
 
   for (const src of parts) {
     const g = src;
@@ -88,7 +90,13 @@ export function mergePartGeometries(
     }
     // Strip any stray attributes so mergeGeometries never fails
     for (const key of Object.keys(g.attributes)) {
-      if (key !== 'position' && key !== 'normal' && key !== 'uv' && (!withColors || key !== 'color')) {
+      if (
+        key !== 'position' &&
+        key !== 'normal' &&
+        key !== 'uv' &&
+        (!withColors || key !== 'color') &&
+        !(extraSet && extraSet.has(key))
+      ) {
         g.deleteAttribute(key);
       }
     }
@@ -253,6 +261,35 @@ function createCuppedLeafCard(width: number, height: number, cupDepth = 0.24): T
 }
 
 /**
+ * Stamps each vertex of a deciduous leaf-spray card with its local card pivot (`aCardCenter`)
+ * and deterministic seasonal phenology metadata (`aLeafOrder = vec2(shedOrder, colorSeed)`),
+ * enabling per-cluster GPU leaf browning, shedding, shadow thinning, and spring bud sprouting.
+ */
+function attachLeafCardAttributes(
+  card: THREE.BufferGeometry,
+  cx: number,
+  cy: number,
+  cz: number,
+  order: number,
+  seed: number,
+): void {
+  const count = card.attributes.position.count;
+  const centers = new Float32Array(count * 3);
+  const orders = new Float32Array(count * 2);
+  const clampedOrder = THREE.MathUtils.clamp(order, 0, 1);
+  const clampedSeed = THREE.MathUtils.clamp(seed, 0, 1);
+  for (let i = 0; i < count; i++) {
+    centers[i * 3] = cx;
+    centers[i * 3 + 1] = cy;
+    centers[i * 3 + 2] = cz;
+    orders[i * 2] = clampedOrder;
+    orders[i * 2 + 1] = clampedSeed;
+  }
+  card.setAttribute('aCardCenter', new THREE.BufferAttribute(centers, 3));
+  card.setAttribute('aLeafOrder', new THREE.BufferAttribute(orders, 2));
+}
+
+/**
  * Blends vertex normals on a multi-card foliage canopy toward the outward radial
  * crown direction + upward sky lift, and applies deep inner-to-sunlit outer AO colors.
  */
@@ -377,10 +414,13 @@ export function createGnarledOakTrunkGeo(): THREE.BufferGeometry {
     ]);
     parts.push(createTaperedTubeGeo(bCurve, 8, 7, (t) => THREE.MathUtils.lerp(l.r0, 0.055, t), true));
 
-    // Forked secondary boughs splitting upward & outward
+    // Forked secondary boughs splitting upward & outward + delicate winter twig tips
     for (const side of [-1, 1]) {
       const subA = l.angle + side * 0.58;
       const subLen = l.reach * 0.55;
+      const subEndX = midX + Math.cos(subA) * subLen;
+      const subEndY = l.endY + 0.58 + (side > 0 ? 0.25 : -0.15);
+      const subEndZ = midZ + Math.sin(subA) * subLen;
       const subCurve = new THREE.CatmullRomCurve3([
         new THREE.Vector3(midX, midY, midZ),
         new THREE.Vector3(
@@ -388,15 +428,71 @@ export function createGnarledOakTrunkGeo(): THREE.BufferGeometry {
           midY + 0.55,
           midZ + Math.sin(subA) * subLen * 0.55,
         ),
-        new THREE.Vector3(
-          midX + Math.cos(subA) * subLen,
-          l.endY + 0.58 + (side > 0 ? 0.25 : -0.15),
-          midZ + Math.sin(subA) * subLen,
-        ),
+        new THREE.Vector3(subEndX, subEndY, subEndZ),
       ]);
       parts.push(
         createTaperedTubeGeo(subCurve, 5, 5, (t) => THREE.MathUtils.lerp(l.r0 * 0.52, 0.03, t), true),
       );
+
+      // Fine tertiary twig reaching into the outer leaf lobe (gives bare winter oaks organic tracery)
+      const twigA = subA + side * 0.42;
+      const twigLen = 0.72 + (i % 3) * 0.14;
+      const twigCurve = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(subEndX, subEndY, subEndZ),
+        new THREE.Vector3(
+          subEndX + Math.cos(twigA) * twigLen * 0.55,
+          subEndY + 0.24,
+          subEndZ + Math.sin(twigA) * twigLen * 0.55,
+        ),
+        new THREE.Vector3(
+          subEndX + Math.cos(twigA) * twigLen,
+          subEndY + 0.42,
+          subEndZ + Math.sin(twigA) * twigLen,
+        ),
+      ]);
+      parts.push(createTaperedTubeGeo(twigCurve, 4, 4, (t) => THREE.MathUtils.lerp(0.032, 0.011, t), true));
+    }
+
+    // Forked terminal twig pair extending from each primary limb tip
+    for (const tipSide of [-1, 1]) {
+      const tipA = l.angle + tipSide * 0.46;
+      const tipLen = 0.68 + (i % 2) * 0.16;
+      const tipCurve = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(endX, l.endY, endZ),
+        new THREE.Vector3(
+          endX + Math.cos(tipA) * tipLen,
+          l.endY + 0.36 + (tipSide > 0 ? 0.16 : -0.06),
+          endZ + Math.sin(tipA) * tipLen,
+        ),
+      ]);
+      parts.push(createTaperedTubeGeo(tipCurve, 3, 4, (t) => THREE.MathUtils.lerp(0.044, 0.013, t), true));
+    }
+  }
+
+  // 3 ascending central crown leader boughs reaching into the oak's upper dome for winter silhouettes
+  for (let c = 0; c < 3; c++) {
+    const ca = c * ((Math.PI * 2) / 3) + 0.65;
+    const startY = 4.65 + c * 0.22;
+    const reach = 1.05 + (c % 2) * 0.28;
+    const endY = 6.75 + (c === 1 ? 0.35 : 0.0);
+    const cCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0, startY, 0),
+      new THREE.Vector3(Math.cos(ca) * reach * 0.55, THREE.MathUtils.lerp(startY, endY, 0.58), Math.sin(ca) * reach * 0.55),
+      new THREE.Vector3(Math.cos(ca) * reach, endY, Math.sin(ca) * reach),
+    ]);
+    parts.push(createTaperedTubeGeo(cCurve, 6, 5, (t) => THREE.MathUtils.lerp(0.11, 0.022, t), true));
+
+    for (const side of [-1, 1]) {
+      const sa = ca + side * 0.62;
+      const sCurve = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(Math.cos(ca) * reach * 0.62, THREE.MathUtils.lerp(startY, endY, 0.65), Math.sin(ca) * reach * 0.62),
+        new THREE.Vector3(
+          Math.cos(ca) * reach * 0.62 + Math.cos(sa) * 0.72,
+          endY + 0.22,
+          Math.sin(ca) * reach * 0.62 + Math.sin(sa) * 0.72,
+        ),
+      ]);
+      parts.push(createTaperedTubeGeo(sCurve, 3, 4, (t) => THREE.MathUtils.lerp(0.042, 0.012, t), true));
     }
   }
 
@@ -452,11 +548,16 @@ export function createOakCanopyGeo(): THREE.BufferGeometry {
       quat.multiply(spin);
       card.applyQuaternion(quat);
       card.translate(cx, cy, cz);
+      // Outer & upper crown cards shed slightly earlier in autumn; organic jitter breaks uniformity
+      const heightBias = THREE.MathUtils.clamp((cy - 3.6) / 4.2, 0, 1);
+      const radialBias = THREE.MathUtils.clamp(Math.hypot(cx, cz) / 3.4, 0, 1);
+      const shedOrder = heightBias * 0.32 + radialBias * 0.24 + detRand(idx, 7) * 0.44;
+      attachLeafCardAttributes(card, cx, cy, cz, shedOrder, detRand(idx, 8));
       cards.push(card);
     }
   }
 
-  const merged = mergePartGeometries(cards, false);
+  const merged = mergePartGeometries(cards, false, ['aCardCenter', 'aLeafOrder']);
   return shadeBotanicalCanopy(merged, 5.55, 3.25, 2.25, 0.8);
 }
 
@@ -832,21 +933,60 @@ export function createCurvedBirchTrunkGeo(): THREE.BufferGeometry {
     ),
   );
 
-  // 5 delicate ascending birch branches reaching into the lacy crown
+  // 7 delicate ascending birch branches + forked secondary twigs & summit leader for graceful winter silhouettes
   const branches: [number, number, number, number][] = [
     [3.3, 0.3, 1.35, 4.85],
     [3.75, 1.8, 1.25, 5.3],
     [4.1, 3.25, 1.35, 5.65],
     [4.55, 4.75, 1.15, 6.15],
     [5.05, 5.8, 0.95, 6.6],
+    [5.4, 1.15, 0.88, 6.9],
+    [5.75, 3.9, 0.78, 7.15],
   ];
-  for (const [sy, a, reach, ey] of branches) {
+  for (let bi = 0; bi < branches.length; bi++) {
+    const [sy, a, reach, ey] = branches[bi];
+    const midX = Math.cos(a) * reach * 0.52;
+    const midY = THREE.MathUtils.lerp(sy, ey, 0.6);
+    const midZ = Math.sin(a) * reach * 0.52;
+    const endX = Math.cos(a) * reach;
+    const endZ = Math.sin(a) * reach;
     const bCurve = new THREE.CatmullRomCurve3([
       new THREE.Vector3(0, sy, 0),
-      new THREE.Vector3(Math.cos(a) * reach * 0.52, THREE.MathUtils.lerp(sy, ey, 0.6), Math.sin(a) * reach * 0.52),
-      new THREE.Vector3(Math.cos(a) * reach, ey, Math.sin(a) * reach),
+      new THREE.Vector3(midX, midY, midZ),
+      new THREE.Vector3(endX, ey, endZ),
     ]);
     parts.push(createTaperedTubeGeo(bCurve, 6, 6, (t) => THREE.MathUtils.lerp(0.085, 0.022, t), true));
+
+    // Slender forked birch twigs extending upward and arching gently outward
+    for (const side of [-1, 1]) {
+      const ta = a + side * 0.56;
+      const tLen = reach * 0.52;
+      const tCurve = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(midX, midY, midZ),
+        new THREE.Vector3(
+          midX + Math.cos(ta) * tLen * 0.55,
+          midY + 0.34,
+          midZ + Math.sin(ta) * tLen * 0.55,
+        ),
+        new THREE.Vector3(
+          midX + Math.cos(ta) * tLen,
+          ey + 0.28 + (side > 0 ? 0.14 : -0.10),
+          midZ + Math.sin(ta) * tLen,
+        ),
+      ]);
+      parts.push(createTaperedTubeGeo(tCurve, 4, 4, (t) => THREE.MathUtils.lerp(0.036, 0.011, t), true));
+    }
+  }
+
+  // Delicate forked upper summit shoots reaching into the birch's airy crown peak
+  for (let s = 0; s < 2; s++) {
+    const sa = s * Math.PI + 0.9;
+    const sCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-0.14, 6.05, 0.07),
+      new THREE.Vector3(-0.14 + Math.cos(sa) * 0.34, 6.72, 0.07 + Math.sin(sa) * 0.34),
+      new THREE.Vector3(-0.14 + Math.cos(sa) * 0.58, 7.28, 0.07 + Math.sin(sa) * 0.58),
+    ]);
+    parts.push(createTaperedTubeGeo(sCurve, 4, 4, (t) => THREE.MathUtils.lerp(0.048, 0.012, t), true));
   }
 
   return mergePartGeometries(parts, false);
@@ -896,11 +1036,15 @@ export function createBirchCanopyGeo(): THREE.BufferGeometry {
       quat.multiply(spin);
       card.applyQuaternion(quat);
       card.translate(cx, cy, cz);
+      const heightBias = THREE.MathUtils.clamp((cy - 4.0) / 3.8, 0, 1);
+      const radialBias = THREE.MathUtils.clamp(Math.hypot(cx, cz) / 2.4, 0, 1);
+      const shedOrder = heightBias * 0.34 + radialBias * 0.22 + detRand(idx, 6) * 0.44;
+      attachLeafCardAttributes(card, cx, cy, cz, shedOrder, detRand(idx, 7));
       cards.push(card);
     }
   }
 
-  const merged = mergePartGeometries(cards, false);
+  const merged = mergePartGeometries(cards, false, ['aCardCenter', 'aLeafOrder']);
   return shadeBotanicalCanopy(merged, 5.75, 2.25, 2.1, 0.8);
 }
 
@@ -926,10 +1070,39 @@ export function createHorizonBroadleafGeo(): THREE.BufferGeometry {
     }
     card.rotateY(rotY);
     card.translate(cx, cy, cz);
+    const shedOrder = THREE.MathUtils.clamp(
+      0.06 + (i / Math.max(1, specs.length - 1)) * 0.78 + detRand(i + 1, 9) * 0.14,
+      0,
+      1,
+    );
+    attachLeafCardAttributes(card, cx, cy, cz, shedOrder, detRand(i + 1, 11));
     cards.push(card);
   }
-  const merged = mergePartGeometries(cards, false);
+  const merged = mergePartGeometries(cards, false, ['aCardCenter', 'aLeafOrder']);
   return shadeBotanicalCanopy(merged, 5.1, 3.2, 2.4, 0.85);
+}
+
+/**
+ * Lightweight branching winter trunk for distant horizon deciduous broadleaf trees so
+ * winter ridges show bare branching woodland silhouettes alongside evergreen conifers.
+ */
+export function createHorizonBroadleafTrunkGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const stem = new THREE.CylinderGeometry(0.22, 0.48, 4.2, 5);
+  stem.translate(0, 2.0, 0);
+  parts.push(stem);
+
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + 0.45;
+    const limbLen = 2.45 + (i % 2) * 0.45;
+    const limb = new THREE.CylinderGeometry(0.07, 0.17, limbLen, 4);
+    limb.translate(0, limbLen * 0.5, 0);
+    limb.rotateZ(0.62);
+    limb.rotateY(a);
+    limb.translate(Math.cos(a) * 0.12, 3.2 + (i % 2) * 0.45, Math.sin(a) * 0.12);
+    parts.push(limb);
+  }
+  return mergePartGeometries(parts, false);
 }
 
 /**

@@ -10,6 +10,11 @@ import { CameraController } from '@rendering/CameraController';
 import { DistanceFocusBlurPass } from '@rendering/DistanceFocusBlurPass';
 import { FloraRenderer } from '@rendering/FloraRenderer';
 import {
+  computeDeciduousPhenology,
+  createFallenLeafPatchGeo,
+  createFallingLeafGeo,
+} from '@rendering/DeciduousPhenology';
+import {
   HearthFire,
   createChimneySmokeGeometry,
   createChimneySmokeMaterial,
@@ -26,6 +31,8 @@ import {
   createCurvedGrassTuftGeo,
   createFernRosetteGeo,
   createGnarledOakTrunkGeo,
+  createHorizonBroadleafGeo,
+  createHorizonBroadleafTrunkGeo,
   createHorizonPineGeo,
   createLilyPadGeo,
   createLotusBloomGeo,
@@ -2216,6 +2223,253 @@ describe('High-Resolution Whimsical Procedural Models', () => {
     expect(visibleSwarms).toBe(1);
 
     creatureRenderer.dispose();
+    textures.dispose();
+  });
+
+  it('computes continuous deciduous seasonal phenology (spring sprouting, summer canopy, autumn browning & leaf drop, bare winter)', () => {
+    const dps = 6;
+
+    // Spring: seamless start from bare winter (0) -> Day 1 morning sprouting -> full canopy by late spring
+    const springStart = computeDeciduousPhenology('spring', 1, 0.0, dps);
+    expect(springStart.leafCoverage).toBe(0);
+    expect(springStart.crownsVisible).toBe(false);
+    expect(springStart.springSprout).toBeCloseTo(1, 4);
+    expect(springStart.brownAmount).toBe(0);
+    expect(springStart.leafFallIntensity).toBe(0);
+
+    const springDay1 = computeDeciduousPhenology('spring', 1, 0.34, dps);
+    expect(springDay1.leafCoverage).toBeGreaterThan(0.1);
+    expect(springDay1.leafCoverage).toBeLessThan(0.4);
+    expect(springDay1.crownsVisible).toBe(true);
+    expect(springDay1.springSprout).toBeGreaterThan(0.85);
+
+    const springMid = computeDeciduousPhenology('spring', 3, 0.5, dps);
+    const springLate = computeDeciduousPhenology('spring', 6, 0.8, dps);
+    expect(springMid.leafCoverage).toBeGreaterThan(springDay1.leafCoverage);
+    expect(springLate.leafCoverage).toBe(1);
+    expect(springLate.springSprout).toBe(0);
+
+    // Summer: full lush green canopy, no browning, no leaf drop
+    const summer = computeDeciduousPhenology('summer', 9, 0.5, dps);
+    expect(summer.leafCoverage).toBe(1);
+    expect(summer.brownAmount).toBe(0);
+    expect(summer.springSprout).toBe(0);
+    expect(summer.leafFallIntensity).toBe(0);
+    expect(summer.groundLitterAmount).toBe(0);
+    expect(summer.crownsVisible).toBe(true);
+
+    // Autumn: leaves turn brown, shed progressively, actively fall mid-autumn, and carpet the ground
+    const autumnEarly = computeDeciduousPhenology('autumn', 13, 0.15, dps);
+    const autumnMid = computeDeciduousPhenology('autumn', 15, 0.5, dps);
+    const autumnLate = computeDeciduousPhenology('autumn', 18, 0.98, dps);
+    expect(autumnMid.brownAmount).toBeGreaterThan(autumnEarly.brownAmount);
+    expect(autumnLate.brownAmount).toBe(1);
+    expect(autumnEarly.leafCoverage).toBeGreaterThan(autumnMid.leafCoverage);
+    expect(autumnMid.leafCoverage).toBeGreaterThan(autumnLate.leafCoverage);
+    expect(autumnLate.leafCoverage).toBe(0);
+    expect(autumnLate.crownsVisible).toBe(false);
+    expect(autumnMid.leafFallIntensity).toBeGreaterThan(0.6);
+    expect(autumnLate.leafFallIntensity).toBe(0);
+    expect(autumnLate.groundLitterAmount).toBe(1);
+
+    // Winter: all deciduous leaves gone (bare branches) until spring
+    const winterEarly = computeDeciduousPhenology('winter', 19, 0.2, dps);
+    const winterMid = computeDeciduousPhenology('winter', 22, 0.5, dps);
+    expect(winterEarly.leafCoverage).toBe(0);
+    expect(winterEarly.crownsVisible).toBe(false);
+    expect(winterEarly.leafFallIntensity).toBe(0);
+    expect(winterEarly.groundLitterAmount).toBeGreaterThan(0);
+    expect(winterMid.leafCoverage).toBe(0);
+    expect(winterMid.crownsVisible).toBe(false);
+    expect(winterMid.groundLitterAmount).toBe(0);
+
+    // Manual season override (season disagrees with day) falls back cleanly to mid-season (0.5)
+    const manualAutumn = computeDeciduousPhenology('autumn', 1, 0.34, dps);
+    expect(manualAutumn.seasonProgress).toBeCloseTo(0.5, 4);
+    expect(manualAutumn.brownAmount).toBeGreaterThan(0.8);
+    expect(manualAutumn.leafFallIntensity).toBeGreaterThan(0.8);
+  });
+
+  it('builds valid deciduous canopy card attributes, bare winter broadleaf trunks, and falling/fallen leaf geometries', () => {
+    const deciduousCanopies = [
+      createOakCanopyGeo(),
+      createBirchCanopyGeo(),
+      createHorizonBroadleafGeo(),
+    ];
+    for (const geo of deciduousCanopies) {
+      assertValidGeometry(geo, true);
+      const pos = geo.attributes.position as THREE.BufferAttribute;
+      const centers = geo.attributes.aCardCenter as THREE.BufferAttribute | undefined;
+      const orders = geo.attributes.aLeafOrder as THREE.BufferAttribute | undefined;
+      expect(centers).toBeDefined();
+      expect(orders).toBeDefined();
+      expect(centers!.itemSize).toBe(3);
+      expect(orders!.itemSize).toBe(2);
+      expect(centers!.count).toBe(pos.count);
+      expect(orders!.count).toBe(pos.count);
+
+      let minOrder = Infinity;
+      let maxOrder = -Infinity;
+      for (let i = 0; i < orders!.count; i++) {
+        const ord = orders!.getX(i);
+        const seed = orders!.getY(i);
+        expect(Number.isFinite(ord)).toBe(true);
+        expect(Number.isFinite(seed)).toBe(true);
+        expect(ord).toBeGreaterThanOrEqual(0);
+        expect(ord).toBeLessThanOrEqual(1);
+        if (ord < minOrder) minOrder = ord;
+        if (ord > maxOrder) maxOrder = ord;
+      }
+      // Cards must span a wide detachment/sprouting order range for organic progressive shedding
+      expect(maxOrder - minOrder).toBeGreaterThan(0.5);
+      geo.dispose();
+    }
+
+    const horizonTrunk = createHorizonBroadleafTrunkGeo();
+    assertValidGeometry(horizonTrunk);
+    horizonTrunk.dispose();
+
+    const leafPatch = createFallenLeafPatchGeo();
+    assertValidGeometry(leafPatch);
+    leafPatch.dispose();
+
+    const singleLeaf = createFallingLeafGeo();
+    const leafPos = singleLeaf.attributes.position as THREE.BufferAttribute;
+    const leafNorm = singleLeaf.attributes.normal as THREE.BufferAttribute;
+    expect(leafPos.count).toBe(8);
+    expect(leafNorm.count).toBe(8);
+    expect(singleLeaf.index).not.toBeNull();
+    for (let i = 0; i < leafPos.array.length; i++) {
+      expect(Number.isFinite(leafPos.array[i])).toBe(true);
+      expect(Number.isFinite(leafNorm.array[i])).toBe(true);
+    }
+    singleLeaf.dispose();
+  });
+
+  it('transitions deciduous trees through autumn browning and leaf drop, bare winter branches, and spring leaf sprouting while keeping conifers evergreen', () => {
+    const world = new WorldState(new EventBus(), { seed: 777123 });
+    const scene = new THREE.Scene();
+    const textures = createStubTextureLibrary();
+    const flora = new FloraRenderer(scene, world, textures, 0.75);
+
+    // Collect deciduous canopy InstancedMeshes (carry aLeafOrder) vs evergreen pine needle meshes
+    const deciduousCrowns: THREE.InstancedMesh[] = [];
+    const evergreenPineMeshes: THREE.InstancedMesh[] = [];
+    const deciduousFoliageMaterials = new Set<THREE.MeshStandardMaterial>();
+    scene.traverse((obj) => {
+      if (obj instanceof THREE.InstancedMesh) {
+        if (obj.geometry.attributes.aLeafOrder) {
+          deciduousCrowns.push(obj);
+          if (obj.material instanceof THREE.MeshStandardMaterial) {
+            deciduousFoliageMaterials.add(obj.material);
+          }
+        } else if (
+          obj.material instanceof THREE.MeshStandardMaterial &&
+          obj.material.map === textures.pineNeedleSpray
+        ) {
+          evergreenPineMeshes.push(obj);
+        }
+      }
+    });
+    expect(deciduousCrowns.length).toBeGreaterThan(0);
+    expect(evergreenPineMeshes.length).toBeGreaterThan(0);
+
+    const fallingLeavesMesh = scene.getObjectByName('deciduous-falling-leaves') as THREE.InstancedMesh | undefined;
+    const fallenLitterGroup = scene.getObjectByName('deciduous-fallen-litter');
+    expect(fallingLeavesMesh).toBeDefined();
+    expect(fallenLitterGroup).toBeDefined();
+
+    const focus = new THREE.Vector3(
+      world.settlements[0]?.center.x ?? 0,
+      0,
+      world.settlements[0]?.center.z ?? 0,
+    );
+
+    // 1. Initial Spring (Day 1 morning): sprouting buds, green foliage, no falling autumn leaves
+    expect(flora.getPhenology().leafCoverage).toBeGreaterThan(0.1);
+    expect(flora.getPhenology().leafCoverage).toBeLessThan(0.5);
+    expect(flora.getPhenology().springSprout).toBeGreaterThan(0.8);
+    expect(deciduousCrowns.every((m) => m.visible)).toBe(true);
+    expect(flora.getFallingLeafCount()).toBe(0);
+    expect(fallenLitterGroup!.visible).toBe(false);
+
+    // 2. Summer: full lush green deciduous canopies
+    world.day = 9;
+    world.timeOfDay = 0.5;
+    world.season = 'summer';
+    flora.update(0.05, undefined, focus);
+    expect(flora.getPhenology().leafCoverage).toBe(1);
+    expect(flora.getPhenology().brownAmount).toBe(0);
+    expect(deciduousCrowns.every((m) => m.visible)).toBe(true);
+    for (const mat of deciduousFoliageMaterials) {
+      expect(mat.color.g).toBeGreaterThan(mat.color.r);
+    }
+
+    // 3. Mid-Autumn: leaves turn russet/brown, thin out, actively fall, and litter carpets the ground
+    world.day = 15;
+    world.timeOfDay = 0.5;
+    world.season = 'autumn';
+    flora.update(0.05, undefined, focus);
+    expect(flora.getPhenology().brownAmount).toBeGreaterThan(0.7);
+    expect(flora.getPhenology().leafCoverage).toBeLessThan(0.7);
+    expect(flora.getFallingLeafCount()).toBeGreaterThan(0);
+    expect(fallingLeavesMesh!.visible).toBe(true);
+    expect(fallenLitterGroup!.visible).toBe(true);
+    for (const mat of deciduousFoliageMaterials) {
+      // Turned warm russet/brown (red channel dominates green)
+      expect(mat.color.r).toBeGreaterThan(mat.color.g);
+    }
+
+    // Sample falling leaf positions and verify they descend & flutter cleanly across frames
+    const matBefore = new THREE.Matrix4();
+    const posBefore = new THREE.Vector3();
+    const matAfter = new THREE.Matrix4();
+    const posAfter = new THREE.Vector3();
+    fallingLeavesMesh!.getMatrixAt(0, matBefore);
+    posBefore.setFromMatrixPosition(matBefore);
+    for (let step = 0; step < 8; step++) {
+      world.elapsedSeconds += 0.05;
+      flora.update(0.05, undefined, focus);
+    }
+    fallingLeavesMesh!.getMatrixAt(0, matAfter);
+    posAfter.setFromMatrixPosition(matAfter);
+    expect(Number.isFinite(posAfter.x) && Number.isFinite(posAfter.y) && Number.isFinite(posAfter.z)).toBe(true);
+    expect(posAfter.distanceTo(posBefore)).toBeGreaterThan(0.05);
+
+    // 4. Winter: all deciduous leaves have fallen off, leaving bare branches while pines stay evergreen
+    world.day = 21;
+    world.timeOfDay = 0.5;
+    world.season = 'winter';
+    flora.update(0.05, undefined, focus);
+    expect(flora.getPhenology().leafCoverage).toBe(0);
+    expect(flora.getPhenology().crownsVisible).toBe(false);
+    expect(deciduousCrowns.every((m) => !m.visible)).toBe(true);
+    expect(evergreenPineMeshes.every((m) => m.visible)).toBe(true);
+    expect(flora.getFallingLeafCount()).toBe(0);
+    expect(fallingLeavesMesh!.visible).toBe(false);
+
+    // 5. Next Spring: fresh green leaves sprout and expand back to full canopies
+    world.day = 25;
+    world.timeOfDay = 0.25;
+    world.season = 'spring';
+    flora.update(0.05, undefined, focus);
+    expect(flora.getPhenology().crownsVisible).toBe(true);
+    expect(flora.getPhenology().leafCoverage).toBeGreaterThan(0.05);
+    expect(flora.getPhenology().leafCoverage).toBeLessThan(0.35);
+    expect(flora.getPhenology().springSprout).toBeGreaterThan(0.9);
+    expect(deciduousCrowns.every((m) => m.visible)).toBe(true);
+    for (const mat of deciduousFoliageMaterials) {
+      expect(mat.color.g).toBeGreaterThan(mat.color.r);
+    }
+
+    world.day = 29;
+    world.timeOfDay = 0.85;
+    world.season = 'spring';
+    flora.update(0.05, undefined, focus);
+    expect(flora.getPhenology().leafCoverage).toBe(1);
+    expect(flora.getPhenology().springSprout).toBe(0);
+
+    flora.dispose();
     textures.dispose();
   });
 });

@@ -389,7 +389,7 @@ export class SceneManager {
     this.atmosphere.update(this.world, dt, this.camera, focusTarget);
     const sky = this.atmosphere.getSkyLightingState();
     this.terrainRenderer.update(dt, sky);
-    this.floraRenderer.update(dt, sky);
+    this.floraRenderer.update(dt, sky, focusTarget);
     this.settlementRenderer.update(dt, sky, focusTarget);
     this.creatureRenderer.update(dt, this.selection, this.povCreatureId);
     this.ambientCritterRenderer?.update(dt, sky);
