@@ -410,7 +410,7 @@ export class TopBar {
     seedBtn.type = 'button';
     seedBtn.className = 'hud-btn accent';
     seedBtn.textContent = 'New World';
-    seedBtn.title = 'Generate a brand-new procedural world';
+    seedBtn.title = 'Generate a brand-new world';
     seedBtn.addEventListener('click', () => this.callbacks.onNewWorld());
 
     worldGroup.append(this.qualitySelect, this.saveBtn, seedBtn);

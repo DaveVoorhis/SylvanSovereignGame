@@ -337,7 +337,7 @@ export class HudManager {
     }
     this.confirmModal.openModal({
       title: '🌱 Generate a New World?',
-      message: `This will replace ${summary} with a brand-new procedural valley. Any unsaved changes to this realm will be lost unless you save it first.`,
+      message: `This will replace ${summary} with a brand-new world. Any unsaved changes to this realm will be lost unless you save it first.`,
       confirmLabel: '🌱 Create New World',
       cancelLabel: 'Keep Current World',
       tone: 'danger',
