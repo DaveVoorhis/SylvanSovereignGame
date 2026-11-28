@@ -299,6 +299,7 @@ const FOUNTAIN_SURFACE_VERT = /* glsl */ `
 `;
 
 const FOUNTAIN_SURFACE_FRAG = /* glsl */ `
+  uniform mat4 modelMatrix;
   uniform float uTime;
   uniform vec3 uSunDirection;
   uniform vec3 uSunColor;
@@ -395,9 +396,10 @@ const FOUNTAIN_SURFACE_FRAG = /* glsl */ `
     // Crisp, distance-attenuated warm reflections from the 4 corner plaza lanterns at dusk/night
     vec3 lanternSpec = vec3(0.0);
     if (lanternFactor > 0.02) {
+      float lanternLocalY = 1.78 - (vTier > 0.5 ? 1.662 : 0.468);
       for (int i = 0; i < 4; i++) {
         float la = float(i) * 1.5707963 + 0.785398;
-        vec3 lLocal = vec3(cos(la) * 2.15, 1.78, sin(la) * 2.15);
+        vec3 lLocal = vec3(cos(la) * 2.15, lanternLocalY, sin(la) * 2.15);
         vec3 lWorld = (modelMatrix * vec4(lLocal, 1.0)).xyz;
         vec3 toLVec = lWorld - vWorldPos;
         float lDist2 = dot(toLVec, toLVec);
@@ -986,12 +988,12 @@ const FOUNTAIN_PARTICLES_FRAG = /* glsl */ `
  * `aTier` (0 = lower pool, 1 = upper bowl), and `aEdgeMask` (0 along inner/outer stone rim, 1 in open water).
  */
 function buildPolarWaterDiscGeometry(
-  innerRadius: number,
-  outerRadius: number,
-  radialRings: number,
-  angularSegs: number,
-  tier: number,
-  concaveRimRise = 0,
+    innerRadius: number,
+    outerRadius: number,
+    radialRings: number,
+    angularSegs: number,
+    tier: number,
+    concaveRimRise = 0,
 ): THREE.BufferGeometry {
   const vertsPerRing = angularSegs + 1;
   const vertCount = (radialRings + 1) * vertsPerRing;
@@ -1384,14 +1386,14 @@ export class FountainWaterSystem {
 
   /** Synchronizes shared fountain water shader uniforms with live world atmosphere & wind. */
   update(
-    elapsedSec: number,
-    daylight: number,
-    nightGlow: number,
-    windX: number,
-    windZ: number,
-    sunX: number,
-    sunY: number,
-    sky?: SkyLightingState,
+      elapsedSec: number,
+      daylight: number,
+      nightGlow: number,
+      windX: number,
+      windZ: number,
+      sunX: number,
+      sunY: number,
+      sky?: SkyLightingState,
   ): void {
     this.uniforms.uTime.value = elapsedSec;
     this.uniforms.uDaylight.value = sky?.daylight ?? daylight;
@@ -1417,8 +1419,8 @@ export class FountainWaterSystem {
    * collars, ray-marched volumetric mist enclosure, and 420-particle 4-class GPU spray.
    */
   createFountainAssembly(
-    seed: number,
-    selectionTarget: { kind: 'building'; id: string },
+      seed: number,
+      selectionTarget: { kind: 'building'; id: string },
   ): FountainWaterAssembly {
     const waterGroup = new THREE.Group();
     waterGroup.userData.buildPhase = 'exterior';
@@ -1436,42 +1438,42 @@ export class FountainWaterSystem {
 
     // 1. Submerged caustics basin floors & inner wet basin wall
     const lowerFloor = tagMesh(
-      new THREE.Mesh(this.lowerCausticsGeo, this.causticsFloorMat),
-      'caustics_floor',
-      0,
+        new THREE.Mesh(this.lowerCausticsGeo, this.causticsFloorMat),
+        'caustics_floor',
+        0,
     );
     lowerFloor.position.y = 0.305;
     waterGroup.add(lowerFloor);
 
     const lowerInnerWall = tagMesh(
-      new THREE.Mesh(this.lowerInnerWallGeo, this.causticsWallMat),
-      'caustics_wall',
-      0,
+        new THREE.Mesh(this.lowerInnerWallGeo, this.causticsWallMat),
+        'caustics_wall',
+        0,
     );
     lowerInnerWall.position.y = 0.39;
     waterGroup.add(lowerInnerWall);
 
     const upperFloor = tagMesh(
-      new THREE.Mesh(this.upperCausticsGeo, this.causticsFloorMat),
-      'caustics_floor',
-      0,
+        new THREE.Mesh(this.upperCausticsGeo, this.causticsFloorMat),
+        'caustics_floor',
+        0,
     );
     upperFloor.position.y = 1.548;
     waterGroup.add(upperFloor);
 
     // 2. Dynamic capillary-wave basin surfaces (with Fresnel reflection & impact foam)
     const lowerSurface = tagMesh(
-      new THREE.Mesh(this.lowerSurfaceGeo, this.surfaceMat),
-      'water_surface',
-      1,
+        new THREE.Mesh(this.lowerSurfaceGeo, this.surfaceMat),
+        'water_surface',
+        1,
     );
     lowerSurface.position.y = 0.468;
     waterGroup.add(lowerSurface);
 
     const upperSurface = tagMesh(
-      new THREE.Mesh(this.upperSurfaceGeo, this.surfaceMat),
-      'water_surface',
-      1,
+        new THREE.Mesh(this.upperSurfaceGeo, this.surfaceMat),
+        'water_surface',
+        1,
     );
     upperSurface.position.y = 1.662;
     waterGroup.add(upperSurface);
@@ -1486,9 +1488,9 @@ export class FountainWaterSystem {
       const ca = Math.cos(a);
       const sa = Math.sin(a);
       const curve = new THREE.QuadraticBezierCurve3(
-        new THREE.Vector3(ca * 0.04, 1.98, sa * 0.04),
-        new THREE.Vector3(ca * 0.28, 2.54, sa * 0.28),
-        new THREE.Vector3(ca * 0.54, 1.65, sa * 0.54),
+          new THREE.Vector3(ca * 0.04, 1.98, sa * 0.04),
+          new THREE.Vector3(ca * 0.28, 2.54, sa * 0.28),
+          new THREE.Vector3(ca * 0.54, 1.65, sa * 0.54),
       );
       const tubeGeo = new THREE.TubeGeometry(curve, 22, 0.022, 10, false);
       attachConstantAttr(tubeGeo, 'aStreamPhase', i * 1.13 + seed * 0.17);
@@ -1501,9 +1503,9 @@ export class FountainWaterSystem {
       const ca = Math.cos(a);
       const sa = Math.sin(a);
       const curve = new THREE.QuadraticBezierCurve3(
-        new THREE.Vector3(ca * 0.78, 1.66, sa * 0.78),
-        new THREE.Vector3(ca * 1.06, 1.38, sa * 1.06),
-        new THREE.Vector3(ca * 1.14, 0.46, sa * 1.14),
+          new THREE.Vector3(ca * 0.78, 1.66, sa * 0.78),
+          new THREE.Vector3(ca * 1.06, 1.38, sa * 1.06),
+          new THREE.Vector3(ca * 1.14, 0.46, sa * 1.14),
       );
       const tubeGeo = new THREE.TubeGeometry(curve, 22, 0.028, 10, false);
       attachConstantAttr(tubeGeo, 'aStreamPhase', (i + 6) * 1.37 + seed * 0.23);
@@ -1513,17 +1515,17 @@ export class FountainWaterSystem {
 
     // 4. Bubbling aerated splash-boil collars at the plunge zones
     const upperFoam = tagMesh(
-      new THREE.Mesh(this.upperFoamGeo, this.foamBoilMat),
-      'splash_foam',
-      2,
+        new THREE.Mesh(this.upperFoamGeo, this.foamBoilMat),
+        'splash_foam',
+        2,
     );
     upperFoam.position.y = 1.668;
     jetsGroup.add(upperFoam);
 
     const lowerFoam = tagMesh(
-      new THREE.Mesh(this.lowerFoamGeo, this.foamBoilMat),
-      'splash_foam',
-      2,
+        new THREE.Mesh(this.lowerFoamGeo, this.foamBoilMat),
+        'splash_foam',
+        2,
     );
     lowerFoam.position.y = 0.474;
     jetsGroup.add(lowerFoam);
@@ -1532,16 +1534,16 @@ export class FountainWaterSystem {
 
     // 5. Ray-marched volumetric splash mist & sunlit vapor enclosure
     const volumetricMist = tagMesh(
-      new THREE.Mesh(this.mistVolumeGeo, this.volumetricMistMat),
-      'volumetric_mist',
-      3,
+        new THREE.Mesh(this.mistVolumeGeo, this.volumetricMistMat),
+        'volumetric_mist',
+        3,
     );
     waterGroup.add(volumetricMist);
 
     // 6. 4-class GPU particle system (ballistic droplets, airborne mist, splash bursts, surface foam)
     const particles = new THREE.Points(
-      createFountainParticleGeometry(seed),
-      this.particleMat,
+        createFountainParticleGeometry(seed),
+        this.particleMat,
     );
     particles.renderOrder = 4;
     particles.userData.fountainLayer = 'particle_spray';
